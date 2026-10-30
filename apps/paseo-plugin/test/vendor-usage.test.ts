@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
-import { createVendorUsageService, codexThreadIdentity, type VendorBase, type VendorUsageRoute } from "../server/vendor-usage";
+import { createVendorUsageReader, createVendorUsageService, codexThreadIdentity, type VendorBase, type VendorUsageRoute } from "../server/vendor-usage";
 import { readInstalledNavigatorCapabilities } from "../server/session-navigator";
 
 const THREAD = "00000000-0000-4000-8000-000000000001", NEXT = "00000000-0000-4000-8000-000000000002";
@@ -90,6 +90,45 @@ describe("native provider routes and alias homes", () => {
     metadata.config.get.mockResolvedValue({ config: { providers: { [native.provider]: { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-work" }, secret: "PRIVATE_PROVIDER_CONFIG" } } } });
     expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toEqual({ a: value });
     expect(read).toHaveBeenCalledWith({ base: "claude", source: "/tmp/fixture-claude-work/projects" }, CLAUDE, expect.any(Object));
+  });
+  it("dispatches codex-work, claude-work and OpenCode aliases through their own readers", async () => {
+    const fs = await import("node:fs/promises"), { join } = await import("node:path"), { tmpdir } = await import("node:os"), { DatabaseSync } = await import("node:sqlite");
+    const root = await fs.mkdtemp(join(tmpdir(), "kontor-vendor-dispatch-"));
+    const codexHome = join(root, "codex-work"), claudeHome = join(root, "claude-work"), openHome = join(root, "opencode-work");
+    const codexHandle = "00000000-0000-4000-8000-000000000031", claudeHandle = "00000000-0000-4000-8000-000000000032", openHandle = "ses_0123456789abcdef";
+    try {
+      await fs.mkdir(join(codexHome, "sessions", "2026", "01", "01"), { recursive: true });
+      await fs.writeFile(join(codexHome, "sessions", "2026", "01", "01", `rollout-${codexHandle}.jsonl`), [
+        JSON.stringify({ type: "session_meta", payload: { id: codexHandle, session_id: codexHandle, cli_version: "0.160.0", originator: "codex_cli_rs", source: "cli" } }),
+        JSON.stringify({ type: "event_msg", timestamp: "2026-01-01T00:00:00.000Z", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 100, output_tokens: 8, total_tokens: 108 } } } }),
+      ].join("\n") + "\n");
+      await fs.mkdir(join(claudeHome, "projects", "project-work"), { recursive: true });
+      await fs.writeFile(join(claudeHome, "projects", "project-work", `${claudeHandle}.jsonl`), JSON.stringify({ type: "assistant", isSidechain: false,
+        message: { id: "msg-work", usage: { input_tokens: 20, output_tokens: 4, cache_read_input_tokens: 5, cache_creation_input_tokens: 1 } } }) + "\n");
+      await fs.mkdir(join(openHome, "opencode"), { recursive: true });
+      const database = new DatabaseSync(join(openHome, "opencode", "opencode.db"));
+      try {
+        database.exec("CREATE TABLE session (id TEXT PRIMARY KEY, tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER)");
+        database.prepare("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)").run(openHandle, 10, 5, 2, 3, 4);
+      } finally { database.close(); }
+      const agents = {
+        a: { id: "a", provider: "fixture-codex-work", persistence: { provider: "codex", sessionId: codexHandle, nativeHandle: codexHandle, metadata: { threadId: codexHandle } } },
+        b: { id: "b", provider: "fixture-claude-work", persistence: { provider: "claude", sessionId: claudeHandle, nativeHandle: claudeHandle, metadata: {} } },
+        c: { id: "c", provider: "fixture-opencode-work", persistence: { provider: "opencode", sessionId: openHandle, nativeHandle: openHandle, metadata: {} } },
+      };
+      const entries = [
+        { provider: "fixture-codex-work", extends: "codex", env: { CODEX_HOME: codexHome } },
+        { provider: "fixture-claude-work", extends: "claude", env: { CLAUDE_CONFIG_DIR: claudeHome } },
+        { provider: "fixture-opencode-work", extends: "opencode", env: { XDG_DATA_HOME: openHome } },
+      ];
+      const paseo = { agents: { ref: (id: string) => ({ refresh: async () => found(agents[id as keyof typeof agents]) }) },
+        providers: { snapshot: async () => ({ entries: entries.map(({ provider }) => ({ provider, source: "custom" })) }) },
+        config: { get: async () => ({ config: { providers: Object.fromEntries(entries.map(({ provider, extends: base, env }) => [provider, { extends: base, env }])) } }) } } as never;
+      const result = await createVendorUsageService(createVendorUsageReader(join(root, "cache")))(paseo, ["a", "b", "c"]);
+      expect(result.a).toMatchObject({ input: 100, output: 8 });
+      expect(result.b).toMatchObject({ input: 26, output: 4 });
+      expect(result.c).toMatchObject({ input: 17, output: 7 });
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
   it("uses a verified OpenCode alias's own XDG_DATA_HOME database path", async () => {
     const native = aliasAgent("a", "opencode-deepseek", "opencode"), read = readStub();

@@ -102,7 +102,7 @@ export function createClaudeUsageReader(projectsRoot: string, cacheRoot: string,
         const stat = await file.stat(), inode = `${stat.dev}:${stat.ino}`;
         if (!stat.isFile()) return unknown("source is not a regular file");
         const old = await cached(handle);
-        const state: State = old && !old.problem && old.file === matches[0] && old.inode === inode && old.offset <= stat.size && !(old.size === stat.size && old.modified !== stat.mtimeMs) ? old
+        const state: State = old && old.file === matches[0] && old.inode === inode && old.offset <= stat.size && !(old.size === stat.size && old.modified !== stat.mtimeMs) ? old
           : { version: 1, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, totals: { input: 0, output: 0 }, seen: {}, problem: null };
         let position = state.offset, pending = Buffer.alloc(0);
         const end = stat.size;

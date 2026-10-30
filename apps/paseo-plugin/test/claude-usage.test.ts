@@ -10,7 +10,7 @@ const ID = "00000000-0000-4000-8000-000000000001";
 const usage = (input: number, output: number, cacheRead = 0, cacheCreation = 0) => ({ input_tokens: input, output_tokens: output, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheCreation });
 const line = (id: string | null, value = usage(10, 2), sidechain = false) => JSON.stringify({ type: "assistant", isSidechain: sidechain, message: { id, usage: value } });
 const lines = (...rows: string[]) => rows.join("\n") + "\n";
-const file = (project = "project-a") => join(projects, project, `${ID}.jsonl`);
+const file = (project = "project-a", id = ID) => join(projects, project, `${id}.jsonl`);
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "kontor-claude-usage-"));
@@ -64,14 +64,29 @@ describe("qualified Claude assistant-message totals", () => {
   });
 
   it("keeps invalid identities, malformed records and oversized lines unknown", async () => {
-    await writeFile(file(), lines(line(null), line("msg-1")));
-    expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("invalid message identity") });
-    await writeFile(file(), lines('{"type":"assistant","message":'));
-    expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("malformed usage record") });
-    await writeFile(file(), lines(line("msg-1", usage(-1, 2))));
-    expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("invalid usage record") });
-    await writeFile(file(), lines(line("msg-1")) + JSON.stringify({ type: "assistant", message: { id: "msg-big", usage: usage(1, 1) }, payload: "x".repeat(17 * 1024 * 1024) }) + "\n");
-    expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("record exceeds") });
+    const cases = [
+      { id: "00000000-0000-4000-8000-000000000011", lines: lines(line(null), line("msg-1")), source: "invalid message identity" },
+      { id: "00000000-0000-4000-8000-000000000012", lines: lines('{"type":"assistant","message":'), source: "malformed usage record" },
+      { id: "00000000-0000-4000-8000-000000000013", lines: lines(line("msg-1", usage(-1, 2))), source: "invalid usage record" },
+      { id: "00000000-0000-4000-8000-000000000014", lines: lines(line("msg-1")) + JSON.stringify({ type: "assistant", message: { id: "msg-big", usage: usage(1, 1) }, payload: "x".repeat(17 * 1024 * 1024) }) + "\n", source: "record exceeds" },
+    ];
+    for (const item of cases) {
+      await writeFile(file("project-a", item.id), item.lines);
+      expect(await reader().read(item.id)).toMatchObject({ input: null, output: null, source: expect.stringContaining(item.source) });
+    }
+  });
+
+  it("keeps a saved problem sticky without spending budget or starving an unrelated session", async () => {
+    const bad = "00000000-0000-4000-8000-000000000021", good = "00000000-0000-4000-8000-000000000022";
+    await writeFile(file("project-a", bad), lines('{"type":"assistant","message":') + "x".repeat(2048));
+    await writeFile(file("project-a", good), lines(line("msg-good", usage(7, 3))));
+    const instance = reader(), first = { bytes: 512 };
+    expect(await instance.read(bad, first)).toMatchObject({ input: null, output: null, source: expect.stringContaining("malformed usage record") });
+    expect(first.bytes).toBe(0);
+    const replay = { bytes: 512 };
+    expect(await instance.read(bad, replay)).toMatchObject({ input: null, output: null, source: expect.stringContaining("malformed usage record") });
+    expect(replay.bytes).toBe(512);
+    expect(await instance.read(good, replay)).toMatchObject({ input: 7, output: 3 });
   });
 
   it("resumes a partial append and a bounded read without inventing a total", async () => {

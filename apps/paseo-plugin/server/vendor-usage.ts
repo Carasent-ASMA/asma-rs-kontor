@@ -112,12 +112,11 @@ export function createVendorUsageService(reader: VendorUsageReader) {
   };
 }
 
-export function contributeVendorUsage(server: PluginServerContext) {
-  const cacheRoot = join(dirname(createStateRoot()), "vendor-usage-cache-v1");
+export function createVendorUsageReader(cacheRoot: string): VendorUsageReader {
   const codex = new Map<string, ReturnType<typeof createCodexUsageReader>>();
   const claude = new Map<string, ReturnType<typeof createClaudeUsageReader>>();
   const opencode = new Map<string, ReturnType<typeof createOpenCodeUsageReader>>();
-  const reader: VendorUsageReader = {
+  return {
     async read(route, nativeHandle, budget) {
       if (route.base === "codex") {
         const instance = codex.get(route.source) ?? createCodexUsageReader(route.source, cacheRoot); codex.set(route.source, instance);
@@ -131,6 +130,10 @@ export function contributeVendorUsage(server: PluginServerContext) {
       return instance.read(nativeHandle);
     },
   };
-  const read = createVendorUsageService(reader);
+}
+
+export function contributeVendorUsage(server: PluginServerContext) {
+  const cacheRoot = join(dirname(createStateRoot()), "vendor-usage-cache-v1");
+  const read = createVendorUsageService(createVendorUsageReader(cacheRoot));
   server.handle(readUsageTotals, ({ agentIds }, { paseo }) => read(paseo, agentIds));
 }
