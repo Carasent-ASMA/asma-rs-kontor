@@ -39,6 +39,33 @@ export function consumeClaudeLine(state: State, line: string): void {
   } catch { state.problem = "malformed usage record"; }
 }
 
+/** Every `<project>/<handle>.jsonl` under the projects root, keyed by native handle, as root-relative paths; symlinks are skipped. */
+async function transcriptIndex(projectsRoot: string): Promise<Map<string, string[]>> {
+  const found = new Map<string, string[]>(); let directories = 0, entries = 0;
+  let root;
+  try { root = await opendir(projectsRoot); }
+  catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return found; throw error; }
+  for await (const project of root) {
+    if (++directories > 4096) throw new Error("index bound");
+    if (project.isSymbolicLink() || !project.isDirectory()) continue;
+    let directory;
+    try { directory = await opendir(join(projectsRoot, project.name)); } catch { continue; }
+    for await (const item of directory) {
+      if (++entries > 100_000) throw new Error("index bound");
+      if (item.isSymbolicLink() || !item.isFile() || !item.name.endsWith(".jsonl")) continue;
+      const handle = item.name.slice(0, -6);
+      if (safeHandle(handle)) found.set(handle, [...(found.get(handle) ?? []), join(project.name, item.name)]);
+    }
+  }
+  return found;
+}
+
+/** Absolute paths of every transcript for one exact native handle; callers decide what anything but one match means. */
+export async function claudeTranscriptPaths(projectsRoot: string, handle: string): Promise<string[]> {
+  if (!safeHandle(handle)) return [];
+  return ((await transcriptIndex(projectsRoot)).get(handle) ?? []).map((path) => join(projectsRoot, path));
+}
+
 /** One exact native Claude JSONL, read incrementally and cached as numeric totals plus hashed message IDs. */
 export function createClaudeUsageReader(projectsRoot: string, cacheRoot: string, now = Date.now) {
   let indexedAt = -Infinity, paths = new Map<string, string[]>(), indexing: Promise<void> | null = null;
@@ -47,25 +74,7 @@ export function createClaudeUsageReader(projectsRoot: string, cacheRoot: string,
   async function index() {
     if (now() - indexedAt < 5_000) return;
     if (indexing) return indexing;
-    indexing = (async () => {
-      const found = new Map<string, string[]>(); let directories = 0, entries = 0;
-      let root;
-      try { root = await opendir(projectsRoot); }
-      catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") { paths = found; indexedAt = now(); return; } throw error; }
-      for await (const project of root) {
-        if (++directories > 4096) throw new Error("index bound");
-        if (project.isSymbolicLink() || !project.isDirectory()) continue;
-        let directory;
-        try { directory = await opendir(join(projectsRoot, project.name)); } catch { continue; }
-        for await (const item of directory) {
-          if (++entries > 100_000) throw new Error("index bound");
-          if (item.isSymbolicLink() || !item.isFile() || !item.name.endsWith(".jsonl")) continue;
-          const handle = item.name.slice(0, -6);
-          if (safeHandle(handle)) found.set(handle, [...(found.get(handle) ?? []), join(project.name, item.name)]);
-        }
-      }
-      paths = found; indexedAt = now();
-    })();
+    indexing = (async () => { paths = await transcriptIndex(projectsRoot); indexedAt = now(); })();
     try { await indexing; } finally { indexing = null; }
   }
   const cacheFile = (handle: string) => join(cacheRoot, `${createHash("sha256").update(`${namespace}\0${handle}`).digest("hex")}.json`);

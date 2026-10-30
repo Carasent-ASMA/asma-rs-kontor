@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { readFile } from "node:fs/promises";
-import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, readTakeoverContinuity, type TakeoverDeps } from "../server/session-lifecycle";
+import { TAKEOVER_PREDECESSOR_LABEL, contributeSessionLifecycle, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, readTakeoverContinuity, type TakeoverDeps } from "../server/session-lifecycle";
 import { discoverCanonical } from "../server/session-canonical";
 import { promotionRecordSchema } from "../shared/session-promotion";
 import * as readSources from "../server/read-sources";
@@ -23,6 +23,8 @@ import { createSessionSummaryService } from "../server/session-summaries";
 import { stockSummaryGenerator } from "../server/stock-summary-generator";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { createBackgroundReader } from "../server/background-reader";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 const KEY = "advisor/route-review";
@@ -2126,6 +2128,32 @@ describe("R11 prepared procedural owner", () => {
     h.deps.background = async () => ({ complete: false, gap: "provider inventory became unavailable" });
     expect((await h.apply(review)).state).toBe("refused");
     expect([h.effects.archive, h.effects.create]).toEqual([[], []]);
+  });
+  async function claudeTranscript(h: Awaited<ReturnType<typeof preparedHost>>, projects: string, terminal: boolean) {
+    h.source.persistence = { provider: "claude", sessionId: "native-r11", nativeHandle: "native-r11" } as Agent["persistence"];
+    await makeDirectory(join(projects, "-fixture"), { recursive: true });
+    const rows = [{ type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_r11", name: "Bash", input: { command: "sleep 9", run_in_background: true } }] } },
+      ...(terminal ? [{ type: "user", origin: { kind: "task-notification" }, message: { role: "user", content: "<task-notification><tool-use-id>toolu_r11</tool-use-id><status>completed</status></task-notification>" } }] : [])];
+    await writeFile(join(projects, "-fixture", "native-r11.jsonl"), rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
+  }
+  it.each([[true, "ready"], [false, "refused"]] as const)("W1 gates the prepared review on the real provider-native reader (terminal %s)", async (terminal, state) => {
+    const h = await preparedHost(), projects = join(h.root, "claude", "projects");
+    await claudeTranscript(h, projects, terminal);
+    h.deps.background = createBackgroundReader({ exact: async (id) => (await h.client.agents.ref(id).refresh())?.agent ?? null, revision: lifecycleRevision,
+      route: async (provider) => provider === "claude" ? { base: "claude", provider, source: projects } : null, stateRoot: join(h.root, "background-v1") });
+    const review = await h.review();
+    expect(review.state, review.message).toBe(state);
+    if (!terminal) expect(review.message).toContain("no terminal record (first 20 ids: toolu_r11)");
+  });
+  it("W1 wires the provider-native reader into the installed takeover handler", async () => {
+    const h = await preparedHost(), claudeHome = join(h.root, "claude");
+    await claudeTranscript(h, join(claudeHome, "projects"), false);
+    vi.stubEnv("PASEO_HOME", join(h.root, "paseo-home")); vi.stubEnv("CLAUDE_CONFIG_DIR", claudeHome);
+    const handlers = new Map<string, (...args: any[]) => any>();
+    contributeSessionLifecycle({ handle: (rpc: { name: string }, handler: (...args: any[]) => any) => handlers.set(rpc.name, handler) } as unknown as PluginServerContext);
+    const review = await handlers.get(reviewTakeover.name)!({ agentId: h.source.id, bindingKey: KEY, preparedBrief: h.ref }, { paseo: h.client });
+    expect(review.state).toBe("refused");
+    expect(review.message).toContain("no terminal record (first 20 ids: toolu_r11)");
   });
   it("marks only the retired predecessor, preserves the original successor title and holds without response proof", async () => {
     const h = await preparedHost(), review = await h.review(); expect(review.state).toBe("ready");

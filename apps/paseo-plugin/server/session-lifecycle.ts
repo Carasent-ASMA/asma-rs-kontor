@@ -21,6 +21,8 @@ import {
 import { asTakeoverClient } from "./session-navigator";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { readPreparedTakeoverBrief, readPreparedBackground, type BackgroundReader, type BriefRef, type PreparedTakeoverBrief } from "./takeover-brief";
+import { createBackgroundReader } from "./background-reader";
+import { verifiedVendorRoute } from "./vendor-usage";
 import { createPaseoPublicCli, type PaseoPublicCli } from "./paseo-cli";
 import { createCompleteScheduleReader, type CompleteScheduleReader } from "./paseo-host";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
@@ -1638,6 +1640,8 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
       snapshot: (input) => paseo.providers.snapshot({ cwd: input.cwd }),
       evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
       publicCli, completeSchedules,
+      background: createBackgroundReader({ exact: async (id) => (await client.agents.ref(id).refresh())?.agent ?? null, revision: lifecycleRevision,
+        route: (provider) => verifiedVendorRoute(paseo, provider), stateRoot: join(root, "background-v1") }),
       continuity: (agentId, requestId) => readTakeoverContinuity(client, root, agentId, requestId, { completeSchedules }),
     });
   };

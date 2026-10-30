@@ -22,7 +22,7 @@ type UsageClient = Pick<PaseoApi, "agents"> & Partial<Pick<PaseoApi, "providers"
 export type VendorBase = "codex" | "opencode" | "claude";
 export type VendorUsageRoute = { readonly base: VendorBase; readonly source: string };
 export type VendorUsageReader = { read(route: VendorUsageRoute, nativeHandle: string, budget: { bytes: number }): Promise<VendorUsageRead> };
-type VerifiedRoute = VendorUsageRoute & { readonly provider: string };
+export type VerifiedRoute = VendorUsageRoute & { readonly provider: string };
 type ProviderConfig = { readonly extends?: unknown; readonly env?: Record<string, unknown> };
 type UsageConfig = { readonly providers?: Record<string, ProviderConfig> };
 
@@ -40,7 +40,7 @@ function defaultSource(base: VendorBase): string {
 }
 
 /** Positive host metadata, never absence from a pinned list, establishes an alias and its own source root. */
-async function verifiedVendorRoute(paseo: UsageClient, provider: string): Promise<VerifiedRoute | null> {
+export async function verifiedVendorRoute(paseo: UsageClient, provider: string): Promise<VerifiedRoute | null> {
   if (provider === "codex" || provider === "opencode" || provider === "claude") return { base: provider, provider, source: defaultSource(provider) };
   if (!paseo.providers?.snapshot || !paseo.config?.get) return null;
   try {
@@ -63,7 +63,7 @@ async function verifiedVendorRoute(paseo: UsageClient, provider: string): Promis
   } catch { return null; }
 }
 
-function nativeIdentity(agent: PaseoAgent, route: VerifiedRoute): string | null {
+export function nativeIdentity(agent: PaseoAgent, route: VerifiedRoute): string | null {
   const handle = agent.persistence;
   if (!handle || (handle.provider !== route.provider && handle.provider !== route.base)) return null;
   if (route.base === "codex") return codexThreadIdentity(agent, true, route.provider);
