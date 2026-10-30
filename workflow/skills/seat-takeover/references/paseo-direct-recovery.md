@@ -39,6 +39,37 @@ and establish any needed finite successor schedule through the existing
 Do not prompt the archived predecessor: an ordinary explicit prompt can
 unarchive it. Titles and parent labels do not fence writes.
 
+## Deterministic source tooling
+
+`apps/paseo-plugin/scripts/seat-takeover.mjs` calls the existing plugin owner’s
+`review`/`apply`/`check` RPCs through the public host connector. It does not create
+another archive/create/send executor or register the retired admission-import
+RPCs. Run it from the plugin directory with a qualified public Node connector:
+
+```sh
+node scripts/seat-takeover.mjs review /absolute/request.json /absolute/checkpoint.json
+node scripts/seat-takeover.mjs apply /absolute/checkpoint.json
+node scripts/seat-takeover.mjs check /absolute/checkpoint.json
+```
+
+The request names the selected host and daemon ID, plugin ID, exact predecessor,
+configured binding or explicit route, and the prepared brief path/SHA256. The
+brief carries the scope, criteria, authorized next action, findings, retry
+counters, supervisor, procedure revision, authority/history references and
+checkout snapshot. The review pins these before retirement; preserve the
+checkpoint and its apply-intent sidecar for recovery. An ambiguous apply uses
+Check on that same operation, never a new review to replace the uncertainty.
+
+Prepared execution requires an authoritative provider-native background-work
+reader configured by the existing server owner, as well as its qualified
+schedule inventory. Missing coverage refuses retirement; an empty caller list
+is not evidence. No stock background reader is currently wired. The pinned
+plugin development SDK 0.11.4 also has no public Node connector entry. These are
+unresolved qualification gaps, not permission to use a private host module or
+to edit an installed SDK. Synthetic source tests do not qualify installed use.
+A candidate needs exact-head review followed by MAIN proof with disposable
+sessions before this route can be reported as delivered.
+
 ## Preserve workers before archive
 
 Inspect actual managed children, workspace identities and provider-native

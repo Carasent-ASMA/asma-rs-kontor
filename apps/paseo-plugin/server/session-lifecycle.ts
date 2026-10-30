@@ -20,6 +20,7 @@ import {
 } from "./session-takeover";
 import { asTakeoverClient } from "./session-navigator";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
+import { readPreparedTakeoverBrief, readPreparedBackground, type BackgroundReader, type BriefRef, type PreparedTakeoverBrief } from "./takeover-brief";
 import { createPaseoPublicCli, type PaseoPublicCli } from "./paseo-cli";
 import { createCompleteScheduleReader, type CompleteScheduleReader } from "./paseo-host";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
@@ -27,7 +28,7 @@ import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import {
   TAKEOVER_LIMIT, RESUME_REMOVED, ARCHIVE_BATCH_LIMIT, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, unresolvedArchive,
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
-  TAKEOVER_EXTERNAL_BOUNDARIES, TAKEOVER_LIMITS, TAKEOVER_PROMPT, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
+  TAKEOVER_EXTERNAL_BOUNDARIES, TAKEOVER_LIMITS, TAKEOVER_PROMPT, takeoverBriefRefSchema, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type TakeoverOutcome, type TakeoverReview, type TakeoverReviewInput, type UnresolvedRef,
 } from "../shared/session-lifecycle";
 import {
@@ -664,6 +665,8 @@ export type TakeoverDeps = {
   continuity?: (agentId: string, requestId: string) => Promise<TakeoverContinuity | null>;
   /** The server-configured public CLI stop; absent means no running stop is attempted. */
   publicCli?: PaseoPublicCli;
+  /** Authoritative provider-owned worker accounting for prepared procedural requests; no empty fallback. */
+  background?: BackgroundReader;
   /** The supported public host connector's complete schedule inventory; absent means live wakes stay unknown. */
   completeSchedules?: CompleteScheduleReader;
   run?: ResolverRun;
@@ -672,6 +675,7 @@ export type TakeoverDeps = {
 };
 /** Everything a confirmation pins; apply recomputes it and refuses any difference. */
 type Pinned = {
+  prepared?: { ref: BriefRef; brief: PreparedTakeoverBrief; backgroundRevision: string };
   predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
   route: Pick<TakeoverRoute, "provenance" | "selected" | "considered" | "validity">; evidence: string; continuity: TakeoverContinuity; spec: SeatCreateSpec;
   /** The source is already archived: its history is read, its runtime is never revived or prompted. */
@@ -704,7 +708,7 @@ const CWD_DRIFT = "This session runs outside its workspace directory, and a succ
 /** Scope, title, supervisor and orchestration labels a successor keeps; anything else is not carried. */
 const CARRIED_LABELS = ["role", "epic", "task", "ticket", TITLE_AUTO_LABEL, "orchestration", "paseo.parent-agent-id"];
 export const TAKEOVER_PREDECESSOR_LABEL = "takeover.predecessor";
-const takeoverRecordSchema = z.object({ review: takeoverReviewSchema, requestId: z.string().uuid(), chosen: z.string().nullable(), chosenRoute: z.unknown().nullable().optional(), pinned: z.unknown(), nonce: z.string().nullable() }).strict();
+const takeoverRecordSchema = z.object({ review: takeoverReviewSchema, requestId: z.string().uuid(), chosen: z.string().nullable(), chosenRoute: z.unknown().nullable().optional(), preparedBrief: takeoverBriefRefSchema.optional(), pinned: z.unknown(), nonce: z.string().nullable() }).strict();
 type TakeoverRecord = z.infer<typeof takeoverRecordSchema>;
 /** One durable source->successor record: a second takeover of the same source never creates another successor. */
 const successorMarkerSchema = z.object({
@@ -897,7 +901,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
 
   type Assessment = { state: TakeoverReview["state"]; message: string; agent: Agent | null; owner: TakeoverAdapter | null; association: TakeoverReview["association"]; route: TakeoverRoute | null; pinned: Pinned | null; limits: string[] };
   /** Every check a takeover passes before its intent, from exact reads; `pinned` only when all of them pass. */
-  async function assess(agentId: string, chosen: string | null, requestId: string, chosenRoute: ExplicitTakeoverRoute | null): Promise<Assessment> {
+  async function assess(agentId: string, chosen: string | null, requestId: string, chosenRoute: ExplicitTakeoverRoute | null, preparedRef?: BriefRef): Promise<Assessment> {
     let association: TakeoverReview["association"] = { bindingKey: null, source: null, choices: [] }, limits = TAKEOVER_LIMITS;
     let agent: Agent | null = null, owner: TakeoverAdapter | null = null, route: TakeoverRoute | null = null;
     const answer = (state: TakeoverReview["state"], message: string, pinned: Pinned | null = null): Assessment => ({ state, message, agent, owner, association, route, pinned, limits });
@@ -927,6 +931,15 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     const direct = owner = takeoverAdapter(first);
     if (direct.adapter === "governed") return answer("refused", GOVERNED_ADAPTER_GAP);
     if (direct.adapter === "refused") return answer("refused", direct.reason);
+    let prepared: Pinned["prepared"];
+    if (preparedRef) {
+      if (promotion.state !== "none" || first.labels?.role === "LSA") return answer("refused", "Prepared procedural takeover does not transfer canonical or LSA ownership; use its existing owner.");
+      try {
+        const brief = await readPreparedTakeoverBrief(preparedRef, agentId, first.cwd, first.title ?? first.id, parent(first));
+        const background = await readPreparedBackground(deps.background, { sourceId: agentId, sourceRevision: lifecycleRevision(first), requestId });
+        prepared = { ref: preparedRef, brief, backgroundRevision: background.revision };
+      } catch (error) { return answer("refused", `Prepared procedural takeover refused: ${errorText(error)}`); }
+    }
     const refusal = takeoverRefusal(first);
     if (refusal) return answer("refused", refusal);
     // Running is eligible only through the server-owned stop adapter; it is not a role or lifecycle-state prohibition.
@@ -1070,6 +1083,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       persona: persona ? { text: persona.text, supported: persona.supported } : { text: "", supported: false },
       bootstrap: bootstrapPrompt(persona?.text ?? "", saved?.text ?? RUNNING_SUMMARY_PREVIEW, persona?.supported ?? true) + bindingContext,
     };
+    if (prepared) {
+      spec.labels[TITLE_AUTO_LABEL] = prepared.brief.originalTitle;
+      spec.bootstrap += `\nPrepared procedural brief (read and verify its references; bootstrap only, no task effects):\n${JSON.stringify(prepared.brief)}`;
+    }
     let expired: string | null;
     const checked = await deps.create.preflight(spec, agentId);
     if ((expired = effectValidityProblem(spec))) return answer("unknown", expired);
@@ -1106,7 +1123,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       predecessor: takeoverRevision(last), owner: direct, ownerRevision, created, bindingKey: selection === "explicit" ? "explicit" : association.bindingKey!,
       route: { provenance: route.provenance, selected: route.selected, considered: route.considered, validity: route.validity },
       evidence, continuity, spec, retiredSource: first.archivedAt != null, children: children.map((child) => child.id).sort(), summary: summaryPin, selection,
-      running, sourceIdentity: sourceIdentity(last), sourceSettings: inheritedSettings,
+      running, sourceIdentity: sourceIdentity(last), sourceSettings: inheritedSettings, ...(prepared ? { prepared } : {}),
     });
   }
 
@@ -1120,7 +1137,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     const priorRoute = explicitTakeoverRouteSchema.safeParse(prior?.chosenRoute ?? null);
     // An explicit null in this request asks for Auto; an omitted route keeps the review's earlier choice.
     const chosenRoute = input.route === null ? null : input.route ?? (priorRoute.success ? priorRoute.data : null);
-    const found = await assess(input.agentId, chosen, requestId, chosenRoute), agent = found.agent, spec = found.pinned?.spec ?? null;
+    const preparedBrief = input.preparedBrief ?? prior?.preparedBrief;
+    const found = await assess(input.agentId, chosen, requestId, chosenRoute, preparedBrief), agent = found.agent, spec = found.pinned?.spec ?? null;
     const nonce = found.pinned ? randomBytes(32).toString("hex") : null;
     const view: TakeoverReview = {
       reviewId, revision, agentId: input.agentId, checkedAt: new Date().toISOString(), state: found.state, message: found.message,
@@ -1134,8 +1152,37 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       digest: null,
     };
     if (nonce) view.digest = seal(nonce, view, found.pinned);
-    await writeDurable(file("takeover", reviewId), { review: view, requestId, chosen, chosenRoute, pinned: found.pinned, nonce });
+    await writeDurable(file("takeover", reviewId), { review: view, requestId, chosen, chosenRoute, ...(preparedBrief ? { preparedBrief } : {}), pinned: found.pinned, nonce });
     return view;
+  }
+
+  async function preparedProblem(record: TakeoverRecord): Promise<string | null> {
+    const prepared = (record.pinned as Pinned).prepared;
+    if (!prepared) return null;
+    try {
+      const source = await exact(record.review.agentId);
+      if (!source) return "Exact prepared source is unreadable";
+      const brief = await readPreparedTakeoverBrief(prepared.ref, source.id, source.cwd, prepared.brief.originalTitle, parent(source));
+      if (!isDeepStrictEqual(brief, prepared.brief)) return "Prepared brief changed";
+      const accounting = await readPreparedBackground(deps.background, { sourceId: source.id, sourceRevision: lifecycleRevision(source), requestId: record.requestId });
+      if (accounting.revision !== prepared.backgroundRevision) return "Provider-native background accounting changed";
+      return null;
+    } catch (error) { return errorText(error); }
+  }
+
+  async function markPreparedPredecessor(record: TakeoverRecord): Promise<void> {
+    const prepared = (record.pinned as Pinned).prepared;
+    if (!prepared) return;
+    const path = file("takeover-rename", record.review.reviewId),
+      title = `STALE • ${prepared.brief.originalTitle.replace(/^(?:STALE • )+/, "")}`;
+    // One persisted attempt; an unknown metadata reply never causes a repeated update on restart.
+    try { await readFile(path); return; } catch (error) { if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error; }
+    await writeDurable(path, { sourceId: record.review.agentId, title, state: "rename_pending" });
+    const before = await exact(record.review.agentId);
+    if (!before || predecessorConflict(before)) return;
+    if (before.title !== title && deps.publicCli?.rename) await deps.publicCli.rename(before.id, title).catch(() => null);
+    const after = await exact(record.review.agentId);
+    if (after?.title === title && !predecessorConflict(after)) await writeDurable(path, { sourceId: after.id, title, state: "renamed" });
   }
 
   /** Null once an exact read shows the predecessor retired. An already archived source is history only: never revived. */
@@ -1203,31 +1250,64 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       persona: successor.agent.labels?.persona ?? "" }, promotion.record.epic);
     return transfer ? outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${transfer} Its task was not released.`, named, "none") : null;
   }
-  /** True when this exact operation's continuation prompt is visible on the successor's timeline. */
-  async function observedRelease(id: string, wanted: string): Promise<boolean> {
+  const preparedAcknowledgement = (record: TakeoverRecord, id: string, sessionId: string) => ({
+    reviewId: record.review.reviewId, sourceId: record.review.agentId, successorId: id,
+    briefSha256: (record.pinned as Pinned).prepared!.ref.sha256, providerSessionId: sessionId, continued: true,
+  });
+  /** Prepared requests require a correlated provider/turn response; ordinary UI keeps its existing delivery proof. */
+  async function observedRelease(record: TakeoverRecord, id: string, wanted: string): Promise<boolean> {
     const page = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: 50 }).catch(() => null);
-    return !!page && !("error" in page && page.error) && page.entries.some(({ item }) => item.type === "user_message" && (item.messageId === wanted || item.clientMessageId === wanted));
+    if (!page || ("error" in page && page.error)) return false;
+    const prompt = page.entries.find(({ item }) => item.type === "user_message" && (item.messageId === wanted || item.clientMessageId === wanted));
+    if (!(record.pinned as Pinned).prepared) return !!prompt;
+    const current = await exact(id), pinned = record.pinned as Pinned;
+    if (!current || !current.persistence?.sessionId || !prompt?.turnId || prompt.provider !== pinned.spec.provider
+      || page.agent?.id !== id || page.agent.persistence?.sessionId !== current.persistence.sessionId) return false;
+    const binding = await readDurable(file("takeover-continuation", record.review.reviewId), z.object({
+      sourceId: z.string(), successorId: z.string(), provider: z.string(), sessionId: z.string(), messageId: z.string(),
+    }).strict()).catch(() => null);
+    if (!binding || binding.sourceId !== record.review.agentId || binding.successorId !== id || binding.provider !== pinned.spec.provider
+      || binding.sessionId !== current.persistence.sessionId || binding.messageId !== wanted) return false;
+    const ack = preparedAcknowledgement(record, id, binding.sessionId);
+    return page.entries.some(entry => {
+      if (entry.item.type !== "assistant_message" || entry.turnId !== prompt.turnId || entry.provider !== prompt.provider) return false;
+      try { return isDeepStrictEqual(JSON.parse(entry.item.text), ack); } catch { return false; }
+    });
   }
   /**
    * Delivers this operation's one continuation with its stable message ID. A visible message is never sent again; an
-   * absent one is sent once and then observed. Check may call this after a lost create or release reply, but it never
-   * creates or archives anything. The release intent is durable before the send.
+   * absent one is sent once and then observed. Check after a lost create may perform the first dispatch, but
+   * Check of a persisted release intent only reads: missing history is not proof of no effect.
    */
-  async function deliver(record: TakeoverRecord, spec: SeatCreateSpec, id: string, observeAfterError = true): Promise<TakeoverOutcome> {
+  async function deliver(record: TakeoverRecord, spec: SeatCreateSpec, id: string, observeAfterError = true, allowSend = true): Promise<TakeoverOutcome> {
     const wanted = releaseMessage(record.review.reviewId), named = { requestId: spec.requestId, agentId: id, title: spec.title };
-    if (await observedRelease(id, wanted)) return succeeded(record, spec, id);
+    if (await observedRelease(record, id, wanted)) return succeeded(record, spec, id);
     // Shared delivery boundary: the exact predecessor must still be retired immediately before the initial send, and
-    // before any Check-driven retry. A revived or running source retains the created successor but receives no task.
+    // before reconciliation of an uncertain dispatch. A revived or running source retains the created successor but receives no task.
     const conflict = predecessorConflict(await exact(record.review.agentId));
     if (conflict) return outcome(record, "partial", "release", `${conflict} Successor ${id} is retained, but its task was not released and no other successor is created.`, named, "none");
-    const sent = await client.agents.ref(id).send(TAKEOVER_PROMPT, { messageId: wanted }).then(() => null, (error: unknown) => error ?? "rejected");
-    if (sent && !observeAfterError) return outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; nothing else is created and the same message ID is used if it must be sent.`, named, "check");
+    if (!allowSend) return outcome(record, "uncertain", "release",
+      `Successor “${spec.title}” (${id}) is retained. A task-release intent exists but its correlated delivery is not visible. Check only reads; no continuation is resent. Reconcile this operation before any further dispatch.`, named, "check");
+    const preparedGap = await preparedProblem(record);
+    if (preparedGap) return outcome(record, "partial", "verify", preparedGap, named, "none");
+    const prepared = (record.pinned as Pinned).prepared;
+    let sessionId = "";
+    if (prepared) {
+      const native = await exact(id); sessionId = native?.persistence?.sessionId ?? "";
+      if (!native || native.provider !== spec.provider || !sessionId) return outcome(record, "partial", "verify", "Successor provider session identity is unreported; no task was sent.", named, "none");
+      await writeDurable(file("takeover-continuation", record.review.reviewId), {
+        sourceId: record.review.agentId, successorId: id, provider: native.provider, sessionId, messageId: wanted,
+      });
+    }
+    const prompt = prepared ? `${TAKEOVER_PROMPT}\nRead the pinned prepared brief and its authority/history in bootstrap. Continue only its authorized next action after verifying the checkout. Preserve findings and retry counters. If context or authority is missing, wait. After actual continuation, reply ONLY ${JSON.stringify(preparedAcknowledgement(record, id, sessionId))}. This acknowledges continuation, not task completion.` : TAKEOVER_PROMPT;
+    const sent = await client.agents.ref(id).send(prompt, { messageId: wanted }).then(() => null, (error: unknown) => error ?? "rejected");
+    if (sent && !observeAfterError) return outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; no continuation is resent and nothing else is created.`, named, "check");
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await new Promise((wake) => setTimeout(wake, deps.settleMs ?? 250));
-      if (await observedRelease(id, wanted)) return succeeded(record, spec, id);
+      if (await observedRelease(record, id, wanted)) return succeeded(record, spec, id);
     }
     return outcome(record, "uncertain", "release", sent
-      ? `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; nothing else is created and the same message ID is used if it must be sent.`
+      ? `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; no continuation is resent and nothing else is created.`
       : `Successor “${spec.title}” (${id}) is verified and its task prompt was accepted, but no delivery is observed on its timeline yet. Queued delivery is not continuation. Check reads it; nothing else is created.`, named, "check");
   }
   async function succeeded(record: TakeoverRecord, spec: SeatCreateSpec, id: string): Promise<TakeoverOutcome> {
@@ -1239,7 +1319,12 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     // An Auto successor's chain is recorded for its exact ID; an explicit choice is this operation only.
     if ((record.pinned as Pinned).selection === "auto")
       await writeDurable(associationPath(id), { agentId: id, bindingKey: (record.pinned as Pinned).bindingKey, reviewId: record.review.reviewId }).catch(() => {});
-    return outcome(record, "succeeded", "done", `Taken over by “${spec.title}” (${id}) on ${spec.provider}/${spec.model}.`, named, "none");
+    let naming = "";
+    if ((record.pinned as Pinned).prepared) {
+      const rename = await readDurable(file("takeover-rename", record.review.reviewId), z.object({ sourceId: z.string(), title: z.string(), state: z.enum(["rename_pending", "renamed"]) }));
+      if (rename?.state !== "renamed") naming = " Predecessor display rename_pending; verified retirement is unchanged.";
+    }
+    return outcome(record, "succeeded", "done", `Taken over by “${spec.title}” (${id}) on ${spec.provider}/${spec.model}.${naming}`, named, "none");
   }
 
   /** Stable source, children, owner, route and request match across a stop; summary and continuity are deliberately refreshed. */
@@ -1276,7 +1361,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       "The stopped source's title, checkout, workspace or owner changed. Nothing was archived or created; review again.", named, "review");
     const priorRoute = explicitTakeoverRouteSchema.safeParse(record.chosenRoute ?? null);
     let now: Assessment;
-    try { now = await assess(agentId, record.chosen, record.requestId, priorRoute.success ? priorRoute.data : null); }
+    try { now = await assess(agentId, record.chosen, record.requestId, priorRoute.success ? priorRoute.data : null, record.preparedBrief); }
     catch (error) { return outcome(record, "uncertain", "stop", `The stopped source's final review failed: ${errorText(error)}. Nothing was archived or created; Check reads it again.`, named, "check"); }
     if (!now.pinned) return outcome(record, now.state === "unknown" ? "uncertain" : "refused", "stop",
       `${now.message} Nothing was archived or created.`, named, now.state === "unknown" ? "check" : "review");
@@ -1331,7 +1416,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     const named = { requestId: spec.requestId, agentId: null, title: spec.title };
     try {
       const priorRoute = explicitTakeoverRouteSchema.safeParse(record.chosenRoute ?? null);
-      const now = await assess(agentId, record.chosen, record.requestId, priorRoute.success ? priorRoute.data : null);
+      const now = await assess(agentId, record.chosen, record.requestId, priorRoute.success ? priorRoute.data : null, record.preparedBrief);
       const sameContext = now.pinned && now.pinned.running === pinned.running
         && (pinned.running
           ? stoppedSourceMatches(pinned, now.pinned)
@@ -1352,6 +1437,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       const placement = await expectedPlacementProblem(client, spec);
       if (placement) return finish(outcome(record, "refused", "preflight", placement, null, "review"));
       // No await between this freshness check and archive dispatch: preflight and intent persistence consume time.
+      const preparedGap = await preparedProblem(record);
+      if (preparedGap) return finish(outcome(record, "refused", "preflight", preparedGap, null, "review"));
       const expired = effectValidityProblem(spec);
       if (expired) return finish(outcome(record, "refused", "preflight", expired, null, "review"));
     } catch (error) { return finish(outcome(record, "refused", "preflight", `Preflight failed: ${errorText(error)}. Nothing was done.`, null, "review")); }
@@ -1389,6 +1476,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       if (!beforeArchive) return finish(outcome(record, "refused", "archive", "The source could not be read immediately before archive. Nothing was archived or created; review again.", null, "review"));
       const archiveSettings = sourceSettingsDrift(pinned.sourceSettings, beforeArchive);
       if (archiveSettings) return finish(outcome(record, "refused", "archive", `${archiveSettings} Nothing was archived or created; review again.`, null, "review"));
+      const preparedRetirementGap = await preparedProblem(record);
+      if (preparedRetirementGap) return finish(outcome(record, "refused", "preflight", preparedRetirementGap, named, "review"));
       phase = "archive";
       if (pinned.retiredSource) {
         if (!await write(outcome(record, "uncertain", "archive", "The source is already archived. Its history is used without reviving or prompting its runtime; creation follows if nothing interrupts.", named, "check")))
@@ -1403,8 +1492,9 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       phase = "create";
       const revived = predecessorConflict(await exact(agentId));
       if (revived) return finish(outcome(record, "partial", "archive", `${revived} The successor was not created and no continuation was sent.`, null, "none"));
+      await markPreparedPredecessor(record);
       // Re-check once more inside the creation core, immediately before its durable intent.
-      spec = { ...spec, revalidate: async () => predecessorConflict(await exact(agentId)) };
+      spec = { ...spec, revalidate: async () => predecessorConflict(await exact(agentId)) ?? await preparedProblem(record) };
       if (!await write(outcome(record, "uncertain", "create", "Retired. The successor's creation request is recorded; if nothing follows, Check reads it.", named, "check")))
         return outcome(record, "uncertain", "create", "Retired, but this session's fence changed, so no successor was created. Check reads the outcome.", named, "check");
       const expiredBeforeCreate = effectValidityProblem(spec);
@@ -1502,9 +1592,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         ? outcome(record, "partial", "release", `${revived} The successor is not released and no other successor is created.`, stored.successor, "none")
         : problem
           ? outcome(record, "partial", "release", `The recorded successor is not verified: ${problem}. Its task was not released and no other successor is created.`, stored.successor, "none")
-          : await writeReleaseIntent(id)
-            ? await deliver(record, spec, id)
-            : { ...stored, state: "uncertain", next: "check", checkedAt: new Date().toISOString(), message: "This takeover's fence changed before its release intent. No continuation was sent and no other successor is created. Check reads it again." };
+          : await deliver(record, spec, id, true, false);
     }
     // Saved under this operation's own fence while it still holds the session; a settled result releases it.
     const kept = await whileOwned(lockPath, bytes!, async () => {

@@ -23,4 +23,13 @@ describe("bounded public Paseo CLI stop", () => {
     const cli = createPaseoPublicCli(config, async () => { throw Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }); });
     expect(await cli.stop(SOURCE)).toEqual({ ok: false, unavailable: true, message: "The configured public Paseo CLI /opt/paseo could not be found." });
   });
+  it("updates the exact archived display name through a fixed public argument vector", async () => {
+    const calls: string[][] = [];
+    const cli = createPaseoPublicCli(config, async (_command, args) => { calls.push(args); return "{}"; });
+    expect(await cli.rename!(SOURCE, "STALE • Fixture")).toEqual({ ok: true });
+    expect(calls).toEqual([["agent", "update", SOURCE, "--name", "STALE • Fixture", "--json", "--home", config.paseoHome, "--host", config.paseoHost]]);
+    expect(await cli.rename!("--all", "Fixture")).toMatchObject({ ok: false });
+    expect(calls).toHaveLength(1);
+  });
+
 });

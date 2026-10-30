@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, link, readFile, readdir, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify, isDeepStrictEqual } from "node:util";
+import { takeoverCheckout } from "./takeover-brief";
+import { isDeepStrictEqual } from "node:util";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
@@ -31,7 +31,6 @@ type Ref = ProceduralAdmission["handoff"];
 type Agent = NonNullable<
   Awaited<ReturnType<ReturnType<PaseoApi["agents"]["ref"]>["refresh"]>>
 >["agent"];
-const exec = promisify(execFile);
 export const takeoverHash = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");
 function requireFact(value: unknown, message: string): asserts value {
@@ -99,41 +98,7 @@ async function immutable(path: string, value: unknown): Promise<void> {
     await directory.close();
   }
 }
-export async function takeoverCheckout(path: string): Promise<ProceduralAdmission["checkout"]> {
-  requireFact(isAbsolute(path), "Checkout requires an absolute path");
-  const git = async (...args: string[]) =>
-    (await exec("git", ["--no-optional-locks", "-C", path, ...args], { maxBuffer: 16_000_000 }))
-      .stdout;
-  const branch = (await git("symbolic-ref", "--short", "HEAD")).trim(),
-    head = (await git("rev-parse", "HEAD")).trim();
-  const parts: (string | Buffer)[] = [
-    await git("diff", "--binary", "HEAD", "--"),
-    await git("status", "--porcelain=v1", "-z", "--untracked-files=all"),
-  ];
-  for (const name of (await git("ls-files", "--others", "--exclude-standard", "-z"))
-    .split("\0")
-    .filter(Boolean)
-    .sort()) {
-    const file = await open(join(path, name), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const stat = await file.stat();
-      requireFact(
-        stat.isFile() && stat.size <= 16_000_000,
-        "Untracked checkout entry exceeds its bound or is not a regular file",
-      );
-      parts.push(name, await file.readFile());
-    } finally {
-      await file.close();
-    }
-  }
-  const hash = createHash("sha256");
-  for (const part of parts) {
-    hash.update(String(Buffer.byteLength(part)));
-    hash.update(":");
-    hash.update(part);
-  }
-  return { path, branch, head, wip: hash.digest("hex") };
-}
+export { takeoverCheckout } from "./takeover-brief";
 
 const accountingSchema = z
   .object({

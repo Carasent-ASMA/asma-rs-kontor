@@ -1358,16 +1358,16 @@ describe("universal takeover operation", () => {
     expect(String(h.effects.create[0]!.prompt)).toContain("Keep the parser fix.");
   });
 
-  it("settles a crash before the release send with exactly one delivery and no second successor", async () => {
+  it("keeps a crash after release intent unknown without blind resend or a second successor", async () => {
     const h = await host({ failFirstSend: true });
     const review = await h.ready();
     expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
     expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 0]);
     const checked = await h.service.check(review.reviewId);
-    expect(checked).toMatchObject({ state: "succeeded", successor: { agentId: "successor-1" } });
-    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 1]);
-    expect(await h.service.check(review.reviewId)).toEqual(checked);
-    expect(h.effects.send).toHaveLength(1);
+    expect(checked).toMatchObject({ state: "uncertain", phase: "release", successor: { agentId: "successor-1" } });
+    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 0]);
+    expect(await h.service.check(review.reviewId)).toMatchObject({ state: "uncertain", phase: "release" });
+    expect(h.effects.send).toHaveLength(0);
   });
 
   it.each(["absent", "foreign"] as const)("does not send or create from Check when this operation's fence is %s", async (kind) => {
@@ -1479,6 +1479,11 @@ describe("universal takeover operation", () => {
     const applied = await h.apply(review);
     expect(applied).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
     expect(applied.message).toContain("not continuation");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const restarted = createTakeoverService(h.client as never, h.root, h.deps);
+      expect(await restarted.check(review.reviewId)).toMatchObject({ state: "uncertain", phase: "release" });
+      expect(h.effects.send).toHaveLength(1);
+    }
     h.showRelease();
     expect(await h.service.check(review.reviewId)).toMatchObject({ state: "succeeded", phase: "done" });
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
@@ -2033,4 +2038,122 @@ describe("R11 selected prepared import", () => {
     await expect(f.service.importSelected(await f.ref("admission.json", f.admission), f.source.id)).rejects.toThrow("Promotion");
     expect(f.effects).toEqual([]);
   });
+});
+
+
+// Synthetic public API diagnostics use real brief files/checkouts and the existing single owner.
+describe("R11 prepared procedural owner", () => {
+  async function preparedHost() {
+    const h = await host();
+    const cwd = join(h.root, "prepared-checkout"); await makeDirectory(cwd, { recursive: true });
+    const git = nativePromisify(nativeExecFile);
+    await git("git", ["-C", cwd, "init", "-b", "fixture"]);
+    await git("git", ["-C", cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
+    h.workspace.workspaceDirectory = cwd;
+    const source = h.agents.get("agent-1")!; source.cwd = cwd;
+    const reference = async (name: string, value: unknown) => {
+      const path = join(h.root, name), text = JSON.stringify(value); await writeFile(path, text);
+      return { path, sha256: hash(text) };
+    };
+    const brief = { version: 1, sourceId: source.id, originalTitle: source.title!,
+      mode: { workflow: "free", orchestration: "paseo" }, supervisorId: null,
+      scope: "synthetic parser", criteria: ["preserve the fixture"], authorizedNextAction: "inspect the fixture",
+      findings: ["existing finding"], retryCounters: { review: 2 }, procedureRevision: "fixture-procedure-v1",
+      checkout: await takeoverCheckout(cwd), authority: await reference("authority.json", { allowed: "fixture" }),
+      history: [await reference("history.json", { checkpoint: "fixture" })] };
+    const ref = await reference("brief.json", brief);
+    h.deps.background = async input => ({ complete: true, accounting: { ...input, revision: "provider-workers-1", observedAt: new Date().toISOString(), workers: [] } });
+    const renames: string[] = [];
+    h.deps.publicCli = { stop: async () => ({ ok: true }), rename: async (id, title) => { renames.push(title); h.agents.get(id)!.title = title; return { ok: true }; } };
+    const workspaceRef = h.client.workspaces.ref;
+    h.client.workspaces.ref = id => {
+      const workspace = workspaceRef(id);
+      return { ...workspace, agents: { create: async input => {
+        const created = await workspace.agents.create(input);
+        const successor = h.agents.get(created.id)!;
+        successor.persistence = { provider: successor.provider, sessionId: "fixture-successor-thread" };
+        return created;
+      } } };
+    };
+    const review = () => h.service.review({ agentId: source.id, bindingKey: KEY, preparedBrief: ref });
+    return { ...h, cwd, source, brief, ref, reference, renames, review };
+  }
+  it("requires authoritative background accounting before retirement, with no empty fallback", async () => {
+    const h = await preparedHost(); delete h.deps.background;
+    const review = await h.review();
+    expect(review.state).toBe("refused"); expect(review.message).toContain("background accounting is unavailable");
+    expect([h.effects.archive, h.effects.create, h.effects.send, h.renames]).toEqual([[], [], [], []]);
+  });
+  it.each(["source", "mode", "authority"])("refuses an invalid prepared %s before native effects", async kind => {
+    const h = await preparedHost();
+    if (kind === "source") h.brief.sourceId = "other-source";
+    if (kind === "mode") h.brief.mode.orchestration = "kontor";
+    if (kind === "authority") await writeFile(h.brief.authority.path, "changed authority");
+    Object.assign(h.ref, await h.reference("brief.json", h.brief));
+    expect((await h.review()).state).toBe("refused");
+    expect([h.effects.archive, h.effects.create, h.effects.send]).toEqual([[], [], []]);
+  });
+  it("pins the complete brief in bootstrap and refuses checkout drift before retirement", async () => {
+    const h = await preparedHost(), review = await h.review(); expect(review.state).toBe("ready");
+    await writeFile(join(h.cwd, "unfinished.txt"), "new work");
+    expect((await h.apply(review)).state).toBe("refused");
+    expect([h.effects.archive, h.effects.create, h.effects.send]).toEqual([[], [], []]);
+  });
+  it("rejects changed background accounting between review and apply", async () => {
+    const h = await preparedHost(), review = await h.review(); expect(review.state).toBe("ready");
+    h.deps.background = async () => ({ complete: false, gap: "provider inventory became unavailable" });
+    expect((await h.apply(review)).state).toBe("refused");
+    expect([h.effects.archive, h.effects.create]).toEqual([[], []]);
+  });
+  it("marks only the retired predecessor, preserves the original successor title and holds without response proof", async () => {
+    const h = await preparedHost(), review = await h.review(); expect(review.state).toBe("ready");
+    const result = await h.apply(review);
+    expect(h.renames).toEqual([`STALE • ${h.brief.originalTitle}`]);
+    expect(h.source.archivedAt ?? h.agents.get(h.source.id)!.archivedAt).toBeTruthy();
+    expect(h.effects.create).toHaveLength(1);
+    expect(h.effects.create[0]?.title).toBe(h.brief.originalTitle);
+    expect(h.effects.create[0]?.labels).toMatchObject({ "title.auto": h.brief.originalTitle });
+    expect(h.effects.create[0]?.prompt).toContain('"retryCounters":{"review":2}');
+    expect(result).toMatchObject({ state: "uncertain", phase: "release" });
+    await createTakeoverService(h.client as never, h.root, h.deps).check(review.reviewId);
+    expect(h.effects.send).toHaveLength(1);
+  });
+  it("settles only an exact same-provider/turn continuation response, preserving children and replay", async () => {
+    const h = await preparedHost();
+    h.agents.set("child-1", agent("child-1", { cwd: h.cwd, title: "Child task", status: "running", labels: { "paseo.parent-agent-id": h.source.id } }));
+    const review = await h.review(); expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review); expect(applied.state, applied.message).toBe("uncertain");
+    expect(h.effects.detach).toEqual(["child-1"]);
+    expect(h.agents.get("child-1")!.archivedAt).toBeNull();
+    expect(h.agents.get("child-1")!.status).toBe("running");
+    const id = applied.successor!.agentId!, successor = h.agents.get(id)!;
+    successor.persistence = { provider: successor.provider, sessionId: "fixture-successor-thread" };
+    const entries = h.timelines.get(id)!;
+    const prompt = entries.find(entry => entry.item.messageId === `kontor-takeover-${review.reviewId}`)!;
+    Object.assign(prompt, { provider: successor.provider, turnId: "fixture-turn" });
+    const response = Object.assign({ item: { type: "assistant_message", text: JSON.stringify({ reviewId: review.reviewId, sourceId: h.source.id, successorId: id, briefSha256: h.ref.sha256, providerSessionId: "fixture-successor-thread", continued: true }) } }, { provider: successor.provider, turnId: "wrong-turn" });
+    entries.push(response);
+    const ref = h.client.agents.ref;
+    h.client.agents.ref = agentId => { const handle = ref(agentId); return { ...handle, timeline: { refetch: async () => ({ entries: h.timelines.get(agentId) ?? [], agent: h.agents.get(agentId) }) } }; };
+    expect((await h.service.check(review.reviewId)).state).toBe("uncertain");
+    response.turnId = "fixture-turn"; response.provider = "other-provider";
+    expect((await h.service.check(review.reviewId)).state).toBe("uncertain");
+    response.provider = successor.provider;
+    successor.persistence = { provider: successor.provider, sessionId: "replacement-thread" };
+    expect((await h.service.check(review.reviewId)).state).toBe("uncertain");
+    successor.persistence = { provider: successor.provider, sessionId: "fixture-successor-thread" };
+    const result = await createTakeoverService(h.client as never, h.root, h.deps).check(review.reviewId);
+    expect(result.state).toBe("succeeded");
+    expect(await h.service.check(review.reviewId)).toEqual(result);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+  it("records rename_pending when archived retitle is unavailable without treating it as retirement proof", async () => {
+    const h = await preparedHost(); delete h.deps.publicCli;
+    const review = await h.review(); expect(review.state).toBe("ready");
+    const result = await h.apply(review); expect(result.state).toBe("uncertain");
+    const naming = JSON.parse(await readFile(join(h.root, `takeover-rename-${review.reviewId}.json`), "utf8"));
+    expect(naming.state).toBe("rename_pending"); expect(h.effects.archive).toEqual([h.source.id]);
+    expect(h.renames).toEqual([]);
+  });
+
 });

@@ -6,6 +6,8 @@ export type PaseoStopResult = { ok: true } | { ok: false; unavailable: boolean; 
 export type PaseoPublicCli = {
   /** Stops one exact agent ID; never a prefix, path or caller-supplied argv. */
   stop(agentId: string): Promise<PaseoStopResult>;
+  /** Archived display metadata only; retirement must already be verified. */
+  rename?(agentId: string, title: string): Promise<PaseoStopResult>;
 };
 
 const STOP_BUDGET_MS = 15_000;
@@ -39,6 +41,14 @@ export function createPaseoPublicCli(
   run: Run = runPublicCli,
 ): PaseoPublicCli {
   return {
+    async rename(agentId, title) {
+      const id = exactId(agentId);
+      if (!id || !title.trim() || title.length > 2000 || /[\r\n\0]/.test(title)) return { ok: false, unavailable: false, message: "Invalid exact rename target/title; nothing was sent." };
+      try {
+        await run(config.paseoCommand, ["agent", "update", id, "--name", title, "--json", ...daemonArgs(config)]);
+        return { ok: true };
+      } catch { return { ok: false, unavailable: false, message: "Archived title update is unconfirmed; rename_pending." }; }
+    },
     async stop(agentId) {
       const id = exactId(agentId);
       if (!id) return { ok: false, unavailable: false, message: "The source ID is not a single exact agent ID, so the public CLI was not run." };
