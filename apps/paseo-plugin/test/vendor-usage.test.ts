@@ -78,18 +78,18 @@ describe("native provider routes and alias homes", () => {
     expect(read).toHaveBeenCalledExactlyOnceWith({ base, source: expect.any(String) }, base === "claude" ? CLAUDE : OPENCODE, expect.any(Object));
   });
   it("uses a verified Codex alias's own CODEX_HOME and never exposes other config content", async () => {
-    const native = aliasAgent("a", "codex-work", "codex"), read = readStub();
-    const result = await createVendorUsageService({ read })(aliasHost(vi.fn(async () => found(native)), [native.provider], { CODEX_HOME: "/tmp/fixture-codex-work" }), ["a"]);
+    const native = aliasAgent("a", "codex-alt", "codex"), read = readStub();
+    const result = await createVendorUsageService({ read })(aliasHost(vi.fn(async () => found(native)), [native.provider], { CODEX_HOME: "/tmp/fixture-codex-alt" }), ["a"]);
     expect(result).toEqual({ a: value });
-    expect(read).toHaveBeenCalledWith({ base: "codex", source: "/tmp/fixture-codex-work" }, THREAD, expect.any(Object));
+    expect(read).toHaveBeenCalledWith({ base: "codex", source: "/tmp/fixture-codex-alt" }, THREAD, expect.any(Object));
     expect(JSON.stringify(result)).not.toContain("PRIVATE_PROVIDER_CONFIG");
   });
   it("uses a verified Claude alias's own CLAUDE_CONFIG_DIR projects root", async () => {
-    const native = aliasAgent("a", "claude-work", "claude"), read = readStub();
-    const metadata = aliasMetadata([native.provider], { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-work" });
-    metadata.config.get.mockResolvedValue({ config: { providers: { [native.provider]: { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-work" }, secret: "PRIVATE_PROVIDER_CONFIG" } } } });
+    const native = aliasAgent("a", "claude-alt", "claude"), read = readStub();
+    const metadata = aliasMetadata([native.provider], { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-alt" });
+    metadata.config.get.mockResolvedValue({ config: { providers: { [native.provider]: { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-alt" }, secret: "PRIVATE_PROVIDER_CONFIG" } } } });
     expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toEqual({ a: value });
-    expect(read).toHaveBeenCalledWith({ base: "claude", source: "/tmp/fixture-claude-work/projects" }, CLAUDE, expect.any(Object));
+    expect(read).toHaveBeenCalledWith({ base: "claude", source: "/tmp/fixture-claude-alt/projects" }, CLAUDE, expect.any(Object));
   });
   it("dispatches two Codex, Claude and OpenCode alias homes through separate readers", async () => {
     const fs = await import("node:fs/promises"), { join } = await import("node:path"), { tmpdir } = await import("node:os"), { DatabaseSync } = await import("node:sqlite");
@@ -144,15 +144,15 @@ describe("native provider routes and alias homes", () => {
     expect(read).toHaveBeenCalledWith({ base: "opencode", source: "/tmp/fixture-opencode-data/opencode/opencode.db" }, OPENCODE, expect.any(Object));
   });
   it("rejects an alias home change after the read instead of attaching the old source", async () => {
-    const native = aliasAgent("a", "codex-work", "codex"), read = readStub();
-    const metadata = aliasMetadata([native.provider], { CODEX_HOME: "/tmp/fixture-codex-work-a" });
-    metadata.config.get.mockResolvedValueOnce({ config: { providers: { [native.provider]: { extends: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-work-a" } } } } })
-      .mockResolvedValueOnce({ config: { providers: { [native.provider]: { extends: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-work-b" } } } } });
+    const native = aliasAgent("a", "codex-alt", "codex"), read = readStub();
+    const metadata = aliasMetadata([native.provider], { CODEX_HOME: "/tmp/fixture-codex-alt-a" });
+    metadata.config.get.mockResolvedValueOnce({ config: { providers: { [native.provider]: { extends: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-alt-a" } } } } })
+      .mockResolvedValueOnce({ config: { providers: { [native.provider]: { extends: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-alt-b" } } } } });
     expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toMatchObject({ a: { input: null, source: expect.stringContaining("changed") } });
     expect(read).toHaveBeenCalledTimes(1);
   });
   it("rejects an alias whose configured home is not an absolute path", async () => {
-    const native = aliasAgent("a", "codex-work", "codex"), read = readStub();
+    const native = aliasAgent("a", "codex-alt", "codex"), read = readStub();
     const metadata = aliasMetadata([native.provider], { CODEX_HOME: "relative/home" });
     metadata.config.get.mockResolvedValue({ config: { providers: { [native.provider]: { extends: "codex", env: { CODEX_HOME: "relative/home" } } } } });
     expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toMatchObject({ a: { input: null, output: null } });
