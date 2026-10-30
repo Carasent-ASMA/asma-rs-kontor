@@ -17,14 +17,16 @@ const recordedStateSchema = z.object({ input: number, output: number, total: num
 const stateSchema = z.object({ version: z.literal(4), threadId: uuid, file: z.string(), inode: z.string(), size: number, modified: z.number().nonnegative(), offset: number,
   meta: z.boolean(), forked: z.boolean(), recorded: recordedStateSchema, problem: z.enum(["identity mismatch", "unqualified format version", "fork or inherited scope is unqualified", "invalid identity metadata", "invalid cumulative counters", "inconsistent cumulative counters", "cumulative counter reset", "malformed usage record", "record exceeds the source bound"]).nullable(), counts: countsSchema.nullable(), baseline: countsSchema.nullable(), at: z.string().nullable() }).strict();
 type State = z.infer<typeof stateSchema>;
-export type CodexUsageRead = { input: number | null; output: number | null; source: string; scope: "provider-cumulative"; recordedChildUsage?: RecordedChildUsage };
+export type VendorUsageRead = { input: number | null; output: number | null; source: string; scope: "provider-cumulative"; recordedChildUsage?: RecordedChildUsage };
+export type CodexUsageRead = VendorUsageRead;
 export const FORK_CUMULATIVE_UNQUALIFIED = "fork or inherited scope is unqualified: no qualified inherited-counter contract; history pointers are not token baselines, and logical fork and physical history boundaries can differ after revert";
 export const CODEX_USAGE_LIMITS = [
-  "Codex 0.160.0 local provider cumulative snapshots and separately labeled recorded child responses, joined by exact native thread ID in this host's configured/default Codex store.",
-  "Historical completeness and child-thread inclusion are unverified. Forked/inherited, reset, ambiguous, unsupported and incomplete sources remain unavailable; snapshots are never summed.",
+  "Codex 0.160.0 local provider cumulative snapshots and separately labeled recorded child responses, joined by exact native thread ID in this host's configured/default Codex store; a verified Codex alias reads its own CODEX_HOME.",
+  "OpenCode session counters are read read-only from the exact native session row; only the exact native session row is read, so child/subagent sessions (parent_id) are excluded; input includes cache read/write and output includes reasoning. Claude Code assistant-message usage is summed from one exact native JSONL, grouped by message ID with the last record winning; sidechains and subagents are excluded.",
+  "Historical completeness and child-thread inclusion are unverified. Forked/inherited, reset, ambiguous, unsupported and incomplete sources remain unavailable; Codex snapshots are never summed.",
   "Fork cumulative values remain unknown: history byte/ordinal references do not establish inherited-counter scope. A recovered numeric parent snapshot or child response sum is not a qualified lifetime total.",
   "Recorded child response usage excludes parent history; completeness and billing unverified. At most 10,000 unique response records per source; larger indexes stay unavailable.",
-  "Claude, OpenCode, Copilot, Pi, OMP and other non-Codex native providers have no qualified session-usage importer here. Account quota reports and latest-turn telemetry are not session totals.",
+  "Copilot, Pi, OMP and other native providers have no qualified session-usage importer here. Account quota reports and latest-turn telemetry are not session totals.",
   "Other provider routes and provider homes without a qualified exact source remain unknown. No provider session is started or resumed.",
 ];
 const unknown = (reason: string): CodexUsageRead => ({ input: null, output: null, source: `Codex cumulative usage unavailable: ${reason}. Historical/complete totals unavailable.`, scope: "provider-cumulative" });
