@@ -20,8 +20,8 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
 
 /** Only the supported public node connector; never a plugin-private object, credential store or arbitrary RPC proxy. */
 const loadPublicHostConnector: LoadHostConnector = async () => {
-  // A variable specifier keeps the plugin's 0.11.4 type graph from inventing the 0.13.2 subpath. If the installed
-  // host runtime does not provide it, the reader returns the exact version/connector gap rather than a false clear.
+  // A variable specifier keeps the connector optional: if the installed host runtime does not provide the node
+  // subpath, the reader returns the exact version/connector gap rather than a false clear.
   const specifier = "@getpaseo/client/node";
   try {
     const module = await import(specifier) as { createHostClient?: unknown };
@@ -56,7 +56,7 @@ export function createCompleteScheduleReader(
   return async () => {
     if (!config.paseoHost?.trim()) return { complete: false, gap: "No server-selected paired host is configured for a complete schedule inventory." };
     const connector = await load();
-    if (!connector) return { complete: false, gap: "The installed @getpaseo/client/node does not export createHostClient. Complete schedule inventory requires the public node connector (0.13.2 or later); the plugin's pinned 0.11.4 client has no public node entry point." };
+    if (!connector) return { complete: false, gap: "The installed @getpaseo/client/node does not export createHostClient. Complete schedule inventory requires the public node connector (0.13.2 or later); the installed host runtime does not provide its public node entry point." };
     let client: HostClient | null = null;
     try {
       client = connector.createHostClient(config.paseoHost, { clientId: "kontor-paseo-plugin", connectTimeoutMs: 10_000 });

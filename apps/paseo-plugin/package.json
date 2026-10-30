@@ -10,9 +10,9 @@
     "test:closure": "node scripts/closure.mjs"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.11.4",
-    "@getpaseo/plugin": "0.11.4",
-    "@getpaseo/protocol": "0.11.4",
+    "@getpaseo/client": "0.13.2",
+    "@getpaseo/plugin": "0.13.2",
+    "@getpaseo/protocol": "0.13.2",
     "@tanstack/react-query": "5.104.4",
     "@types/node": "24.19.2",
     "@types/react": "~19.2.0",

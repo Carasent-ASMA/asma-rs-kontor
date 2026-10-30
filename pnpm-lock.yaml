@@ -49,7 +49,7 @@ importers:
         version: 6.0.5(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
       jsdom:
         specifier: 30.0.1
-        version: 30.0.1
+        version: 30.0.1(@noble/hashes@2.4.0)
       openapi-typescript:
         specifier: 7.13.0
         version: 7.13.0(typescript@5.9.3)
@@ -61,7 +61,7 @@ importers:
         version: 8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(jsdom@30.0.1)(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 4.1.12(@types/node@24.19.2)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
 
   apps/desktop:
     devDependencies:
@@ -100,7 +100,7 @@ importers:
         version: 8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(jsdom@30.0.1)(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 4.1.12(@types/node@24.19.2)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
       zod:
         specifier: 4.6.6
         version: 4.6.6
@@ -108,14 +108,14 @@ importers:
   apps/paseo-plugin:
     devDependencies:
       '@getpaseo/client':
-        specifier: 0.11.4
-        version: 0.11.4
+        specifier: 0.13.2
+        version: 0.13.2
       '@getpaseo/plugin':
-        specifier: 0.11.4
-        version: 0.11.4(@getpaseo/client@0.11.4)(@getpaseo/protocol@0.11.4)(react-native@0.81.5(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.1.0)(supports-color@10.2.2))(react@19.1.0)(zod@4.6.6)
+        specifier: 0.13.2
+        version: 0.13.2(@getpaseo/client@0.13.2)(@getpaseo/protocol@0.13.2)(react-native@0.81.5(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.1.0)(supports-color@10.2.2))(react@19.1.0)(typescript@5.9.3)(zod@4.6.6)
       '@getpaseo/protocol':
-        specifier: 0.11.4
-        version: 0.11.4
+        specifier: 0.13.2
+        version: 0.13.2
       '@tanstack/react-query':
         specifier: 5.104.4
         version: 5.104.4(@types/react@19.2.18)(react@19.1.0)
@@ -136,7 +136,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(jsdom@30.0.1)(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
+        version: 4.1.12(@types/node@24.19.2)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
       yaml:
         specifier: 2.9.1
         version: 2.9.1
@@ -365,26 +365,26 @@ packages:
       '@noble/hashes':
         optional: true
 
-  '@getpaseo/client@0.11.4':
-    resolution: {integrity: sha512-OaStIZXGO6zCsXzqgcf772c1z/gP22v3UyT9nRt+WbshmRDlJTERUxnJYnzYsJ/0vfKivCfUOTcP9YHBnqIUEw==}
+  '@getpaseo/client@0.13.2':
+    resolution: {integrity: sha512-veD6nsHt9U1TLj9pHR6U6Y9rVkXQHlWUap75fPtrP96LBbzw3McOzo/wpR990OeKrzHz44EMgaXJWFoCqmikYw==}
 
-  '@getpaseo/plugin@0.11.4':
-    resolution: {integrity: sha512-V3cs31ACgCTelZt3UHlLAFKdEDSv7yF3PyVpd7mbQ+zNx77ioWHC5qwWFqPVfJ4fsGlfApBozezjmoTvl3EPxA==}
+  '@getpaseo/plugin@0.13.2':
+    resolution: {integrity: sha512-vQEP1JHNzmRc58x2nAF9qkRuPbYRE3lFRuqGl30DeH6NyBLWlmNLROLUH6979mPwMmEZ5O0F78sPL2I/SW5yxQ==}
     peerDependencies:
-      '@getpaseo/client': 0.11.4
-      '@getpaseo/protocol': 0.11.4
-      react: ~19.1.0
+      '@getpaseo/client': 0.13.2
+      '@getpaseo/protocol': 0.13.2
+      react: '>=19.1.0 <20'
       react-native: '>=0.81.5'
       zod: 4.6.6
     peerDependenciesMeta:
       react-native:
         optional: true
 
-  '@getpaseo/protocol@0.11.4':
-    resolution: {integrity: sha512-P0Gl+CoIBCbK6aULG2FjgNPRPvPhnWnmsX3UsFwqSxEB+NWZsRDJaKqG3PjDbZ3RZtdRBGeXPYDVnL8wBLKX7w==}
+  '@getpaseo/protocol@0.13.2':
+    resolution: {integrity: sha512-ijgcSPqq1m7POmzt40aZhgJpadD2DUeZfWGmWSe73mO3ZTPnCSqxxeGwpb6cxK8Ux5MfvTdXkUX0T5M1mwA8Ig==}
 
-  '@getpaseo/relay@0.11.4':
-    resolution: {integrity: sha512-KeEUCZvQdb4yjNJanm4C28R20n7fV/gijk+Q5NZlv7V4zKQAQrG9knAkTmhk9T9VjhUMooFj7MwS5cADhZhUOw==}
+  '@getpaseo/relay@0.13.2':
+    resolution: {integrity: sha512-U5uool26S2fl2+b3t5aBFVN4DwawNIOUv1xW0y524MG9N/1kibSjrEiY9P3E/w2n4TX3hoBccilbyPjslBtHPQ==}
 
   '@isaacs/ttlcache@1.4.1':
     resolution: {integrity: sha512-RQgQ4uQ+pLbqXfOmieB91ejmLwvSgv9nLx6sT6sD83s7umBypgg+OIBOBbEUiJXrfpnp9j0mRhYYdzp9uqq3lA==}
@@ -440,6 +440,18 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@noble/ciphers@2.4.0':
+    resolution: {integrity: sha512-AnjFn0Jv92laAkvMrghlFZq4qQCIN/4DxFV/eooqtC2YTjB7kBeLMS2T9KJX4Dn+ZVXLOwK0lSgqDtx9gvxtiw==}
+    engines: {node: '>= 20.19.0'}
+
+  '@noble/curves@2.4.0':
+    resolution: {integrity: sha512-P4/62zrgfH33CneE3Dn4WhJVA22YUU0eR51wKIan4NVRvwsA0YnPTwWGpNbpuacSujmSFLvyzpyuR30+fbq2Ew==}
+    engines: {node: '>= 20.19.0'}
+
+  '@noble/hashes@2.4.0':
+    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
+    engines: {node: '>= 20.19.0'}
 
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
@@ -1269,6 +1281,14 @@ packages:
 
   hyphenate-style-name@1.1.0:
     resolution: {integrity: sha512-WDC/ui2VVRrz3jOVi+XtjqkDjiVjTtFaAGiW37k6b+ohyQ5wYDOGkvCZa8+H0nx3gyvv0+BST9xuOgIyGQ00gw==}
+
+  i18next@26.5.11:
+    resolution: {integrity: sha512-Wc0klBPKxqZ2tL2qdAnF8xvvnWgr1IMGSY2ikTiAvaFVbz7xiFARtkoU4RidBDw1SyziGROp0qxu6qnJ7l2Wug==}
+    peerDependencies:
+      typescript: ^5 || ^6 || ^7
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   imurmurhash@0.1.4:
     resolution: {integrity: sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==}
@@ -2529,35 +2549,44 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
-  '@exodus/bytes@1.15.1': {}
+  '@exodus/bytes@1.15.1(@noble/hashes@2.4.0)':
+    optionalDependencies:
+      '@noble/hashes': 2.4.0
 
-  '@getpaseo/client@0.11.4':
+  '@getpaseo/client@0.13.2':
     dependencies:
-      '@getpaseo/protocol': 0.11.4
-      '@getpaseo/relay': 0.11.4
+      '@getpaseo/protocol': 0.13.2
+      '@getpaseo/relay': 0.13.2
+      ws: 8.22.0
       zod: 4.6.6
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@getpaseo/plugin@0.11.4(@getpaseo/client@0.11.4)(@getpaseo/protocol@0.11.4)(react-native@0.81.5(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.1.0)(supports-color@10.2.2))(react@19.1.0)(zod@4.6.6)':
+  '@getpaseo/plugin@0.13.2(@getpaseo/client@0.13.2)(@getpaseo/protocol@0.13.2)(react-native@0.81.5(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.1.0)(supports-color@10.2.2))(react@19.1.0)(typescript@5.9.3)(zod@4.6.6)':
     dependencies:
       '@agentclientprotocol/sdk': 1.9.0(zod@4.6.6)
-      '@getpaseo/client': 0.11.4
-      '@getpaseo/protocol': 0.11.4
+      '@getpaseo/client': 0.13.2
+      '@getpaseo/protocol': 0.13.2
+      i18next: 26.5.11(typescript@5.9.3)
       react: 19.1.0
       use-sync-external-store: 1.7.0(react@19.1.0)
       zod: 4.6.6
     optionalDependencies:
       react-native: 0.81.5(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.1.0)(supports-color@10.2.2)
+    transitivePeerDependencies:
+      - typescript
 
-  '@getpaseo/protocol@0.11.4':
+  '@getpaseo/protocol@0.13.2':
     dependencies:
       semver: 7.8.5
       zod: 4.6.6
 
-  '@getpaseo/relay@0.11.4':
+  '@getpaseo/relay@0.13.2':
     dependencies:
+      '@noble/ciphers': 2.4.0
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
       base64-js: 1.5.1
       tweetnacl: 1.0.3
       ws: 8.22.0
@@ -2653,6 +2682,14 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@noble/ciphers@2.4.0': {}
+
+  '@noble/curves@2.4.0':
+    dependencies:
+      '@noble/hashes': 2.4.0
+
+  '@noble/hashes@2.4.0': {}
 
   '@oxc-project/types@0.155.0': {}
 
@@ -3241,10 +3278,10 @@ snapshots:
 
   csstype@3.2.3: {}
 
-  data-urls@7.0.0:
+  data-urls@7.0.0(@noble/hashes@2.4.0):
     dependencies:
       whatwg-mimetype: 5.0.0
-      whatwg-url: 16.0.1
+      whatwg-url: 16.0.1(@noble/hashes@2.4.0)
     transitivePeerDependencies:
       - '@noble/hashes'
 
@@ -3402,9 +3439,9 @@ snapshots:
     dependencies:
       hermes-estree: 0.35.0
 
-  html-encoding-sniffer@6.0.0:
+  html-encoding-sniffer@6.0.0(@noble/hashes@2.4.0):
     dependencies:
-      '@exodus/bytes': 1.15.1
+      '@exodus/bytes': 1.15.1(@noble/hashes@2.4.0)
     transitivePeerDependencies:
       - '@noble/hashes'
 
@@ -3424,6 +3461,10 @@ snapshots:
       - supports-color
 
   hyphenate-style-name@1.1.0: {}
+
+  i18next@26.5.11(typescript@5.9.3):
+    optionalDependencies:
+      typescript: 5.9.3
 
   imurmurhash@0.1.4: {}
 
@@ -3557,17 +3598,17 @@ snapshots:
 
   jsc-safe-url@0.2.4: {}
 
-  jsdom@30.0.1:
+  jsdom@30.0.1(@noble/hashes@2.4.0):
     dependencies:
       '@asamuzakjp/css-color': 6.0.7
       '@asamuzakjp/dom-selector': 8.3.2
       '@bramus/specificity': 2.4.2
       '@csstools/css-syntax-patches-for-csstree': 1.1.7(css-tree@3.2.1)
-      '@exodus/bytes': 1.15.1
+      '@exodus/bytes': 1.15.1(@noble/hashes@2.4.0)
       css-tree: 3.2.1
-      data-urls: 7.0.0
+      data-urls: 7.0.0(@noble/hashes@2.4.0)
       decimal.js: 10.6.0
-      html-encoding-sniffer: 6.0.0
+      html-encoding-sniffer: 6.0.0(@noble/hashes@2.4.0)
       is-potential-custom-element-name: 1.0.1
       lru-cache: 11.5.2
       parse5: 8.0.1
@@ -3578,7 +3619,7 @@ snapshots:
       w3c-xmlserializer: 5.0.0
       webidl-conversions: 8.0.1
       whatwg-mimetype: 5.0.0
-      whatwg-url: 17.1.0
+      whatwg-url: 17.1.0(@noble/hashes@2.4.0)
       xml-name-validator: 5.0.0
     transitivePeerDependencies:
       - '@noble/hashes'
@@ -4357,7 +4398,7 @@ snapshots:
       terser: 5.51.2
       yaml: 2.9.1
 
-  vitest@4.1.12(@types/node@24.19.2)(jsdom@30.0.1)(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1)):
+  vitest@4.1.12(@types/node@24.19.2)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1)):
     dependencies:
       '@vitest/expect': 4.1.12
       '@vitest/mocker': 4.1.12(vite@8.2.4(@types/node@24.19.2)(terser@5.51.2)(yaml@2.9.1))
@@ -4381,7 +4422,7 @@ snapshots:
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 24.19.2
-      jsdom: 30.0.1
+      jsdom: 30.0.1(@noble/hashes@2.4.0)
     transitivePeerDependencies:
       - msw
 
@@ -4403,17 +4444,17 @@ snapshots:
 
   whatwg-mimetype@5.0.0: {}
 
-  whatwg-url@16.0.1:
+  whatwg-url@16.0.1(@noble/hashes@2.4.0):
     dependencies:
-      '@exodus/bytes': 1.15.1
+      '@exodus/bytes': 1.15.1(@noble/hashes@2.4.0)
       tr46: 6.0.0
       webidl-conversions: 8.0.1
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  whatwg-url@17.1.0:
+  whatwg-url@17.1.0(@noble/hashes@2.4.0):
     dependencies:
-      '@exodus/bytes': 1.15.1
+      '@exodus/bytes': 1.15.1(@noble/hashes@2.4.0)
       tr46: 6.0.0
       webidl-conversions: 8.0.1
     transitivePeerDependencies:
