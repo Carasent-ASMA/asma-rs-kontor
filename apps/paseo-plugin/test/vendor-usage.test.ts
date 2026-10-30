@@ -32,11 +32,11 @@ const readStub = () => vi.fn(async (_route: VendorUsageRoute, _native: string, _
 
 describe("vendor-native usage ownership", () => {
   it("accepts only the base or the verified alias token directly in codexThreadIdentity", () => {
-    const alias = (provider: string) => codexThreadIdentity({ provider: "codex-work",
-      persistence: { provider, nativeHandle: THREAD, metadata: { threadId: THREAD } } } as never, true, "codex-work");
-    expect(alias("codex-work")).toBe(THREAD);
+    const alias = (provider: string) => codexThreadIdentity({ provider: "codex-main",
+      persistence: { provider, nativeHandle: THREAD, metadata: { threadId: THREAD } } } as never, true, "codex-main");
+    expect(alias("codex-main")).toBe(THREAD);
     expect(alias("codex")).toBe(THREAD);
-    expect(alias("codex-personal")).toBeNull();
+    expect(alias("codex-spare")).toBeNull();
   });
   it("uses the exact native thread and public read-only refresh, never the tree root/title/model", async () => {
     const refresh = vi.fn(async () => found(agent("a"))), read = readStub(), service = createVendorUsageService({ read });
@@ -89,9 +89,9 @@ describe("vendor-native usage ownership", () => {
 
 describe("native provider routes and alias homes", () => {
   const persistedAliases: { provider: string; base: VendorBase; env: Record<string, string>; nativeHandle: string; source: string }[] = [
-    { provider: "codex-work", base: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-work" }, nativeHandle: THREAD, source: "/tmp/fixture-codex-work" },
-    { provider: "codex-personal", base: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-personal" }, nativeHandle: THREAD, source: "/tmp/fixture-codex-personal" },
-    { provider: "claude-work", base: "claude", env: { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-work" }, nativeHandle: CLAUDE, source: "/tmp/fixture-claude-work/projects" },
+    { provider: "codex-main", base: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-main" }, nativeHandle: THREAD, source: "/tmp/fixture-codex-main" },
+    { provider: "codex-spare", base: "codex", env: { CODEX_HOME: "/tmp/fixture-codex-spare" }, nativeHandle: THREAD, source: "/tmp/fixture-codex-spare" },
+    { provider: "claude-main", base: "claude", env: { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-main" }, nativeHandle: CLAUDE, source: "/tmp/fixture-claude-main/projects" },
     { provider: "opencode-deepseek", base: "opencode", env: { XDG_DATA_HOME: "/tmp/fixture-opencode-data" }, nativeHandle: OPENCODE, source: "/tmp/fixture-opencode-data/opencode/opencode.db" },
     { provider: "opencode-zai", base: "opencode", env: { XDG_DATA_HOME: "/tmp/fixture-opencode-zai" }, nativeHandle: OPENCODE, source: "/tmp/fixture-opencode-zai/opencode/opencode.db" },
   ];
@@ -101,15 +101,15 @@ describe("native provider routes and alias homes", () => {
     expect(read).toHaveBeenCalledWith({ base, source }, nativeHandle, expect.any(Object));
   });
   it("rejects a persisted alias that differs from the verified route provider", async () => {
-    const native = persistedAlias("a", "claude-work", "claude"), read = readStub();
+    const native = persistedAlias("a", "claude-main", "claude"), read = readStub();
     native.persistence.provider = "claude-other";
-    expect(await createVendorUsageService({ read })(aliasRouteHost(vi.fn(async () => found(native)), "claude-work", "claude", { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-work" }), ["a"])).toMatchObject({ a: { input: null, output: null } });
+    expect(await createVendorUsageService({ read })(aliasRouteHost(vi.fn(async () => found(native)), "claude-main", "claude", { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-main" }), ["a"])).toMatchObject({ a: { input: null, output: null } });
     expect(read).not.toHaveBeenCalled();
   });
   it("rejects a persisted alias token when the route has no verified custom snapshot entry", async () => {
-    const native = persistedAlias("a", "claude-work", "claude"), read = readStub(), metadata = aliasMetadata(["claude-work"]);
-    metadata.providers.snapshot.mockResolvedValue({ entries: [{ provider: "claude-work", source: "builtin" }] });
-    metadata.config.get.mockResolvedValue({ config: { providers: { "claude-work": { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-work" } } } } });
+    const native = persistedAlias("a", "claude-main", "claude"), read = readStub(), metadata = aliasMetadata(["claude-main"]);
+    metadata.providers.snapshot.mockResolvedValue({ entries: [{ provider: "claude-main", source: "builtin" }] });
+    metadata.config.get.mockResolvedValue({ config: { providers: { "claude-main": { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/tmp/fixture-claude-main" } } } } });
     expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toMatchObject({ a: { input: null, output: null } });
     expect(read).not.toHaveBeenCalled();
   });
