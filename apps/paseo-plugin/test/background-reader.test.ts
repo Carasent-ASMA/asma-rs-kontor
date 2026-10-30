@@ -179,6 +179,11 @@ describe("Claude provider-native background", () => {
       { ...notice({ "tool-use-id": "toolu_bash", status: "completed" }), type: "assistant" }]);
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: toolu_bash)") });
   });
+  it.each(["SendMessage", "FutureTool"])("C19 refuses any %s use flagged run_in_background with no notification", async (name) => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_flag", name), result("toolu_flag", { success: true })]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_flag)") });
+  });
 });
 
 describe("OpenCode provider-native background", () => {
