@@ -99,7 +99,7 @@ async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
     // Event lines only: other records (api-request-blob, queue-operation, summaries) replay or bookkeep earlier content.
     if (row?.type !== "user" && row?.type !== "assistant") continue;
     // Only Claude's own notice line closes a launch; text that quotes a notice never does.
-    const content = row.message?.content, notices = row.message?.role === "user" && row.origin?.kind === "task-notification", texts: string[] = [];
+    const content = row.message?.content, notices = row.type === "user" && row.message?.role === "user" && row.origin?.kind === "task-notification", texts: string[] = [];
     if (notices && typeof content === "string") texts.push(content);
     for (const block of Array.isArray(content) ? content : []) {
       if (block?.type === "tool_use" && typeof block.id === "string") {

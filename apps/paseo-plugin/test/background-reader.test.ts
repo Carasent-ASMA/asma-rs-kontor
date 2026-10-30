@@ -156,6 +156,12 @@ describe("Claude provider-native background", () => {
     await transcript(f.projects, [...resumed, { ...notice({ "task-id": AGENT, status: "completed" }), type: "api-request-blob", sessionId: HANDLE, hash: "h" }]);
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: toolu_send)") });
   });
+  it("C15 does not reopen a finished synchronous Agent from an api-request-blob that replays its tool use", async () => {
+    const f = await fixture(), use = launch("toolu_sync", "Agent", false);
+    await transcript(f.projects, [use, result("toolu_sync", { status: "completed", agentId: "a1111111111111111" }), { ...use, type: "api-request-blob", sessionId: HANDLE, hash: "h" }]);
+    const read = await f.read(); if (!read.complete) throw new Error(read.gap);
+    expect(read.accounting.workers).toEqual([]);
+  });
   it("C16 does not close a launch from a user line that only quotes a notice", async () => {
     const f = await fixture();
     await transcript(f.projects, [launch("toolu_bash", "Bash"), result("toolu_bash", { backgroundTaskId: "bash1" }),
@@ -166,6 +172,12 @@ describe("Claude provider-native background", () => {
     const f = await fixture();
     await transcript(f.projects, [...resumed.filter((row) => row !== resumed[2]), notice({ "task-id": AGENT, status: "completed" })]);
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_agent)") });
+  });
+  it("C18 does not close a launch from an assistant line that carries a user notice", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_bash", "Bash"), result("toolu_bash", { backgroundTaskId: "bash1" }),
+      { ...notice({ "tool-use-id": "toolu_bash", status: "completed" }), type: "assistant" }]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: toolu_bash)") });
   });
 });
 
