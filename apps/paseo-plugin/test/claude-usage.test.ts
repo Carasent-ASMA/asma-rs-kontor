@@ -10,7 +10,8 @@ const ID = "00000000-0000-4000-8000-000000000001";
 const usage = (input: number, output: number, cacheRead = 0, cacheCreation = 0) => ({ input_tokens: input, output_tokens: output, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheCreation });
 const line = (id: string | null, value = usage(10, 2), sidechain = false) => JSON.stringify({ type: "assistant", isSidechain: sidechain, message: { id, usage: value } });
 const lines = (...rows: string[]) => rows.join("\n") + "\n";
-const file = (project = "project-a", id = ID) => join(projects, project, `${id}.jsonl`);
+const fileAt = (projectsRoot: string, project = "project-a", id = ID) => join(projectsRoot, project, `${id}.jsonl`);
+const file = (project = "project-a", id = ID) => fileAt(projects, project, id);
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "kontor-claude-usage-"));
@@ -53,6 +54,21 @@ describe("qualified Claude assistant-message totals", () => {
     expect(stored).not.toContain(secret); expect(stored).not.toContain("msg-secret");
     expect(stored).not.toContain(root);
     expect(stored).toContain('"input":1');
+  });
+
+  it("keeps two projects roots with the same handle in separate cache namespaces", async () => {
+    const other = join(root, "other-projects");
+    await mkdir(join(other, "project-a"), { recursive: true });
+    await writeFile(file(), lines(line("msg-a", usage(10, 2))));
+    await writeFile(fileAt(other), lines(line("msg-a", usage(100, 20))));
+    const first = createClaudeUsageReader(projects, cache), second = createClaudeUsageReader(other, cache);
+    expect(await first.read(ID)).toMatchObject({ input: 10, output: 2 });
+    expect(await second.read(ID)).toMatchObject({ input: 100, output: 20 });
+    expect(await first.read(ID)).toMatchObject({ input: 10, output: 2 });
+    expect(await second.read(ID)).toMatchObject({ input: 100, output: 20 });
+    const files = await readdir(cache);
+    expect(files).toHaveLength(2);
+    expect(new Set(files).size).toBe(2);
   });
 
   it("returns unknown for a missing or ambiguous exact file", async () => {
