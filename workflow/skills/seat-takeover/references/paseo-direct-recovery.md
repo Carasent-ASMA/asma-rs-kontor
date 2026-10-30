@@ -67,14 +67,23 @@ The prepared-brief path also requires the plugin's provider-native background
 reader (`server/background-reader.ts`) and the qualified schedule inventory.
 The reader accounts only for work the source runtime owns without a Paseo ID:
 
-- **Claude:** every main-chain `run_in_background` launch, every `Monitor`, and
-  every `Agent` or `Task` use whose result is async (`isAsync` or
-  `async_launched`) needs a `<task-notification>` in the source transcript
-  whose status is completed, failed, killed or stopped. The notification is
-  matched by tool-use id, or by the result's `backgroundTaskId`, `taskId` or
-  `agentId`; an async Agent's notification usually carries only that id. An
-  `Agent` or `Task` use with no result yet counts as unfinished. A Monitor
-  event or expiry without a status is not terminal.
+- **Claude:** the reader counts these main-chain launches:
+  - every `run_in_background` launch and every `Monitor`;
+  - every `Agent` or `Task` use whose result is async (`isAsync` or
+    `async_launched`), or that has no result yet;
+  - every result with a `backgroundTaskId`, which covers a Bash command Claude
+    moved to the background;
+  - every `SendMessage` whose result resumes an agent (`resumedAgentId` or
+    `revivedAgentId`), even after that agent's first run finished.
+
+  Each launch needs a `<task-notification>` whose status is completed, failed,
+  killed or stopped, on a user line with `origin.kind` `task-notification`.
+  The reader reads only `user` and `assistant` lines, so replays such as
+  `api-request-blob` and text that quotes a notice never close a launch. One
+  notice closes one launch: its `<tool-use-id>` launch, or else the latest
+  earlier open launch for its `<task-id>` (a `backgroundTaskId`, `taskId`,
+  `agentId` or resume id). A Monitor event or expiry without a status is not
+  terminal.
 - **OpenCode:** no source `task` tool part may be pending or running, and every
   child session reached through `parent_id` (depth 8, 500 rows) needs no
   pending or running tool and a completed latest assistant message.
@@ -87,7 +96,7 @@ children and workspace terminals keep their existing owners. A gap is not
 permission to use a private host module or to edit an installed SDK.
 
 Known limits: Claude writes no terminal record after a UI stop, a Monitor
-timeout or teardown (284 of 450 main-chain launches on one measured host), so
+timeout or teardown (368 of 535 main-chain launches on one measured host), so
 long-lived Claude seats are usually refused here; use ordinary Take over, which
 makes no background-transfer claim. Codex background work is not covered. No
 reader produces `checkpointed` workers. Synthetic source tests do not qualify

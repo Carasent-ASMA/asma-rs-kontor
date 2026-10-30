@@ -30,10 +30,15 @@ const launch = (id: string, name: string, background = true, extra: Record<strin
   ({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id, name, input: { command: "sleep 9", ...(background ? { run_in_background: true } : {}) } }] }, ...extra });
 const result = (id: string, toolUseResult: Record<string, unknown>) =>
   ({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "started" }] }, toolUseResult });
-const notice = (fields: Record<string, string>, asBlock = false) => {
+const notice = (fields: Record<string, string>, asBlock = false, origin = true) => {
   const text = `<task-notification>\n${Object.entries(fields).map(([key, value]) => `<${key}>${value}</${key}>`).join("\n")}\n</task-notification>`;
-  return { type: "user", message: { role: "user", content: asBlock ? [{ type: "text", text }] : text } };
+  return { type: "user", ...(origin ? { origin: { kind: "task-notification" } } : {}), message: { role: "user", content: asBlock ? [{ type: "text", text }] : text } };
 };
+// An async Agent that finished, then a SendMessage resume of it.
+const AGENT = "adaf34b20dc8e9128";
+const resumed = [launch("toolu_agent", "Agent"), result("toolu_agent", { isAsync: true, status: "async_launched", agentId: AGENT }),
+  notice({ "task-id": AGENT, status: "completed" }), launch("toolu_msg", "SendMessage", false), result("toolu_msg", { success: true, message: "Message sent" }),
+  launch("toolu_send", "SendMessage", false), result("toolu_send", { success: true, resumedAgentId: AGENT })];
 const say = (text: string) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
 async function transcript(projects: string, rows: unknown[], tail = "", project = "-tmp-project", handle = HANDLE) {
   await mkdir(join(projects, project), { recursive: true });
@@ -118,6 +123,49 @@ describe("Claude provider-native background", () => {
     const f = await fixture();
     await transcript(f.projects, [launch("toolu_sync", "Agent", false), result("toolu_sync", { status: "completed", agentId: "a1111111111111111" }), launch("toolu_pending", "Task", false)]);
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_pending)") });
+  });
+  it("C13 refuses an unflagged Bash that Claude moved to the background", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_bash", "Bash", false), result("toolu_bash", { backgroundTaskId: "bauto1", timedOutAfterMs: 600000 })]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_bash)") });
+  });
+  it("C13 finishes that Bash through its tool-use id", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_bash", "Bash", false), result("toolu_bash", { backgroundTaskId: "bauto1", timedOutAfterMs: 600000 }),
+      notice({ "tool-use-id": "toolu_bash", status: "completed" })]);
+    const read = await f.read(); if (!read.complete) throw new Error(read.gap);
+    expect(read.accounting.workers.map((worker) => worker.id)).toEqual(["toolu_bash"]);
+  });
+  it("C14 keeps a SendMessage resume open after the agent's first run finished", async () => {
+    const f = await fixture(); await transcript(f.projects, resumed);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_send)") });
+  });
+  it("C14 finishes the resume through a later task-only notice", async () => {
+    const f = await fixture(); await transcript(f.projects, [...resumed, notice({ "task-id": AGENT, status: "failed" })]);
+    const read = await f.read(); if (!read.complete) throw new Error(read.gap);
+    expect(JSON.parse(await readFile(join(f.stateRoot, `${read.accounting.revision}.json`), "utf8")).workers).toEqual([
+      { id: "toolu_agent", kind: "Agent", status: "completed", taskId: AGENT }, { id: "toolu_send", kind: "SendMessage", status: "failed", taskId: AGENT }]);
+  });
+  it("C14 refuses a resume whose resumed and revived ids differ", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_send", "SendMessage", false), result("toolu_send", { resumedAgentId: AGENT, revivedAgentId: "a0000000000000000" })]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("resumed two different agents") });
+  });
+  it("C15 ignores an api-request-blob that replays the notice", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [...resumed, { ...notice({ "task-id": AGENT, status: "completed" }), type: "api-request-blob", sessionId: HANDLE, hash: "h" }]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: toolu_send)") });
+  });
+  it("C16 does not close a launch from a user line that only quotes a notice", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_bash", "Bash"), result("toolu_bash", { backgroundTaskId: "bash1" }),
+      notice({ "tool-use-id": "toolu_bash", status: "completed" }, false, false)]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: toolu_bash)") });
+  });
+  it("C17 closes only the latest open launch for a task-only notice", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [...resumed.filter((row) => row !== resumed[2]), notice({ "task-id": AGENT, status: "completed" })]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_agent)") });
   });
 });
 

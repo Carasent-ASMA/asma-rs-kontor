@@ -71,8 +71,9 @@ async function writeOnce(root: string, path: string, bytes: string) {
 }
 
 /**
- * Main-chain launches: `run_in_background`, every Monitor, and an Agent or Task whose result is async or missing. Each is
- * terminal only through a status-bearing task notification; a Monitor event or expiry is not.
+ * Main-chain launches: `run_in_background`, every Monitor, an Agent or Task whose result is async or missing, a result
+ * moved to the background, and a SendMessage resume. Each is terminal only through a status-bearing task notification;
+ * a Monitor event or expiry is not.
  */
 async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
   const paths = await claudeTranscriptPaths(projectsRoot, handle);
@@ -85,44 +86,56 @@ async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
     bytes = await file.readFile();
   } finally { await file.close(); }
   if (bytes.length > TRANSCRIPT_LIMIT) return { gap: "The Claude transcript is not a bounded regular file; nothing is retired." };
-  const launches = new Map<string, string>(), tasks = new Map<string, string>(), ends: { toolUse: string | null; task: string | null; status: string }[] = [];
-  // Unflagged Agent or Task uses: only their result says whether they run in the background.
-  const unresolved = new Map<string, string>();
+  // Launch id → kind, launch id → its first task id, task id → its launches in transcript order, and closed launch → status.
+  const launches = new Map<string, string>(), taskOf = new Map<string, string>(), byTask = new Map<string, string[]>(), done = new Map<string, string>();
+  // Tool names by use, and unflagged Agent or Task uses: only their result says whether they run in the background.
+  const names = new Map<string, string>(), unresolved = new Map<string, string>();
   // The final line without a newline is a write in progress.
   const lines = bytes.toString("utf8").split("\n").slice(0, -1);
   for (const [index, line] of lines.entries()) {
     let row;
     try { row = JSON.parse(line); } catch { return { gap: `The Claude transcript has a malformed record at line ${index + 1}; nothing is retired.` }; }
-    if (row?.isSidechain) continue;
-    const content = row?.message?.content, texts: string[] = [];
-    if (row?.type === "user" && typeof content === "string") texts.push(content);
+    if (row?.isSidechain === true) continue;
+    // Event lines only: other records (api-request-blob, queue-operation, summaries) replay or bookkeep earlier content.
+    if (row?.type !== "user" && row?.type !== "assistant") continue;
+    // Only Claude's own notice line closes a launch; text that quotes a notice never does.
+    const content = row.message?.content, notices = row.message?.role === "user" && row.origin?.kind === "task-notification", texts: string[] = [];
+    if (notices && typeof content === "string") texts.push(content);
     for (const block of Array.isArray(content) ? content : []) {
       if (block?.type === "tool_use" && typeof block.id === "string") {
+        names.set(block.id, String(block.name));
         if (block.name === "Monitor" || block.input?.run_in_background === true) launches.set(block.id, String(block.name));
         else if (block.name === "Agent" || block.name === "Task") unresolved.set(block.id, block.name);
       }
       if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
-        const id = block.tool_use_id, result = row.toolUseResult, kind = unresolved.get(id);
-        if (kind) { unresolved.delete(id); if (result?.isAsync === true || result?.status === "async_launched") launches.set(id, kind); }
-        for (const key of ["backgroundTaskId", "taskId", "agentId"]) {
-          const task = result?.[key];
-          if (typeof task === "string" && task.trim()) tasks.set(task.trim(), id);
+        const id = block.tool_use_id, result = row.toolUseResult, kind = names.get(id) ?? "unknown";
+        const text = (key: string) => typeof result?.[key] === "string" ? result[key].trim() as string : "";
+        if (unresolved.delete(id) && (result?.isAsync === true || result?.status === "async_launched")) launches.set(id, kind);
+        // Claude moves a long Bash command to the background, where it keeps running.
+        if (text("backgroundTaskId")) launches.set(id, kind);
+        // A resume starts a new run of an earlier agent, even after that agent's first run finished.
+        const resumed = text("resumedAgentId"), revived = text("revivedAgentId"), resume = resumed || revived;
+        if (kind === "SendMessage" && resume) {
+          if (resumed && revived && resumed !== revived) return { gap: `The Claude SendMessage ${id} resumed two different agents; nothing is retired.` };
+          launches.set(id, kind);
+        }
+        if (launches.has(id)) for (const task of new Set([text("backgroundTaskId"), text("taskId"), text("agentId"), kind === "SendMessage" ? resume : ""])) {
+          if (!task) continue;
+          if (!taskOf.has(id)) taskOf.set(id, task);
+          byTask.set(task, [...byTask.get(task) ?? [], id]);
         }
       }
-      if (row?.type === "user" && block?.type === "text" && typeof block.text === "string") texts.push(block.text);
+      if (notices && block?.type === "text" && typeof block.text === "string") texts.push(block.text);
     }
     for (const text of texts) for (const [, body] of text.matchAll(NOTIFICATION)) {
-      const status = tag(body!, "status");
-      if (status && TERMINAL.has(status)) ends.push({ toolUse: tag(body!, "tool-use-id"), task: tag(body!, "task-id"), status });
+      const status = tag(body!, "status"), toolUse = tag(body!, "tool-use-id");
+      // One notice closes at most one launch: its own tool use, else the latest earlier launch still open for its task id.
+      const open = (toolUse ? [toolUse] : byTask.get(tag(body!, "task-id") ?? "") ?? []).filter((id) => launches.has(id) && !done.has(id));
+      if (status && TERMINAL.has(status)) for (const id of open.slice(-1)) done.set(id, status);
     }
   }
   // Fail closed: an Agent or Task use with no result yet may be running in the background.
   for (const [id, kind] of unresolved) launches.set(id, kind);
-  const taskOf = new Map([...tasks].map(([task, toolUse]) => [toolUse, task])), done = new Map<string, string>();
-  for (const end of ends) {
-    const id = end.toolUse && launches.has(end.toolUse) ? end.toolUse : end.task ? tasks.get(end.task) : undefined;
-    if (id && launches.has(id)) done.set(id, end.status);
-  }
   const unmarked = [...launches.keys()].filter((id) => !done.has(id)).sort();
   if (unmarked.length) return { gap: `${unmarked.length} provider-native background launches have no terminal record (first 20 ids: ${unmarked.slice(0, 20).join(", ")}). Claude leaves none after a UI stop, a Monitor timeout or teardown. Nothing is retired. Let them finish, stop them in the source, or use ordinary Take over, which makes no background-transfer claim.` };
   return { workers: [...launches].map(([id, kind]) => ({ id, kind, status: done.get(id)!, ...(taskOf.get(id) ? { taskId: taskOf.get(id) } : {}) })) };

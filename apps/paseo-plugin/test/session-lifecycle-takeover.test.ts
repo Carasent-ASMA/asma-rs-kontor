@@ -2133,7 +2133,7 @@ describe("R11 prepared procedural owner", () => {
     h.source.persistence = { provider: "claude", sessionId: "native-r11", nativeHandle: "native-r11" } as Agent["persistence"];
     await makeDirectory(join(projects, "-fixture"), { recursive: true });
     const rows = [{ type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_r11", name: "Bash", input: { command: "sleep 9", run_in_background: true } }] } },
-      ...(terminal ? [{ type: "user", message: { content: "<task-notification><tool-use-id>toolu_r11</tool-use-id><status>completed</status></task-notification>" } }] : [])];
+      ...(terminal ? [{ type: "user", origin: { kind: "task-notification" }, message: { role: "user", content: "<task-notification><tool-use-id>toolu_r11</tool-use-id><status>completed</status></task-notification>" } }] : [])];
     await writeFile(join(projects, "-fixture", "native-r11.jsonl"), rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
   }
   it.each([[true, "ready"], [false, "refused"]] as const)("W1 gates the prepared review on the real provider-native reader (terminal %s)", async (terminal, state) => {
