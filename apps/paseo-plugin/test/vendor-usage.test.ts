@@ -65,7 +65,8 @@ describe("vendor-native usage ownership", () => {
   });
   it("advertises only the labelled qualified source while preserving unrelated capability refusals", () => {
     const capabilities = readInstalledNavigatorCapabilities({} as never);
-    expect(capabilities.usageTotals).toMatchObject({ supported: true, limits: expect.arrayContaining([expect.stringContaining("0.160.0"), expect.stringContaining("OpenCode 1.19.3"), expect.stringContaining("Claude Code")]) });
+    expect(capabilities.usageTotals).toMatchObject({ supported: true, limits: expect.arrayContaining([expect.stringContaining("0.160.0"), expect.stringContaining("OpenCode"), expect.stringContaining("child/subagent sessions (parent_id) are excluded"), expect.stringContaining("Claude Code")]) });
+    expect(JSON.stringify(capabilities.usageTotals)).not.toContain("OpenCode 1.19.3");
     expect(capabilities.takeoverBulk.supported).toBe(false);
   });
 });

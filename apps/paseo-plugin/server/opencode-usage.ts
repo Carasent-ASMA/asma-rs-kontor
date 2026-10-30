@@ -31,7 +31,7 @@ export function createOpenCodeUsageReader(databasePath: string) {
         const input = inputTokens! + cacheRead! + cacheWrite!, output = outputTokens! + reasoning!;
         if (!Number.isSafeInteger(input) || !Number.isSafeInteger(output)) return unknown("session counters exceed the exact integer range");
         return { input, output, scope: "provider-cumulative",
-          source: "OpenCode 1.19.3 provider cumulative session row at the exact native session ID; cache read/write are included in input and reasoning is included in output. Historical completeness unverified." };
+          source: "OpenCode provider cumulative session row at the exact native session ID; only the exact native session row is read, so child/subagent sessions (parent_id) are excluded; cache read/write are included in input and reasoning is included in output. Historical completeness unverified." };
       } catch { return unknown("source unreadable"); }
       finally { try { database?.close(); } catch { /* already closed */ } }
     },

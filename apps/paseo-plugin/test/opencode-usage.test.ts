@@ -40,7 +40,9 @@ describe("OpenCode session usage", () => {
     const result = await createOpenCodeUsageReader(database).read(ID);
     expect(result).toMatchObject({ input: 17, output: 7, scope: "provider-cumulative" });
     expect(usageTotalsSchema.parse(result)).toEqual(result);
-    expect(result.source).toContain("OpenCode 1.19.3");
+    expect(result.source).toContain("OpenCode provider cumulative session row");
+    expect(result.source).not.toContain("1.19.3");
+    expect(result.source).toContain("child/subagent sessions (parent_id) are excluded");
     expect(result.source).toContain("cache read/write are included in input");
   });
 
