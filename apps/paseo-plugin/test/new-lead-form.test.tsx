@@ -336,6 +336,37 @@ describe("New lead form", () => {
     expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Codex default unknown: Codex flags no default model here. Choose a model for this lead.");
   });
 
+  it("names the choices refresh whenever Create waits for refreshed options", () => {
+    let options: Parameters<typeof NewLsaForm>[0]["options"] = { status: "ready", options: OPTIONS };
+    const f = mount(() => NewLsaForm(formProps({ options })), {});
+    (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+    options = { status: "loading" };
+    f.render();
+    const waiting = "Refreshing this desk's choices… Creation stays disabled until the host answers.";
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe(waiting);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: waiting, accessibilityState: { disabled: true }, "aria-disabled": true });
+    options = { status: "ready", options: { ...OPTIONS, enabled: false, disabledReason: "New lead is off on this host." } };
+    f.render();
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("New lead is off on this host.");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: "New lead is off on this host.", accessibilityState: { disabled: true }, "aria-disabled": true });
+  });
+
+  it("names the settings read whenever Create waits for the new-lead default", async () => {
+    model.settings = { status: "loading", save: vi.fn() };
+    const f = mount(NewLsaForm, formProps());
+    (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
+    const waiting = "Reading the new-lead default…";
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe(waiting);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: waiting, accessibilityState: { disabled: true }, "aria-disabled": true });
+    model.settings = ready();
+    await settle(); f.render();
+    (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)(""); f.render();
+    const actual = "Type a topic of at least 3 characters.";
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe(actual);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: actual, accessibilityState: { disabled: true }, "aria-disabled": true });
+  });
+
   it("sends the source session alone, never a pin, when this host has no saved summaries", async () => {
     const source = sessionEntry("agent-src", { title: "Route review" });
     const f = mount(NewLsaForm, formProps({ sources: [source] }));
