@@ -60,11 +60,12 @@ const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "x
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a", features = [] as NonNullable<Agent["features"]> } = {}) {
+async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, successorStatus = "idle", dropSuccessorBootstrapAfterCreate = false, successorPendingPermissions = [] as Agent["pendingPermissions"], choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a", features = [] as NonNullable<Agent["features"]> } = {}) {
   const tmp = await mkdtemp(join(tmpdir(), "kontor-takeover-test-")); dirs.push(tmp);
   const root = join(tmp, "lifecycle"), createRoot = join(tmp, "create");
   const agents = new Map([predecessor, ...others].map((value) => [value.id, value]));
   const timelines = new Map<string, { item: Record<string, unknown> }[]>([[predecessor.id, [{ item: { type: "assistant_message", text: SUMMARY } }]]]);
+  const timelineReads = new Map<string, number>();
   const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][], detach: [] as string[] };
   let created = 0, releaseVisible = !hideRelease, sendCalls = 0;
   const issuedAt = resolverInstant(Date.now());
@@ -77,7 +78,8 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
           effects.create.push(input);
           const [provider, model] = input.config.provider.split("/");
           const successor = agent(`successor-${++created}`, { title: input.title, labels: input.labels, provider, model, cwd: workspace.workspaceDirectory!, workspaceId: id,
-            currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, status: "idle", lastError: undefined,
+            currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, status: successorStatus as Agent["status"], lastError: undefined,
+            pendingPermissions: successorPendingPermissions,
             features: features.map((feature) => ({ ...feature, value: input.config.featureValues?.[feature.id] ?? feature.value })) as NonNullable<Agent["features"]> });
           agents.set(successor.id, successor);
           timelines.set(successor.id, input.prompt ? [{ item: { type: "user_message", text: input.prompt } }] : []);
@@ -96,7 +98,12 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
         archive: async () => { effects.archive.push(id); agents.set(id, { ...agents.get(id)!, archivedAt: "2026-10-25T09:01:00Z", status: archiveStatus as Agent["status"] }); return { archivedAt: "2026-10-25T09:01:00Z" }; },
         send: async (text: string, options?: { messageId?: string }) => { if (failFirstSend && ++sendCalls === 1) throw new Error("process died before dispatch"); effects.send.push({ id, text, messageId: options?.messageId }); if (releaseVisible) timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
         detach: async () => { effects.detach.push(id); const value = agents.get(id); if (value?.labels) { const { ["paseo.parent-agent-id"]: _parent, ...rest } = value.labels; value.labels = rest; } },
-        timeline: { refetch: async () => ({ entries: timelines.get(id) ?? [] }) },
+        timeline: { refetch: async () => {
+          const read = (timelineReads.get(id) ?? 0) + 1;
+          timelineReads.set(id, read);
+          if (dropSuccessorBootstrapAfterCreate && id.startsWith("successor-") && read > 1) return { entries: [] };
+          return { entries: timelines.get(id) ?? [] };
+        } },
       }),
     },
     providers: {
@@ -1011,6 +1018,29 @@ describe("takeover apply", () => {
       expect(await h.apply(await h.ready()), difference).toMatchObject({ state: "partial", phase: "verify", next: "none" });
       expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length], difference).toEqual([1, 1, 0]);
     }
+  });
+
+  it("releases a successor that is active only on its reviewed bootstrap", async () => {
+    const h = await host({ successorStatus: "running" });
+    const result = await h.apply(await h.ready());
+    expect(result).toMatchObject({ state: "succeeded", phase: "done" });
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it("still refuses an active successor whose timeline lacks the reviewed bootstrap", async () => {
+    const h = await host({ successorStatus: "running", dropSuccessorBootstrapAfterCreate: true });
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("executing or waiting for input"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("still refuses a successor with pending permissions even when its bootstrap is visible", async () => {
+    const h = await host({ successorStatus: "running", successorPendingPermissions: [{ id: "p1" }] as Agent["pendingPermissions"] });
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("waiting for input"),
+    });
+    expect(h.effects.send).toEqual([]);
   });
 
   it("shares the per-session fence with Archive and Resume", async () => {

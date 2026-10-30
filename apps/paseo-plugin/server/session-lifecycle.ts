@@ -1219,14 +1219,16 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (id === predecessor) return "it reads back as the predecessor";
     const agent = await exact(id);
     if (!agent) return "it could not be read back";
-    if (agent.archivedAt != null || (beforeRelease && (active(agent) || agent.pendingPermissions.length))) return "it is archived, executing or waiting for input before task release";
+    const page = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: 20 }).catch(() => null);
+    const entries = page && !("error" in page && page.error) ? page.entries : null;
+    const onBootstrap = !!entries?.some((entry) => entry.item.type === "user_message" && entry.item.text === spec.bootstrap);
+    if (agent.archivedAt != null || (beforeRelease && (agent.pendingPermissions.length || (active(agent) && !onBootstrap)))) return "it is archived, executing or waiting for input before task release";
     if (readbackDifferences(agent, { ...spec, workspaceId: spec.workspaceId!, at: "" }).length) return "its title, route, permission mode or creation labels differ from the reviewed request";
     if (agent.cwd !== spec.cwd || agent.workspaceId !== spec.workspaceId) return "its checkout differs from the predecessor's";
     if (parent(agent) !== (spec.labels["paseo.parent-agent-id"] ?? null)) return "its supervisor differs from the predecessor's";
     if ((agent.labels?.persona ?? null) !== (spec.labels.persona ?? null)) return "its persona revision differs";
-    const page = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: 20 }).catch(() => null);
-    if (page && "error" in page && page.error) return "its handoff summary read failed";
-    return page?.entries.some((entry) => entry.item.type === "user_message" && entry.item.text === spec.bootstrap) ? null : "its handoff summary does not read back";
+    if (entries === null) return "its handoff summary read failed";
+    return onBootstrap ? null : "its handoff summary does not read back";
   }
   /** Null when the successor is created and verified; otherwise the outcome that stops before its task is released. */
   async function afterCreate(record: TakeoverRecord, spec: SeatCreateSpec, created: CreateOutcome): Promise<TakeoverOutcome | null> {
