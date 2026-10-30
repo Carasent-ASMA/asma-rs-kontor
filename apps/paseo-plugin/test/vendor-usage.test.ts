@@ -31,6 +31,13 @@ const value = { input: 100, output: 5, scope: "provider-cumulative" as const, so
 const readStub = () => vi.fn(async (_route: VendorUsageRoute, _native: string, _budget: object) => value);
 
 describe("vendor-native usage ownership", () => {
+  it("accepts only the base or the verified alias token directly in codexThreadIdentity", () => {
+    const alias = (provider: string) => codexThreadIdentity({ provider: "codex-work",
+      persistence: { provider, nativeHandle: THREAD, metadata: { threadId: THREAD } } } as never, true, "codex-work");
+    expect(alias("codex-work")).toBe(THREAD);
+    expect(alias("codex")).toBe(THREAD);
+    expect(alias("codex-personal")).toBeNull();
+  });
   it("uses the exact native thread and public read-only refresh, never the tree root/title/model", async () => {
     const refresh = vi.fn(async () => found(agent("a"))), read = readStub(), service = createVendorUsageService({ read });
     expect(await service(host(refresh), ["a", "a"])).toEqual({ a: value });
