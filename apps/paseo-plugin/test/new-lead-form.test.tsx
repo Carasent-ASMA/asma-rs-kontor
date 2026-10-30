@@ -367,6 +367,30 @@ describe("New lead form", () => {
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: actual, accessibilityState: { disabled: true }, "aria-disabled": true });
   });
 
+  it("names the model-settings read through a desk change for a chosen Codex model with feature values", async () => {
+    model.settings = ready({ provider: "codex", model: "gpt-6-astra", effort: "xhigh", featureValues: { service_tier: "priority" } });
+    const reads: ((value: { features: CreateFeature[]; problem: string | null }) => void)[] = [];
+    model.rpc["sessions.create-features"] = vi.fn(() => new Promise((resolve) => { reads.push(resolve); }));
+    const second = { ...OPTIONS.desks[0]!, projectId: "prj-tickets", project: "DESK • TICKETS", desk: "TICKETS", kind: "tickets" as const };
+    const desks = [...OPTIONS.desks, second];
+    let options: Parameters<typeof NewLsaForm>[0]["options"] = { status: "ready", options: { ...OPTIONS, desks } };
+    const f = mount(() => NewLsaForm(formProps({ options })), {});
+    expect(reads).toHaveLength(1);
+    reads.shift()!({ features: FEATURES, problem: null }); await settle(); f.render();
+    (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
+    // A desk change re-reads this model's settings; the chosen model and its values stay put while that read is pending.
+    press(byLabel(f.tree, "TICKETS")); f.render();
+    options = { status: "ready", options: { ...OPTIONS, desks, catalogProjectId: "prj-tickets" } }; f.render();
+    expect(reads).toHaveLength(1);
+    const waiting = "Reading this model's settings…";
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe(waiting);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: waiting, accessibilityState: { disabled: true }, "aria-disabled": true });
+    reads.shift()!({ features: [], problem: null }); await settle(); f.render();
+    const actual = "Setting service_tier is not offered for this model.";
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe(actual);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: actual, accessibilityState: { disabled: true }, "aria-disabled": true });
+  });
+
   it("sends the source session alone, never a pin, when this host has no saved summaries", async () => {
     const source = sessionEntry("agent-src", { title: "Route review" });
     const f = mount(NewLsaForm, formProps({ sources: [source] }));
