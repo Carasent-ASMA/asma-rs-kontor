@@ -632,7 +632,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
 // ASMA-8641 Take over, native/direct adapter. One operation per confirmed review: it shares this root and the per-ID
 // intent fence with Archive, retires the predecessor, and creates its one successor through the #500 core.
 export type TakeoverClient = {
-  agents: { list: LifecycleClient["agents"]["list"]; ref(id: string): Pick<ReturnType<PaseoApi["agents"]["ref"]>, "refresh" | "archive" | "send" | "timeline" | "detach"> };
+  agents: { list: LifecycleClient["agents"]["list"]; ref(id: string): Pick<ReturnType<PaseoApi["agents"]["ref"]>, "refresh" | "archive" | "send" | "waitForFinish" | "timeline" | "detach"> };
   workspaces: { ref(id: string): Pick<ReturnType<PaseoApi["workspaces"]["ref"]>, "refresh"> };
   /** Optional bounded wake read; without it, empty child inventory does not imply wakes clear. */
   schedules?: { forAgent(agentId: string): Promise<{ entries: unknown[] }> };
@@ -674,6 +674,8 @@ export type TakeoverDeps = {
   run?: ResolverRun;
   /** Pause between the bounded exact reads that look for a closed runtime after archive. */
   settleMs?: number;
+  /** Bound for waiting on a successor's bootstrap turn before its task is released. */
+  bootstrapWaitMs?: number;
 };
 /** Everything a confirmation pins; apply recomputes it and refuses any difference. */
 type Pinned = {
@@ -723,6 +725,8 @@ const associationSchema = z.object({ agentId: z.string(), bindingKey: z.string()
 const seal = (nonce: string, record: Pick<TakeoverReview, "reviewId" | "revision" | "agentId">, pinned: unknown) => hash(JSON.stringify([nonce, record.reviewId, record.revision, record.agentId, pinned]));
 const sameDigest = (left: string, right: string) => left.length === right.length && timingSafeEqual(Buffer.from(left), Buffer.from(right));
 const releaseMessage = (reviewId: string) => `kontor-takeover-${reviewId}`;
+const SUCCESSOR_BOOTSTRAP_WAIT_MS = 5 * 60_000;
+const SUCCESSOR_BOOTSTRAP_TIMELINE_LIMIT = 200;
 const settledTakeover = (result: TakeoverOutcome) => result.state === "refused" || result.state === "succeeded";
 const takeoverRevision = (agent: Agent) => hash(JSON.stringify([lifecycleRevision(agent), agent.title, agent.createdAt]));
 /** Stable native identity a running turn may not keep pinned: status and turn fields are deliberately absent. */
@@ -1219,14 +1223,19 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (id === predecessor) return "it reads back as the predecessor";
     const agent = await exact(id);
     if (!agent) return "it could not be read back";
-    if (agent.archivedAt != null || (beforeRelease && (active(agent) || agent.pendingPermissions.length))) return "it is archived, executing or waiting for input before task release";
+    const page = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: SUCCESSOR_BOOTSTRAP_TIMELINE_LIMIT }).catch(() => null);
+    const entries = page && !("error" in page && page.error) ? page.entries : null;
+    const newestUser = entries ? [...entries].reverse().find((entry) => entry.item.type === "user_message") : null;
+    const onBootstrap = beforeRelease
+      ? newestUser?.item.type === "user_message" && newestUser.item.text === spec.bootstrap
+      : !!entries?.some((entry) => entry.item.type === "user_message" && entry.item.text === spec.bootstrap);
+    if (agent.archivedAt != null || (beforeRelease && (agent.pendingPermissions.length || (active(agent) && !onBootstrap)))) return "it is archived, executing or waiting for input before task release";
     if (readbackDifferences(agent, { ...spec, workspaceId: spec.workspaceId!, at: "" }).length) return "its title, route, permission mode or creation labels differ from the reviewed request";
     if (agent.cwd !== spec.cwd || agent.workspaceId !== spec.workspaceId) return "its checkout differs from the predecessor's";
     if (parent(agent) !== (spec.labels["paseo.parent-agent-id"] ?? null)) return "its supervisor differs from the predecessor's";
     if ((agent.labels?.persona ?? null) !== (spec.labels.persona ?? null)) return "its persona revision differs";
-    const page = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: 20 }).catch(() => null);
-    if (page && "error" in page && page.error) return "its handoff summary read failed";
-    return page?.entries.some((entry) => entry.item.type === "user_message" && entry.item.text === spec.bootstrap) ? null : "its handoff summary does not read back";
+    if (entries === null) return "its handoff summary read failed";
+    return onBootstrap ? null : "its handoff summary does not read back";
   }
   /** Null when the successor is created and verified; otherwise the outcome that stops before its task is released. */
   async function afterCreate(record: TakeoverRecord, spec: SeatCreateSpec, created: CreateOutcome): Promise<TakeoverOutcome | null> {
@@ -1243,6 +1252,20 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (!created.agentId) return outcome(record, "uncertain", "create", "The creation result names no exact successor. Check reads the same request; nothing is resent.", named, "check");
     const problem = await verify(spec, created.agentId, record.review.agentId);
     if (problem) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${problem}, so its task was not released.`, named, "none");
+    const current = await exact(created.agentId);
+    if (!current) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but it could not be read back after verification, so its task was not released.`, named, "none");
+    if (active(current)) {
+      const finished = await client.agents.ref(created.agentId).waitForFinish(deps.bootstrapWaitMs ?? SUCCESSOR_BOOTSTRAP_WAIT_MS)
+        .catch((error: unknown) => ({ status: "error" as const, final: null, error: errorText(error), lastMessage: null }));
+      if (finished.status !== "idle")
+        return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but its bootstrap turn did not finish (${finished.status}${finished.error ? `: ${finished.error}` : ""}), so its task was not released.`, named, "none");
+      const afterBootstrap = await verify(spec, created.agentId, record.review.agentId);
+      if (afterBootstrap) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${afterBootstrap} after its bootstrap turn, so its task was not released.`, named, "none");
+      const afterWait = await exact(created.agentId);
+      if (!afterWait) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but it could not be read back after its bootstrap turn, so its task was not released.`, named, "none");
+      if (active(afterWait) || afterWait.pendingPermissions.length)
+        return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but it is still executing or waiting for input after its bootstrap turn, so its task was not released.`, named, "none");
+    }
     const promotion = await promotionBindingFor(deps.promotionRoot, record.review.agentId, spec.labels.epic ?? null);
     if (promotion.state === "blocked") return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${promotion.message} Its task was not released.`, named, "none");
     if (promotion.state === "none") return null;

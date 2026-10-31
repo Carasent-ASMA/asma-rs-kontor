@@ -60,11 +60,12 @@ const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "x
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a", features = [] as NonNullable<Agent["features"]> } = {}) {
+async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, successorStatus = "idle", dropSuccessorBootstrapAfterCreate = false, successorPendingPermissions = [] as Agent["pendingPermissions"], choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a", features = [] as NonNullable<Agent["features"]> } = {}) {
   const tmp = await mkdtemp(join(tmpdir(), "kontor-takeover-test-")); dirs.push(tmp);
   const root = join(tmp, "lifecycle"), createRoot = join(tmp, "create");
   const agents = new Map([predecessor, ...others].map((value) => [value.id, value]));
   const timelines = new Map<string, { item: Record<string, unknown> }[]>([[predecessor.id, [{ item: { type: "assistant_message", text: SUMMARY } }]]]);
+  const timelineReads = new Map<string, number>();
   const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][], detach: [] as string[] };
   let created = 0, releaseVisible = !hideRelease, sendCalls = 0;
   const issuedAt = resolverInstant(Date.now());
@@ -77,7 +78,8 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
           effects.create.push(input);
           const [provider, model] = input.config.provider.split("/");
           const successor = agent(`successor-${++created}`, { title: input.title, labels: input.labels, provider, model, cwd: workspace.workspaceDirectory!, workspaceId: id,
-            currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, status: "idle", lastError: undefined,
+            currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, status: successorStatus as Agent["status"], lastError: undefined,
+            pendingPermissions: successorPendingPermissions,
             features: features.map((feature) => ({ ...feature, value: input.config.featureValues?.[feature.id] ?? feature.value })) as NonNullable<Agent["features"]> });
           agents.set(successor.id, successor);
           timelines.set(successor.id, input.prompt ? [{ item: { type: "user_message", text: input.prompt } }] : []);
@@ -95,8 +97,18 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
         refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: null } : null; },
         archive: async () => { effects.archive.push(id); agents.set(id, { ...agents.get(id)!, archivedAt: "2026-10-25T09:01:00Z", status: archiveStatus as Agent["status"] }); return { archivedAt: "2026-10-25T09:01:00Z" }; },
         send: async (text: string, options?: { messageId?: string }) => { if (failFirstSend && ++sendCalls === 1) throw new Error("process died before dispatch"); effects.send.push({ id, text, messageId: options?.messageId }); if (releaseVisible) timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
+        waitForFinish: async (): Promise<{ status: "idle" | "error" | "permission" | "timeout"; final: null; error: string | null; lastMessage: string | null }> => {
+          const value = agents.get(id);
+          if (value) agents.set(id, { ...value, status: "idle" });
+          return { status: "idle", final: null, error: null, lastMessage: null };
+        },
         detach: async () => { effects.detach.push(id); const value = agents.get(id); if (value?.labels) { const { ["paseo.parent-agent-id"]: _parent, ...rest } = value.labels; value.labels = rest; } },
-        timeline: { refetch: async () => ({ entries: timelines.get(id) ?? [] }) },
+        timeline: { refetch: async () => {
+          const read = (timelineReads.get(id) ?? 0) + 1;
+          timelineReads.set(id, read);
+          if (dropSuccessorBootstrapAfterCreate && id.startsWith("successor-") && read > 1) return { entries: [] };
+          return { entries: timelines.get(id) ?? [] };
+        } },
       }),
     },
     providers: {
@@ -1011,6 +1023,389 @@ describe("takeover apply", () => {
       expect(await h.apply(await h.ready()), difference).toMatchObject({ state: "partial", phase: "verify", next: "none" });
       expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length], difference).toEqual([1, 1, 0]);
     }
+  });
+
+  it("releases a successor that is active only on its reviewed bootstrap", async () => {
+    const h = await host({ successorStatus: "running" });
+    const result = await h.apply(await h.ready());
+    expect(result).toMatchObject({ state: "succeeded", phase: "done" });
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it("still refuses an active successor whose timeline lacks the reviewed bootstrap", async () => {
+    const h = await host({ successorStatus: "running", dropSuccessorBootstrapAfterCreate: true });
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("executing or waiting for input"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("still refuses a successor with pending permissions even when its bootstrap is visible", async () => {
+    const h = await host({ successorStatus: "running", successorPendingPermissions: [{ id: "p1" }] as Agent["pendingPermissions"] }), ref = h.client.agents.ref;
+    let waits = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, waitForFinish: async () => {
+        waits++;
+        return { status: "idle" as const, final: null, error: null, lastMessage: null };
+      } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("waiting for input"),
+    });
+    expect(waits).toBe(0);
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("waits for the bootstrap before releasing without interrupting it", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    const steps: string[] = [];
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        waitForFinish: async (timeoutMs?: number) => {
+          steps.push(`wait:${timeoutMs}`);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+          steps.push("idle");
+          return { status: "idle" as const, final: null, error: null, lastMessage: null };
+        },
+        send: async (text: string, options?: { messageId?: string; activeTurnBehavior?: string }) => {
+          steps.push(`send:${options?.activeTurnBehavior ?? "none"}`);
+          await handle.send(text, options);
+        } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({ state: "succeeded", phase: "done" });
+    expect(steps).toEqual(["wait:300000", "idle", "send:none"]);
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it("does not release when waiting for the bootstrap times out", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, waitForFinish: async () => ({ status: "timeout" as const, final: null, error: null, lastMessage: null }) };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("bootstrap turn did not finish (timeout)"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the successor is still active after an idle bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, waitForFinish: async () => ({ status: "idle" as const, final: null, error: null, lastMessage: null }) };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("still executing or waiting for input after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the successor cannot be read back after verification", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let armed = false, fired = false;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        refresh: async () => {
+          if (id === "successor-1" && armed && !fired) { fired = true; throw new Error("transient read"); }
+          return handle.refresh();
+        },
+        timeline: { refetch: async (options?: { limit?: number }) => {
+          if (id === "successor-1" && options?.limit === 200 && !armed) armed = true;
+          return handle.timeline.refetch();
+        } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("could not be read back"),
+    });
+    expect(fired).toBe(true);
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the bootstrap wait reports permission", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, waitForFinish: async () => ({ status: "permission" as const, final: null, error: null, lastMessage: null }) };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("did not finish (permission)"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the bootstrap wait reports an error", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, waitForFinish: async () => ({ status: "error" as const, final: null, error: "provider crashed", lastMessage: null }) };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("did not finish (error: provider crashed)"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the bootstrap wait rejects", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, waitForFinish: async () => { throw new Error("wait rejected"); } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("did not finish (error: wait rejected)"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("re-verifies the newest user message after the bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, waitForFinish: async () => {
+        h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+        h.timelines.get("successor-1")!.push({ item: { type: "user_message", text: "queued during bootstrap" } });
+        return { status: "idle" as const, final: null, error: null, lastMessage: null };
+      } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the successor cannot be read back after an idle bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let waited = false, reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        refresh: async () => {
+          if (id === "successor-1" && waited && ++reads === 2) throw new Error("transient read");
+          return handle.refresh();
+        },
+        waitForFinish: async () => {
+          waited = true;
+          h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+          return { status: "idle" as const, final: null, error: null, lastMessage: null };
+        } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("could not be read back after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when a permission is pending after an idle bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let waited = false, reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        refresh: async () => {
+          if (id === "successor-1" && waited && ++reads === 2) h.agents.set("successor-1", { ...h.agents.get("successor-1")!, pendingPermissions: [{ id: "p1" }] as Agent["pendingPermissions"] });
+          return handle.refresh();
+        },
+        waitForFinish: async () => {
+          waited = true;
+          h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+          return { status: "idle" as const, final: null, error: null, lastMessage: null };
+        } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("still executing or waiting for input after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the successor turns active on a read after the idle bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let waited = false, reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        refresh: async () => {
+          if (id === "successor-1" && waited && ++reads === 2) h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "running" });
+          return handle.refresh();
+        },
+        waitForFinish: async () => {
+          waited = true;
+          h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+          return { status: "idle" as const, final: null, error: null, lastMessage: null };
+        } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("still executing or waiting for input after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("refuses a user message after the bootstrap", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    let reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, timeline: { refetch: async () => {
+        if (id === "successor-1" && ++reads > 1) {
+          const bootstrap = h.timelines.get(id)?.find((entry) => entry.item.type === "user_message")?.item;
+          return { entries: [{ item: bootstrap }, { item: { type: "user_message", text: "later task" } }] } as never;
+        }
+        return handle.timeline.refetch();
+      } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("handoff summary does not read back"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("accepts the bootstrap followed by more than 20 non-user entries", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    let reads = 0;
+    const limits: Array<number | undefined> = [];
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, timeline: { refetch: async (options?: { direction?: "tail"; limit?: number }) => {
+        if (id === "successor-1" && ++reads === 2) {
+          limits.push(options?.limit);
+          const bootstrap = h.timelines.get(id)?.find((entry) => entry.item.type === "user_message")?.item;
+          const entries = [
+            { item: bootstrap },
+            ...Array.from({ length: 30 }, (_, index) => ({ item: { type: "assistant_message", text: `note ${index}` } })),
+          ];
+          return { entries: entries.slice(-(options?.limit ?? entries.length)) } as never;
+        }
+        return handle.timeline.refetch();
+      } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({ state: "succeeded", phase: "done" });
+    expect(limits).toEqual([200]);
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it("refuses when no user message is within the timeline bound", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    let reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, timeline: { refetch: async (options?: { direction?: "tail"; limit?: number }) => {
+        if (id === "successor-1" && ++reads > 1) {
+          return { entries: Array.from({ length: options?.limit ?? 200 }, (_, index) => ({ item: { type: "assistant_message", text: `note ${index}` } })) };
+        }
+        return handle.timeline.refetch();
+      } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("handoff summary does not read back"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("still refuses an archived successor whose bootstrap is visible", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    let reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, refresh: async () => {
+        const found = await handle.refresh();
+        if (id === "successor-1" && found && ++reads > 1) found.agent.archivedAt = "2026-10-25T09:01:00Z";
+        return found;
+      } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("archived, executing or waiting for input"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("still refuses an active successor whose bootstrap has extra text", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, timeline: { refetch: async () => {
+        if (id === "successor-1" && ++reads > 1) {
+          const text = h.timelines.get(id)?.find((entry) => entry.item.type === "user_message")?.item.text;
+          return { entries: [{ item: { type: "user_message", text: `${String(text)} extra` } }] };
+        }
+        return handle.timeline.refetch();
+      } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("executing or waiting for input"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("does not accept bootstrap text in an assistant message", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    let reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, timeline: { refetch: async () => {
+        if (id === "successor-1" && ++reads > 1) {
+          const text = h.timelines.get(id)?.find((entry) => entry.item.type === "user_message")?.item.text;
+          return { entries: [{ item: { type: "assistant_message", text } }] };
+        }
+        return handle.timeline.refetch();
+      } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("handoff summary does not read back"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("reports a timeline error page as a handoff summary read failure", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    let reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, timeline: { refetch: async () => {
+        if (id === "successor-1" && ++reads > 1) return { entries: [], error: "timeline unavailable" };
+        return handle.timeline.refetch();
+      } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("handoff summary read failed"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("reports a timeline read exception as a handoff summary read failure", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    let reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, timeline: { refetch: async () => {
+        if (id === "successor-1" && ++reads > 1) throw new Error("timeline unavailable");
+        return handle.timeline.refetch();
+      } } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("handoff summary read failed"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("accepts a successor with pending permissions when Check verifies after a lost release reply", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle, send: async (...args: Parameters<typeof handle.send>) => {
+        await handle.send(...args);
+        throw new Error("lost reply");
+      } };
+    };
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    h.agents.set("successor-1", { ...h.agents.get("successor-1")!, pendingPermissions: [{ id: "p1" }] as Agent["pendingPermissions"] });
+    expect(await h.service.check(review.reviewId)).toMatchObject({ state: "succeeded", phase: "done" });
+    expect(h.effects.send).toHaveLength(1);
   });
 
   it("shares the per-session fence with Archive and Resume", async () => {
