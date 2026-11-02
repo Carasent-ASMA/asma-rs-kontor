@@ -96,6 +96,8 @@ describe("readConfig Paseo host fallback", () => {
     [" localhost:6767 ", "localhost:6767"],
     ["0.0.0.0:6767", "127.0.0.1:6767"],
     ["[::]:6767", "[::1]:6767"],
+    ["[::0]:6767", "[::1]:6767"],
+    ["[0:0:0:0:0:0:0:0]:6767", "[::1]:6767"],
     ["[::1]:7001", "[::1]:7001"],
   ])("maps daemon.listen %j to the client host %j", async (listen, host) => {
     expect(hostFor(await paseoHome(listening(listen)))).toBe(host);
@@ -125,6 +127,7 @@ describe("readConfig Paseo host fallback", () => {
     ["port 0", listening("127.0.0.1:0")],
     ["an out-of-range port", listening("127.0.0.1:65536")],
     ["a path suffix", listening("127.0.0.1:6767/ws")],
+    ["an invalid IPv6 literal", listening("[:::]:6767")],
     ["an empty listen", listening("")],
     ["a null listen", listening(null)],
     ["a numeric listen", listening(6767)],

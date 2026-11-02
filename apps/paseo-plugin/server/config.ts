@@ -56,18 +56,26 @@ function parseRoots(value: string | undefined, home: string): readonly string[] 
  */
 function listenHost(paseoHome: string): string | null {
   let listen: unknown;
+  let host: string;
   try {
+    // ponytail: one small synchronous read per readConfig() call while the variable is unset, across about eight
+    // path-helper callers; memoize per Paseo home (or make paseoHost lazy) if a caller ever reads config on a hot path.
     listen = (JSON.parse(readFileSync(join(paseoHome, "config.json"), "utf8")) as { daemon?: { listen?: unknown } } | null)?.daemon?.listen;
   } catch {
     return null;
   }
-  const match = typeof listen === "string" ? /^(?:\[([0-9a-fA-F:.]+)\]|([a-zA-Z0-9_][a-zA-Z0-9_.-]*)):(\d{1,5})$/.exec(listen.trim()) : null;
-  const port = Number(match?.[3]);
+  const match = typeof listen === "string" ? /^(\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9_][a-zA-Z0-9_.-]*):(\d{1,5})$/.exec(listen.trim()) : null;
+  const port = Number(match?.[2]);
   if (!match || port < 1 || port > 65535) {
     return null;
   }
-  const host = match[2] === "0.0.0.0" ? "127.0.0.1" : match[1] === "::" ? "[::1]" : match[1] ? `[${match[1]}]` : match[2];
-  return `${host}:${port}`;
+  try {
+    // The URL form is canonical, so every all-zero spelling becomes 0.0.0.0 or [::].
+    host = new URL(`http://${match[1]}`).hostname;
+  } catch {
+    return null;
+  }
+  return `${host === "0.0.0.0" ? "127.0.0.1" : host === "[::]" ? "[::1]" : host}:${port}`;
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {

@@ -24,8 +24,9 @@ const runPublicCli: Run = (command, args) => new Promise((resolve, reject) => {
   }, (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
+/** Exactly one daemon selector: the CLI refuses `--home` with `--host` (TARGET_AMBIGUOUS), so the home wins. */
 function daemonArgs(config: Pick<KontorPluginConfig, "paseoHome" | "paseoHost">): string[] {
-  return [...(config.paseoHome ? ["--home", config.paseoHome] : []), ...(config.paseoHost ? ["--host", config.paseoHost] : [])];
+  return config.paseoHome ? ["--home", config.paseoHome] : config.paseoHost ? ["--host", config.paseoHost] : [];
 }
 
 function exactId(agentId: string): string | null {
