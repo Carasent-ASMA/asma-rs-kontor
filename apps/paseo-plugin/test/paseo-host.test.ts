@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCompleteScheduleReader } from "../server/paseo-host";
 
 const HOST = "127.0.0.1:6767";
@@ -33,12 +33,12 @@ describe("complete public host schedule reader", () => {
     expect(loaded).toBe(false);
   });
 
-  it("reports the exact public connector version boundary without blaming the pinned development SDK", async () => {
+  it("reports the public connector version floor without blaming an older development SDK", async () => {
     const read = createCompleteScheduleReader({ paseoHost: HOST }, async () => null);
     const missing = await read();
     expect(missing).toMatchObject({ complete: false });
     if (!missing.complete) {
-      expect(missing.gap).toContain("0.13.2");
+      expect(missing.gap).toContain("0.13.2 or later");
       expect(missing.gap).not.toContain("0.11.4");
     }
   });
@@ -88,13 +88,52 @@ describe("complete reader connector boundary", () => {
   });
 });
 
-describe("pinned Paseo development SDK", () => {
-  it("pins the three SDK packages to the public node connector release and exports it", async () => {
+describe("default public connector loader", () => {
+  afterEach(() => {
+    vi.doUnmock("@getpaseo/client/node");
+    vi.resetModules();
+  });
+
+  it("reports the connector gap when the installed node entry lacks createHostClient", async () => {
+    vi.doMock("@getpaseo/client/node", () => ({ createHostClient: undefined }));
+    const { createCompleteScheduleReader: reader } = await import("../server/paseo-host");
+    expect(await reader({ paseoHost: HOST })()).toMatchObject({ complete: false, gap: expect.stringContaining("does not export createHostClient") });
+  });
+});
+
+const SDK_FLOOR = [0, 13, 2] as const;
+
+/** Numeric `major.minor.patch` comparison against the floor: 0.13.10 passes and 0.13.1 fails. */
+function meetsSdkFloor(version: string): boolean {
+  const parts = /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number);
+  if (!parts) return false;
+  for (const [index, floor] of SDK_FLOOR.entries()) {
+    if (parts[index] !== floor) return parts[index]! > floor;
+  }
+  return true;
+}
+
+describe("Paseo development SDK floor", () => {
+  it.each([
+    ["0.13.1", false],
+    ["0.12.99", false],
+    ["0.13", false],
+    ["0.13.2", true],
+    ["0.13.10", true],
+    ["0.14.0", true],
+    ["1.0.0", true],
+  ] as const)("compares %s with the 0.13.2 floor numerically (%s)", (version, meets) => {
+    expect(meetsSdkFloor(version)).toBe(meets);
+  });
+
+  it("declares the three SDK packages at a floor of 0.13.2 or later and exports the public node connector", async () => {
     const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
       devDependencies: Record<string, string>;
     };
     for (const name of ["@getpaseo/client", "@getpaseo/plugin", "@getpaseo/protocol"]) {
-      expect(manifest.devDependencies[name], name).toBe("0.13.2");
+      const floor = /^>=(\S+)$/.exec(manifest.devDependencies[name] ?? "")?.[1];
+      expect(floor, `${name} declares a >= floor`).toBeDefined();
+      expect(meetsSdkFloor(floor!), `${name} floor ${floor}`).toBe(true);
     }
     const node = await import("@getpaseo/client/node") as { createHostClient?: unknown };
     expect(typeof node.createHostClient, "@getpaseo/client/node createHostClient").toBe("function");

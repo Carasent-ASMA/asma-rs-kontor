@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -49,6 +50,34 @@ function parseRoots(value: string | undefined, home: string): readonly string[] 
   return [...new Set(roots)];
 }
 
+/**
+ * The daemon's own `daemon.listen` from `<paseoHome>/config.json` as a client `host:port`, with a wildcard bind
+ * mapped to its loopback. A socket, an unreadable file or any other listen shape is null: the honest no-host gap.
+ */
+function listenHost(paseoHome: string): string | null {
+  let listen: unknown;
+  let host: string;
+  try {
+    // ponytail: one small synchronous read per readConfig() call while the variable is unset, across about eight
+    // path-helper callers; memoize per Paseo home (or make paseoHost lazy) if a caller ever reads config on a hot path.
+    listen = (JSON.parse(readFileSync(join(paseoHome, "config.json"), "utf8")) as { daemon?: { listen?: unknown } } | null)?.daemon?.listen;
+  } catch {
+    return null;
+  }
+  const match = typeof listen === "string" ? /^(\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9_][a-zA-Z0-9_.-]*):(\d{1,5})$/.exec(listen.trim()) : null;
+  const port = Number(match?.[2]);
+  if (!match || port < 1 || port > 65535) {
+    return null;
+  }
+  try {
+    // The URL form is canonical, so every all-zero spelling becomes 0.0.0.0, [::] or the IPv4-mapped [::ffff:0:0].
+    host = new URL(`http://${match[1]}`).hostname;
+  } catch {
+    return null;
+  }
+  return `${host === "0.0.0.0" || host === "[::ffff:0:0]" ? "127.0.0.1" : host === "[::]" ? "[::1]" : host}:${port}`;
+}
+
 function positiveInteger(value: string | undefined, fallback: number): number {
   if (!value) {
     return fallback;
@@ -71,13 +100,14 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): KontorPluginCo
     env.KONTOR_PLUGIN_STATE_ROOT?.trim() ||
     join(home, ".local", "state", "kontor", "asma");
   const serveProfile = env.KONTOR_PLUGIN_SERVE_PROFILE?.trim() || null;
+  const configuredPaseoHome = env.KONTOR_PLUGIN_PASEO_HOME?.trim() || paseoHome || null;
   return {
     stateRoot,
     mcpCommand: env.KONTOR_PLUGIN_MCP_COMMAND?.trim() || DEFAULT_MCP_COMMAND,
     cliCommand: env.KONTOR_PLUGIN_CLI_COMMAND?.trim() || DEFAULT_CLI_COMMAND,
     paseoCommand: env.KONTOR_PLUGIN_PASEO_COMMAND?.trim() || "paseo",
-    paseoHome: env.KONTOR_PLUGIN_PASEO_HOME?.trim() || paseoHome || null,
-    paseoHost: env.KONTOR_PLUGIN_PASEO_HOST?.trim() || null,
+    paseoHome: configuredPaseoHome,
+    paseoHost: env.KONTOR_PLUGIN_PASEO_HOST?.trim() || listenHost(configuredPaseoHome || join(home, ".paseo")),
     mcpEnabled: env.KONTOR_PLUGIN_MCP !== "off",
     serveProfile,
     placementRoots: parseRoots(env.KONTOR_PLUGIN_PLACEMENT_ROOTS, home),
