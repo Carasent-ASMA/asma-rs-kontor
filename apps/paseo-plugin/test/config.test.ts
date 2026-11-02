@@ -98,6 +98,7 @@ describe("readConfig Paseo host fallback", () => {
     ["[::]:6767", "[::1]:6767"],
     ["[::0]:6767", "[::1]:6767"],
     ["[0:0:0:0:0:0:0:0]:6767", "[::1]:6767"],
+    ["[::ffff:0.0.0.0]:6767", "127.0.0.1:6767"],
     ["[::1]:7001", "[::1]:7001"],
   ])("maps daemon.listen %j to the client host %j", async (listen, host) => {
     expect(hostFor(await paseoHome(listening(listen)))).toBe(host);

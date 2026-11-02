@@ -70,12 +70,12 @@ function listenHost(paseoHome: string): string | null {
     return null;
   }
   try {
-    // The URL form is canonical, so every all-zero spelling becomes 0.0.0.0 or [::].
+    // The URL form is canonical, so every all-zero spelling becomes 0.0.0.0, [::] or the IPv4-mapped [::ffff:0:0].
     host = new URL(`http://${match[1]}`).hostname;
   } catch {
     return null;
   }
-  return `${host === "0.0.0.0" ? "127.0.0.1" : host === "[::]" ? "[::1]" : host}:${port}`;
+  return `${host === "0.0.0.0" || host === "[::ffff:0:0]" ? "127.0.0.1" : host === "[::]" ? "[::1]" : host}:${port}`;
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
