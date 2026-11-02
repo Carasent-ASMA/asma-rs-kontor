@@ -1509,7 +1509,7 @@ All values are optional and read from the daemon environment:
 | `KONTOR_PLUGIN_ASMA_COMMAND` | none | Absolute installed `asma` executable for Jira and plan-export reads. When absent, the plugin resolves `~/.local/bin/asma`, the configured workspace's `.venv/bin/asma`, and standard absolute install locations; it never runs a shell or a caller-supplied command. |
 | `KONTOR_PLUGIN_PASEO_COMMAND` | `paseo` | Installed public Paseo CLI used only for the bounded exact-source stop and schedule-read adapter. |
 | `KONTOR_PLUGIN_PASEO_HOME` | `PASEO_HOME`, else none | Optional `--home` passed to that public CLI; never from a review or UI caller. |
-| `KONTOR_PLUGIN_PASEO_HOST` | none | Optional `--host` passed to that public CLI and the paired host connection for the complete schedule inventory; required for live wake proof when `schedules.forAgent` is absent. Never read from a review or UI caller. |
+| `KONTOR_PLUGIN_PASEO_HOST` | `daemon.listen` from `<Paseo home>/config.json` when it is `host:port` (`0.0.0.0`/`::` mapped to loopback), else none | Optional `--host` passed to that public CLI and the paired host connection for the complete schedule inventory; required for live wake proof when `schedules.forAgent` is absent. The variable always wins; the Paseo home is the configured one, else `~/.paseo`; a socket or unreadable listen leaves none. Never read from a review or UI caller. |
 | `KONTOR_PLUGIN_MCP` | on | `off` skips the MCP server; the hooks and guard stay active. |
 | `KONTOR_PLUGIN_SERVE_PROFILE` | none | Optional `--serve-profile` narrowing. |
 | `KONTOR_PLUGIN_PLACEMENT_ROOTS` | none | Comma-separated extra containment roots. |
