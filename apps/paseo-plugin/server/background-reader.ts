@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { PaseoAgent } from "@getpaseo/client";
 import { claudeTranscriptPaths } from "./claude-usage";
+import { openCodeLayout, type OpenCodeLayout } from "./opencode-usage";
 import type { BackgroundReader } from "./takeover-brief";
 import { nativeIdentity, type VerifiedRoute } from "./vendor-usage";
 
@@ -141,14 +142,32 @@ async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
   return { workers: [...launches].map(([id, kind]) => ({ id, kind, status: done.get(id)!, ...(taskOf.get(id) ? { taskId: taskOf.get(id) } : {}) })) };
 }
 
-/** Child sessions through `parent_id`, each settled: no pending/running tool and a completed latest assistant message. */
+/** Every column each OpenCode layout read touches; 2.x keeps tool items in `session_message.data.content`. */
+const OPENCODE_READS = {
+  v1: { session: ["id", "parent_id"], message: ["id", "session_id", "time_created", "data"], part: ["session_id", "data"] },
+  v2: { session_v2: ["id", "parent_id"], session_message: ["session_id", "type", "seq", "data"], session_part: ["session_id"] },
+};
+// A tool item settles only as completed or error, as OpenCode does; any other or missing status is busy.
+const unsettledSql = (status: string) => `coalesce(${status}, '') NOT IN ('completed', 'error')`;
+const itemSql = (key: string) => `json_extract(m.data, c.fullkey || '.${key}')`;
+/** Unsettled tool items in one session, whatever the tool name; the source and its child sessions share this rule. */
+function busySql(layout: OpenCodeLayout) {
+  if (layout === "v1") return `SELECT count(*) AS n FROM part WHERE session_id = ? AND json_extract(data, '$.type') = 'tool' AND ${unsettledSql("json_extract(data, '$.state.status')")}`;
+  // An assistant message without a content array, or an item that is neither text nor reasoning, counts as a tool item.
+  return `SELECT count(*) AS n FROM session_message m WHERE m.session_id = ? AND m.type = 'assistant' AND (json_type(m.data, '$.content') IS NOT 'array' OR EXISTS (SELECT 1 FROM json_each(m.data, '$.content') c WHERE coalesce(${itemSql("type")}, '') NOT IN ('text', 'reasoning') AND ${unsettledSql(itemSql("state.status"))}))`;
+}
+
+/** Child sessions through `parent_id`, each settled: no unsettled tool and a completed latest assistant message. */
 function readOpenCode(databasePath: string, handle: string): Read {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {
-    if (!database.prepare("SELECT id FROM session WHERE id = ?").get(handle)) return { gap: "The exact OpenCode session row is missing; nothing is retired." };
-    const task = database.prepare("SELECT count(*) AS n FROM part WHERE session_id = ? AND json_extract(data, '$.type') = 'tool' AND json_extract(data, '$.tool') = 'task' AND json_extract(data, '$.state.status') IN ('pending', 'running')").get(handle) as { n: number };
-    if (task.n) return { gap: "The source has an OpenCode task still pending or running. Nothing is retired. Let it finish, stop it in the source, or use ordinary Take over, which makes no background-transfer claim." };
-    const children = database.prepare("SELECT id FROM session WHERE parent_id = ? ORDER BY id LIMIT ?");
+    const layout = openCodeLayout(database, OPENCODE_READS);
+    if (typeof layout !== "string") return { gap: `The ${layout.gap}; nothing is retired.` };
+    const sessions = layout === "v2" ? "session_v2" : "session";
+    if (!database.prepare(`SELECT id FROM ${sessions} WHERE id = ?`).get(handle)) return { gap: "The exact OpenCode session row is missing; nothing is retired." };
+    const busy = database.prepare(busySql(layout));
+    if ((busy.get(handle) as { n: number }).n) return { gap: "The source has an OpenCode tool or subagent still pending or running. Nothing is retired. Let it finish, stop it in the source, or use ordinary Take over, which makes no background-transfer claim." };
+    const children = database.prepare(`SELECT id FROM ${sessions} WHERE parent_id = ? ORDER BY id LIMIT ?`);
     const descendants: string[] = [];
     let level = [handle];
     for (let depth = 1; level.length; depth++) {
@@ -158,8 +177,13 @@ function readOpenCode(databasePath: string, handle: string): Read {
       if (descendants.length > OPENCODE_ROWS) return { gap: `The source has more than ${OPENCODE_ROWS} OpenCode child sessions; nothing is retired.` };
       level = next;
     }
-    const busy = database.prepare("SELECT count(*) AS n FROM part WHERE session_id = ? AND json_extract(data, '$.type') = 'tool' AND json_extract(data, '$.state.status') IN ('pending', 'running')");
-    const latest = database.prepare("SELECT json_extract(data, '$.time.completed') AS completed FROM message WHERE session_id = ? AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created DESC, id DESC LIMIT 1");
+    if (layout === "v2") {
+      const parts = database.prepare("SELECT 1 FROM session_part WHERE session_id = ? LIMIT 1");
+      if ([handle, ...descendants].some((id) => parts.get(id))) return { gap: "The source or a child session has OpenCode session_part rows, a layout this reader has not qualified; nothing is retired." };
+    }
+    const latest = database.prepare(layout === "v2"
+      ? "SELECT json_extract(data, '$.time.completed') AS completed FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT 1"
+      : "SELECT json_extract(data, '$.time.completed') AS completed FROM message WHERE session_id = ? AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created DESC, id DESC LIMIT 1");
     const unsettled = descendants.filter((id) => {
       const completed = (latest.get(id) as { completed: unknown } | undefined)?.completed;
       return (busy.get(id) as { n: number }).n > 0 || typeof completed !== "number" || !Number.isFinite(completed);
