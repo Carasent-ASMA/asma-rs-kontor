@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { usageTotalsSchema } from "../shared/session-navigator";
 import { createOpenCodeUsageReader, openCodeDatabasePath } from "../server/opencode-usage";
+import { OPENCODE_V1_SCHEMA, OPENCODE_V2_SCHEMA } from "./fixtures/opencode-schema";
 
 let root: string, database: string;
 const ID = "ses_0123456789abcdef";
@@ -44,6 +45,7 @@ describe("OpenCode session usage", () => {
     expect(result.source).not.toContain("1.19.3");
     expect(result.source).toContain("child/subagent sessions (parent_id) are excluded");
     expect(result.source).toContain("cache read/write are included in input");
+    expect(result.source).toContain("read from session (the v1 layout)");
   });
 
   it("returns unknown for a missing row, missing database or invalid counters", async () => {
@@ -66,5 +68,41 @@ describe("OpenCode session usage", () => {
     write([{ id: "ses_other", input: 100, output: 8 }]);
     const result = await createOpenCodeUsageReader(database).read(ID);
     expect(result).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("no exact native session row") });
+  });
+});
+
+// Rows go into the captured OpenCode DDL; foreign keys are off so a fixture names only the rows its case needs.
+function captured(schema: string, rows: { table: "session" | "session_v2"; id: string; parent?: string; tokens: number[] }[]) {
+  const db = new DatabaseSync(database, { enableForeignKeyConstraints: false });
+  try {
+    db.exec(schema);
+    for (const { table, id, parent = null, tokens } of rows) db.prepare(`INSERT INTO ${table} (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated,
+      tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write) VALUES (?, 'prj', ?, 's', '/w', 't', '0', 1, 1, ?, ?, ?, ?, ?)`).run(id, parent, ...tokens);
+  } finally { db.close(); }
+}
+
+describe("OpenCode v2 session usage", () => {
+  const read = (id = ID) => createOpenCodeUsageReader(database).read(id);
+  it("reads the exact session_v2 row of a v2-only database, without its child sessions", async () => {
+    captured(OPENCODE_V2_SCHEMA, [{ table: "session_v2", id: ID, tokens: [10, 5, 2, 3, 4] }, { table: "session_v2", id: "ses_child", parent: ID, tokens: [999, 999, 999, 999, 999] }]);
+    const result = await read();
+    expect(result).toMatchObject({ input: 17, output: 7, scope: "provider-cumulative" });
+    expect(usageTotalsSchema.parse(result)).toEqual(result);
+    expect(result.source).toContain("read from session_v2 (the v2 layout)");
+    expect(result.source).toContain("child/subagent sessions (parent_id) are excluded");
+  });
+  it("reads only v2 when both layouts are present, never a frozen v1 row", async () => {
+    captured(OPENCODE_V1_SCHEMA + OPENCODE_V2_SCHEMA, [{ table: "session", id: ID, tokens: [1, 1, 1, 1, 1] }, { table: "session", id: "ses_frozen", tokens: [100, 8, 0, 0, 0] },
+      { table: "session_v2", id: ID, tokens: [10, 5, 2, 3, 4] }]);
+    expect(await read()).toMatchObject({ input: 17, output: 7, source: expect.stringContaining("read from session_v2") });
+    expect(await read("ses_frozen")).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("no exact native session row") });
+  });
+  it.each([["a v2-only", OPENCODE_V2_SCHEMA], ["a both-layout", OPENCODE_V1_SCHEMA + OPENCODE_V2_SCHEMA]])("refuses %s database whose session_v2 lacks a counter it reads", async (_, schema) => {
+    captured(`${schema}\nALTER TABLE session_v2 RENAME COLUMN tokens_cache_write TO tokens_cache_write_renamed;`, []);
+    expect(await read()).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("OpenCode v2 layout lacks session_v2.tokens_cache_write") });
+  });
+  it("refuses a database with neither layout", async () => {
+    const db = new DatabaseSync(database); db.exec("CREATE TABLE unrelated (id text)"); db.close();
+    expect(await read()).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("neither the v1 nor the v2 session layout") });
   });
 });

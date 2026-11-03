@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PaseoAgent } from "@getpaseo/client";
 import { CODEX_BACKGROUND_GAP, createBackgroundReader, type BackgroundReaderDeps } from "../server/background-reader";
 import { readPreparedBackground } from "../server/takeover-brief";
+import { OPENCODE_V1_SCHEMA, OPENCODE_V2_SCHEMA } from "./fixtures/opencode-schema";
 import { verifiedVendorRoute } from "../server/vendor-usage";
 
 const SOURCE = "agent-1", HANDLE = "0a1b2c3d-native", REVISION = "source-rev-1";
@@ -186,19 +187,26 @@ describe("Claude provider-native background", () => {
   });
 });
 
+type Seed = { session(id: string, parent?: string | null): void; message(session: string, data: unknown, at?: number): void; part(session: string, data: unknown): void;
+  session2(id: string, parent?: string | null): void; message2(session: string, type: string, data: unknown, seq?: number): void; part2(session: string): void };
+// Rows go into the captured OpenCode DDL; foreign keys are off so a fixture names only the rows its case needs.
+function seed(path: string, setup: (db: Seed) => void, schema = OPENCODE_V1_SCHEMA) {
+  const db = new DatabaseSync(path, { enableForeignKeyConstraints: false });
+  db.exec(schema);
+  let next = 0;
+  db.exec("BEGIN");
+  setup({
+    session: (id, parent = null) => { db.prepare("INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES (?, 'prj', ?, 's', '/w', 't', '1.0.0', 1, 1)").run(id, parent); },
+    message: (session, data, at = ++next) => { db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)").run(`msg_${++next}`, session, at, at, JSON.stringify(data)); },
+    part: (session, data) => { db.prepare("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, 'msg', ?, 1, 1, ?)").run(`prt_${++next}`, session, JSON.stringify(data)); },
+    session2: (id, parent = null) => { db.prepare("INSERT INTO session_v2 (id, project_id, parent_id, slug, directory, version, time_created, time_updated) VALUES (?, 'prj', ?, 's', '/w', '2.0.0', 1, 1)").run(id, parent); },
+    message2: (session, type, data, seq = ++next) => { db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, 1, 1, ?)").run(`msg_${++next}`, session, type, seq, JSON.stringify(data)); },
+    part2: (session) => { db.prepare("INSERT INTO session_part (message_id, session_id, ordinal, type, time_created, time_updated, data) VALUES ('msg', ?, ?, 'text', 1, 1, '{}')").run(session, ++next); },
+  });
+  db.exec("COMMIT"); db.close();
+}
+
 describe("OpenCode provider-native background", () => {
-  function seed(path: string, setup: (db: { session(id: string, parent?: string | null): void; message(session: string, data: unknown, at?: number): void; part(session: string, data: unknown): void }) => void) {
-    const db = new DatabaseSync(path);
-    db.exec("CREATE TABLE session (id text PRIMARY KEY, parent_id text); CREATE TABLE message (id text PRIMARY KEY, session_id text, time_created integer, data text); CREATE TABLE part (id text PRIMARY KEY, message_id text, session_id text, data text);");
-    let next = 0;
-    db.exec("BEGIN");
-    setup({
-      session: (id, parent = null) => { db.prepare("INSERT INTO session VALUES (?, ?)").run(id, parent); },
-      message: (session, data, at = ++next) => { db.prepare("INSERT INTO message VALUES (?, ?, ?, ?)").run(`msg_${++next}`, session, at, JSON.stringify(data)); },
-      part: (session, data) => { db.prepare("INSERT INTO part VALUES (?, ?, ?, ?)").run(`prt_${++next}`, "msg", session, JSON.stringify(data)); },
-    });
-    db.exec("COMMIT"); db.close();
-  }
   const done = { role: "assistant", time: { created: 1, completed: 2 } };
   it("O1 completes a source without children", async () => {
     const f = await fixture("opencode"); seed(f.database, (db) => db.session(HANDLE));
@@ -230,6 +238,90 @@ describe("OpenCode provider-native background", () => {
     const f = await fixture("opencode");
     seed(f.database, (db) => { db.session(HANDLE); for (let index = 0; index < 501; index++) { db.session(`ses_${index}`, HANDLE); db.message(`ses_${index}`, done); } });
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("more than 500") });
+  });
+  it("O7 under v1 counts only a task launch, never a subagent item", async () => {
+    const f = await fixture("opencode"); seed(f.database, (db) => { db.session(HANDLE); db.part(HANDLE, { type: "tool", tool: "subagent", state: { status: "running" } }); });
+    expect((await f.read()).complete).toBe(true);
+  });
+  it.each(["pending", "queued", undefined])("O8 under v1 treats a child tool with status %s as busy", async (status) => {
+    const f = await fixture("opencode");
+    seed(f.database, (db) => { db.session(HANDLE); db.session("ses_child", HANDLE); db.message("ses_child", done); db.part("ses_child", { type: "tool", tool: "bash", state: { status } }); });
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: ses_child)") });
+  });
+});
+
+describe("OpenCode v2 provider-native background", () => {
+  const V2 = OPENCODE_V2_SCHEMA, BOTH = OPENCODE_V1_SCHEMA + OPENCODE_V2_SCHEMA;
+  const said = (content: unknown, time: Record<string, unknown> = { created: 1, completed: 2 }) => ({ time, content });
+  const done = said([{ type: "text", text: "ok" }]);
+  const tool = (name: string, status?: string) => ({ type: "tool", id: `call_${name}`, name, state: status === undefined ? { input: {} } : { status, input: {} } });
+  const read = async (setup: (db: Seed) => void, schema = V2) => { const f = await fixture("opencode"); seed(f.database, setup, schema); return f.read(); };
+  const ids = async (setup: (db: Seed) => void, schema = V2) => { const result = await read(setup, schema); if (!result.complete) throw new Error(result.gap); return result.accounting.workers.map((worker) => worker.id); };
+  const chain = (db: Seed, length: number) => { db.session2(HANDLE); for (let index = 0; index < length; index++) { db.session2(`ses_${index}`, index ? `ses_${index - 1}` : HANDLE); db.message2(`ses_${index}`, "assistant", done); } };
+
+  it("P1 completes a v2-only source without children", async () => {
+    expect(await ids((db) => { db.session2(HANDLE); db.message2(HANDLE, "assistant", done); })).toEqual([]);
+  });
+  it("P2 finishes a child and its grandchild through session_v2.parent_id, with the same snapshot bytes", async () => {
+    const f = await fixture("opencode");
+    seed(f.database, (db) => { db.session2(HANDLE); db.session2("ses_child", HANDLE); db.session2("ses_grand", "ses_child");
+      db.message2(HANDLE, "assistant", said([tool("subagent", "completed"), tool("subagent", "error")]));
+      db.message2("ses_child", "assistant", said([{ type: "reasoning", text: "r" }, tool("bash", "completed"), tool("read", "error"), { type: "text", text: "ok" }]));
+      db.message2("ses_child", "idle", { time: { created: 3 }, outcome: "succeeded" });
+      db.message2("ses_grand", "assistant", done); }, V2);
+    const result = await f.read(); if (!result.complete) throw new Error(result.gap);
+    expect(result.accounting.workers.map((worker) => [worker.id, worker.state])).toEqual([["ses_child", "finished"], ["ses_grand", "finished"]]);
+    expect(JSON.parse(await readFile(join(f.stateRoot, `${result.accounting.revision}.json`), "utf8"))).toEqual({ version: 1, provider: "opencode", source: f.database, handle: HANDLE,
+      workers: [{ id: "ses_child", kind: "child-session", status: "completed" }, { id: "ses_grand", kind: "child-session", status: "completed" }] });
+  });
+  it.each([["running", [tool("bash", "running")]], ["pending", [tool("bash", "pending")]], ["unknown", [tool("bash", "queued")]], ["missing", [tool("bash")]],
+    ["unknown-kind", [{ type: "patch" }]], ["non-object", ["ok"]], ["non-array", "ok"]])("P3 refuses a child with a %s tool item", async (_, content) => {
+    expect(await read((db) => { db.session2(HANDLE); db.session2("ses_child", HANDLE); db.message2("ses_child", "assistant", said(content)); }))
+      .toEqual({ complete: false, gap: expect.stringContaining("1 OpenCode child sessions are not finished (first 20 ids: ses_child)") });
+  });
+  it.each([["no", { created: 1 }], ["a non-numeric", { created: 1, completed: "2" }]])("P4 refuses a child whose highest-seq assistant message has %s completed time", async (_, time) => {
+    // The incomplete message is written first, so only seq order finds it.
+    expect(await read((db) => { db.session2(HANDLE); db.session2("ses_child", HANDLE); db.message2("ses_child", "assistant", said([], time), 5); db.message2("ses_child", "assistant", done, 1); }))
+      .toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: ses_child)") });
+  });
+  it("P4 settles a child on its highest-seq assistant message", async () => {
+    expect(await ids((db) => { db.session2(HANDLE); db.session2("ses_child", HANDLE); db.message2("ses_child", "assistant", done, 5); db.message2("ses_child", "assistant", said([], { created: 1 }), 1); })).toEqual(["ses_child"]);
+  });
+  it.each(["running", "pending", "queued", undefined])("P5 refuses a source subagent with status %s", async (status) => {
+    expect(await read((db) => { db.session2(HANDLE); db.message2(HANDLE, "assistant", said([tool("subagent", status)])); }))
+      .toEqual({ complete: false, gap: expect.stringContaining("task still pending or running") });
+  });
+  it("P5 under v2 counts only a subagent launch, never a task item", async () => {
+    expect(await ids((db) => { db.session2(HANDLE); db.message2(HANDLE, "assistant", said([tool("task", "running")])); })).toEqual([]);
+  });
+  it("P6 accepts 500 descendants and refuses 501", async () => {
+    const many = (count: number) => (db: Seed) => { db.session2(HANDLE); for (let index = 0; index < count; index++) { db.session2(`ses_${index}`, HANDLE); db.message2(`ses_${index}`, "assistant", done); } };
+    expect(await ids(many(500))).toHaveLength(500);
+    expect(await read(many(501))).toEqual({ complete: false, gap: expect.stringContaining("more than 500") });
+  });
+  it("P6 accepts children nested 8 deep and refuses 9", async () => {
+    expect(await ids((db) => chain(db, 8))).toHaveLength(8);
+    expect(await read((db) => chain(db, 9))).toEqual({ complete: false, gap: expect.stringContaining("nested deeper than 8") });
+  });
+  it("L1 reads only v2 when both layouts are present: the frozen v1 rows are ignored", async () => {
+    expect(await ids((db) => { db.session(HANDLE); db.session("ses_old", HANDLE); db.message("ses_old", { role: "assistant", time: { created: 1, completed: 2 } });
+      db.session2(HANDLE); db.session2("ses_new", HANDLE); db.message2("ses_new", "assistant", done); }, BOTH)).toEqual(["ses_new"]);
+  });
+  it("L1 never falls back to a frozen v1 row for a handle missing from v2", async () => {
+    expect(await read((db) => { db.session(HANDLE); db.session2("ses_other"); }, BOTH)).toEqual({ complete: false, gap: "The exact OpenCode session row is missing; nothing is retired." });
+  });
+  it("L2 refuses a database with neither layout", async () => {
+    const f = await fixture("opencode"), db = new DatabaseSync(f.database); db.exec("CREATE TABLE unrelated (id text)"); db.close();
+    expect(await f.read()).toEqual({ complete: false, gap: "The OpenCode database has neither the v1 nor the v2 session layout; nothing is retired." });
+  });
+  it.each([["a v2-only", V2, "v2", "session_message", "seq"], ["a both-layout", BOTH, "v2", "session_v2", "parent_id"], ["a v1-only", OPENCODE_V1_SCHEMA, "v1", "part", "data"]])(
+    "L3 refuses %s database whose chosen layout lacks a column it reads", async (_, schema, layout, table, column) => {
+    expect(await read(() => {}, `${schema}\nALTER TABLE ${table} RENAME COLUMN ${column} TO ${column}_renamed;`))
+      .toEqual({ complete: false, gap: `The OpenCode ${layout} layout lacks ${table}.${column}; nothing is retired.` });
+  });
+  it.each([HANDLE, "ses_child"])("L4 refuses a session_part row for %s", async (owner) => {
+    expect(await read((db) => { db.session2(HANDLE); db.session2("ses_child", HANDLE); db.message2("ses_child", "assistant", done); db.part2(owner); }))
+      .toEqual({ complete: false, gap: expect.stringContaining("session_part rows, a layout this reader has not qualified") });
   });
 });
 
