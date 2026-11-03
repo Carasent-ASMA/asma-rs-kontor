@@ -97,6 +97,15 @@ describe("OpenCode v2 session usage", () => {
     expect(await read()).toMatchObject({ input: 17, output: 7, source: expect.stringContaining("read from session_v2") });
     expect(await read("ses_frozen")).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("no exact native session row") });
   });
+  it.each([["session_message and session_part", "DROP TABLE session_v2;"], ["session_part alone", "DROP TABLE session_v2; DROP TABLE session_message;"]])(
+    "refuses a database whose v2 markers are %s, never reading the frozen v1 row", async (_, drop) => {
+    captured(`${OPENCODE_V1_SCHEMA}${OPENCODE_V2_SCHEMA}\n${drop}`, [{ table: "session", id: ID, tokens: [10, 5, 2, 3, 4] }]);
+    expect(await read()).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("OpenCode v2 layout lacks session_v2.id") });
+  });
+  it("reads the exact session row of a v1-only database on the captured v1 DDL", async () => {
+    captured(OPENCODE_V1_SCHEMA, [{ table: "session", id: ID, tokens: [10, 5, 2, 3, 4] }, { table: "session", id: "ses_child", parent: ID, tokens: [999, 999, 999, 999, 999] }]);
+    expect(await read()).toMatchObject({ input: 17, output: 7, source: expect.stringContaining("read from session (the v1 layout)") });
+  });
   it.each([["a v2-only", OPENCODE_V2_SCHEMA], ["a both-layout", OPENCODE_V1_SCHEMA + OPENCODE_V2_SCHEMA]])("refuses %s database whose session_v2 lacks a counter it reads", async (_, schema) => {
     captured(`${schema}\nALTER TABLE session_v2 RENAME COLUMN tokens_cache_write TO tokens_cache_write_renamed;`, []);
     expect(await read()).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("OpenCode v2 layout lacks session_v2.tokens_cache_write") });

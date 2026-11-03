@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import { OPENCODE_V1_SCHEMA, OPENCODE_V2_SCHEMA } from "./fixtures/opencode-sche
 import { verifiedVendorRoute } from "../server/vendor-usage";
 
 const SOURCE = "agent-1", HANDLE = "0a1b2c3d-native", REVISION = "source-rev-1";
+const SOURCE_BUSY = "The source has an OpenCode tool or subagent still pending or running.";
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const dirs: string[] = [];
 afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -232,16 +234,16 @@ describe("OpenCode provider-native background", () => {
   });
   it("O5 refuses a running source task", async () => {
     const f = await fixture("opencode"); seed(f.database, (db) => { db.session(HANDLE); db.part(HANDLE, { type: "tool", tool: "task", state: { status: "running" } }); });
-    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("task still pending or running") });
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining(SOURCE_BUSY) });
   });
   it("O6 refuses more than 500 descendants", async () => {
     const f = await fixture("opencode");
     seed(f.database, (db) => { db.session(HANDLE); for (let index = 0; index < 501; index++) { db.session(`ses_${index}`, HANDLE); db.message(`ses_${index}`, done); } });
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("more than 500") });
   });
-  it("O7 under v1 counts only a task launch, never a subagent item", async () => {
-    const f = await fixture("opencode"); seed(f.database, (db) => { db.session(HANDLE); db.part(HANDLE, { type: "tool", tool: "subagent", state: { status: "running" } }); });
-    expect((await f.read()).complete).toBe(true);
+  it.each([["bash", "running"], ["read", "queued"], ["subagent", "running"]])("O7 refuses a source with an unsettled %s tool, whatever its name", async (tool, status) => {
+    const f = await fixture("opencode"); seed(f.database, (db) => { db.session(HANDLE); db.part(HANDLE, { type: "tool", tool, state: { status } }); });
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining(SOURCE_BUSY) });
   });
   it.each(["pending", "queued", undefined])("O8 under v1 treats a child tool with status %s as busy", async (status) => {
     const f = await fixture("opencode");
@@ -289,10 +291,16 @@ describe("OpenCode v2 provider-native background", () => {
   });
   it.each(["running", "pending", "queued", undefined])("P5 refuses a source subagent with status %s", async (status) => {
     expect(await read((db) => { db.session2(HANDLE); db.message2(HANDLE, "assistant", said([tool("subagent", status)])); }))
-      .toEqual({ complete: false, gap: expect.stringContaining("task still pending or running") });
+      .toEqual({ complete: false, gap: expect.stringContaining(SOURCE_BUSY) });
   });
-  it("P5 under v2 counts only a subagent launch, never a task item", async () => {
-    expect(await ids((db) => { db.session2(HANDLE); db.message2(HANDLE, "assistant", said([tool("task", "running")])); })).toEqual([]);
+  it.each([["migrated task", tool("task", "running")], ["bash", tool("bash", "running")], ["read", tool("read", "pending")], ["unknown-kind", { type: "patch" }]])(
+    "P5 refuses a source with an unsettled %s item: no tool name is exempt", async (_, item) => {
+    expect(await read((db) => { db.session2(HANDLE); db.message2(HANDLE, "assistant", said([{ type: "text", text: "ok" }, item])); }))
+      .toEqual({ complete: false, gap: expect.stringContaining(SOURCE_BUSY) });
+  });
+  it.each([["missing", undefined], ["object", {}], ["string", "ok"]])("P5 refuses a source assistant message whose content is %s", async (_, content) => {
+    expect(await read((db) => { db.session2(HANDLE); db.message2(HANDLE, "assistant", said(content)); }))
+      .toEqual({ complete: false, gap: expect.stringContaining(SOURCE_BUSY) });
   });
   it("P6 accepts 500 descendants and refuses 501", async () => {
     const many = (count: number) => (db: Seed) => { db.session2(HANDLE); for (let index = 0; index < count; index++) { db.session2(`ses_${index}`, HANDLE); db.message2(`ses_${index}`, "assistant", done); } };
@@ -322,6 +330,18 @@ describe("OpenCode v2 provider-native background", () => {
   it.each([HANDLE, "ses_child"])("L4 refuses a session_part row for %s", async (owner) => {
     expect(await read((db) => { db.session2(HANDLE); db.session2("ses_child", HANDLE); db.message2("ses_child", "assistant", done); db.part2(owner); }))
       .toEqual({ complete: false, gap: expect.stringContaining("session_part rows, a layout this reader has not qualified") });
+  });
+  it.each([["session_part", "session_part.session_id"], ["session_v2", "session_v2.id, session_v2.parent_id"],
+    ["session_message", "session_message.session_id, session_message.type, session_message.seq, session_message.data"]])(
+    "L5 refuses a both-layout database without %s and never reads the frozen v1 rows", async (table, lacks) => {
+    // The settled v1 source and child would complete if the reader fell back to v1.
+    expect(await read((db) => { db.session(HANDLE); db.session("ses_old", HANDLE); db.message("ses_old", { role: "assistant", time: { created: 1, completed: 2 } }); },
+      `${BOTH}\nDROP TABLE ${table};`)).toEqual({ complete: false, gap: `The OpenCode v2 layout lacks ${lacks}; nothing is retired.` });
+  });
+  it("L6 opens the database read-only: a missing database refuses and is not created", async () => {
+    const f = await fixture("opencode");
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("Provider-native background read failed") });
+    expect(existsSync(f.database)).toBe(false);
   });
 });
 

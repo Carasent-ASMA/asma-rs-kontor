@@ -10,22 +10,21 @@ const count = (value: unknown): number | null => typeof value === "number" && Nu
 const TOKENS = ["id", "tokens_input", "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write"];
 
 export type OpenCodeLayout = "v1" | "v2";
+/** The tables that mark each layout, the same for every reader so that all of them choose the same layout. */
+const OPENCODE_MARKERS = { v2: ["session_v2", "session_message", "session_part"], v1: ["session", "message", "part"] } as const;
 /**
  * The OpenCode layout from the schema alone, never per row or from the version. 2.x writes `session_v2` and leaves the
- * 1.x `session` rows frozen, so v2 wins whenever any of its tables exists. A layout serves only when it carries every
- * column the caller reads (table → columns).
+ * 1.x `session` rows frozen, so v2 wins whenever any of its marker tables exists. The chosen layout serves only when it
+ * carries every column the caller reads (table → columns); otherwise the caller gets a gap, never the other layout.
  */
 export function openCodeLayout(database: DatabaseSync, reads: Record<OpenCodeLayout, Record<string, string[]>>): OpenCodeLayout | { gap: string } {
   const columns = new Map<string, Set<string>>();
   for (const row of database.prepare("SELECT m.name AS tbl, p.name AS col FROM sqlite_master m, pragma_table_info(m.name) p WHERE m.type = 'table'").all() as { tbl: string; col: string }[])
     columns.set(row.tbl, (columns.get(row.tbl) ?? new Set()).add(row.col));
-  for (const layout of ["v2", "v1"] as const) {
-    const tables = Object.entries(reads[layout]);
-    if (!tables.some(([table]) => columns.has(table))) continue;
-    const missing = tables.flatMap(([table, read]) => read.filter((column) => !columns.get(table)?.has(column)).map((column) => `${table}.${column}`));
-    return missing.length ? { gap: `OpenCode ${layout} layout lacks ${missing.join(", ")}` } : layout;
-  }
-  return { gap: "OpenCode database has neither the v1 nor the v2 session layout" };
+  const layout = (["v2", "v1"] as const).find((candidate) => OPENCODE_MARKERS[candidate].some((table) => columns.has(table)));
+  if (!layout) return { gap: "OpenCode database has neither the v1 nor the v2 session layout" };
+  const missing = Object.entries(reads[layout]).flatMap(([table, read]) => read.filter((column) => !columns.get(table)?.has(column)).map((column) => `${table}.${column}`));
+  return missing.length ? { gap: `OpenCode ${layout} layout lacks ${missing.join(", ")}` } : layout;
 }
 
 /** `$XDG_DATA_HOME/opencode/opencode.db`, or the XDG default under the operator home. */

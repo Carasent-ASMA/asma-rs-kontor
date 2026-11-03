@@ -150,11 +150,11 @@ const OPENCODE_READS = {
 // A tool item settles only as completed or error, as OpenCode does; any other or missing status is busy.
 const unsettledSql = (status: string) => `coalesce(${status}, '') NOT IN ('completed', 'error')`;
 const itemSql = (key: string) => `json_extract(m.data, c.fullkey || '.${key}')`;
-/** Unsettled tool items in one session; `launch` keeps only that layout's subagent tool: `task` in v1, `subagent` in v2. */
-function busySql(layout: OpenCodeLayout, launch: boolean) {
-  if (layout === "v1") return `SELECT count(*) AS n FROM part WHERE session_id = ? AND json_extract(data, '$.type') = 'tool'${launch ? " AND json_extract(data, '$.tool') = 'task'" : ""} AND ${unsettledSql("json_extract(data, '$.state.status')")}`;
+/** Unsettled tool items in one session, whatever the tool name; the source and its child sessions share this rule. */
+function busySql(layout: OpenCodeLayout) {
+  if (layout === "v1") return `SELECT count(*) AS n FROM part WHERE session_id = ? AND json_extract(data, '$.type') = 'tool' AND ${unsettledSql("json_extract(data, '$.state.status')")}`;
   // An assistant message without a content array, or an item that is neither text nor reasoning, counts as a tool item.
-  return `SELECT count(*) AS n FROM session_message m WHERE m.session_id = ? AND m.type = 'assistant' AND (json_type(m.data, '$.content') IS NOT 'array' OR EXISTS (SELECT 1 FROM json_each(m.data, '$.content') c WHERE coalesce(${itemSql("type")}, '') NOT IN ('text', 'reasoning')${launch ? ` AND ${itemSql("name")} = 'subagent'` : ""} AND ${unsettledSql(itemSql("state.status"))}))`;
+  return `SELECT count(*) AS n FROM session_message m WHERE m.session_id = ? AND m.type = 'assistant' AND (json_type(m.data, '$.content') IS NOT 'array' OR EXISTS (SELECT 1 FROM json_each(m.data, '$.content') c WHERE coalesce(${itemSql("type")}, '') NOT IN ('text', 'reasoning') AND ${unsettledSql(itemSql("state.status"))}))`;
 }
 
 /** Child sessions through `parent_id`, each settled: no unsettled tool and a completed latest assistant message. */
@@ -165,8 +165,8 @@ function readOpenCode(databasePath: string, handle: string): Read {
     if (typeof layout !== "string") return { gap: `The ${layout.gap}; nothing is retired.` };
     const sessions = layout === "v2" ? "session_v2" : "session";
     if (!database.prepare(`SELECT id FROM ${sessions} WHERE id = ?`).get(handle)) return { gap: "The exact OpenCode session row is missing; nothing is retired." };
-    const task = database.prepare(busySql(layout, true)).get(handle) as { n: number };
-    if (task.n) return { gap: "The source has an OpenCode task still pending or running. Nothing is retired. Let it finish, stop it in the source, or use ordinary Take over, which makes no background-transfer claim." };
+    const busy = database.prepare(busySql(layout));
+    if ((busy.get(handle) as { n: number }).n) return { gap: "The source has an OpenCode tool or subagent still pending or running. Nothing is retired. Let it finish, stop it in the source, or use ordinary Take over, which makes no background-transfer claim." };
     const children = database.prepare(`SELECT id FROM ${sessions} WHERE parent_id = ? ORDER BY id LIMIT ?`);
     const descendants: string[] = [];
     let level = [handle];
@@ -181,7 +181,6 @@ function readOpenCode(databasePath: string, handle: string): Read {
       const parts = database.prepare("SELECT 1 FROM session_part WHERE session_id = ? LIMIT 1");
       if ([handle, ...descendants].some((id) => parts.get(id))) return { gap: "The source or a child session has OpenCode session_part rows, a layout this reader has not qualified; nothing is retired." };
     }
-    const busy = database.prepare(busySql(layout, false));
     const latest = database.prepare(layout === "v2"
       ? "SELECT json_extract(data, '$.time.completed') AS completed FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT 1"
       : "SELECT json_extract(data, '$.time.completed') AS completed FROM message WHERE session_id = ? AND json_extract(data, '$.role') = 'assistant' ORDER BY time_created DESC, id DESC LIMIT 1");
