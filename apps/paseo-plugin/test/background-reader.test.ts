@@ -275,7 +275,7 @@ describe("OpenCode v2 provider-native background", () => {
       workers: [{ id: "ses_child", kind: "child-session", status: "completed" }, { id: "ses_grand", kind: "child-session", status: "completed" }] });
   });
   it.each([["running", [tool("bash", "running")]], ["pending", [tool("bash", "pending")]], ["unknown", [tool("bash", "queued")]], ["missing", [tool("bash")]],
-    ["unknown-kind", [{ type: "patch" }]], ["non-object", ["ok"]], ["non-array", "ok"]])("P3 refuses a child with a %s tool item", async (_, content) => {
+    ["unknown-kind", [{ type: "patch" }]], ["non-object", ["ok"]], ["non-array", "ok"], ["object-content", {}], ["missing-content", undefined]])("P3 refuses a child with a %s tool item", async (_, content) => {
     expect(await read((db) => { db.session2(HANDLE); db.session2("ses_child", HANDLE); db.message2("ses_child", "assistant", said(content)); }))
       .toEqual({ complete: false, gap: expect.stringContaining("1 OpenCode child sessions are not finished (first 20 ids: ses_child)") });
   });
