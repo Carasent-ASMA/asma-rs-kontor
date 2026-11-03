@@ -97,10 +97,21 @@ describe("OpenCode v2 session usage", () => {
     expect(await read()).toMatchObject({ input: 17, output: 7, source: expect.stringContaining("read from session_v2") });
     expect(await read("ses_frozen")).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("no exact native session row") });
   });
-  it.each([["session_message and session_part", "DROP TABLE session_v2;"], ["session_part alone", "DROP TABLE session_v2; DROP TABLE session_message;"]])(
+  it.each([["session_message and session_part", "DROP TABLE session_v2;"], ["session_part alone", "DROP TABLE session_v2; DROP TABLE session_message;"],
+    ["session_message alone", "DROP TABLE session_v2; DROP TABLE session_part;"]])(
     "refuses a database whose v2 markers are %s, never reading the frozen v1 row", async (_, drop) => {
     captured(`${OPENCODE_V1_SCHEMA}${OPENCODE_V2_SCHEMA}\n${drop}`, [{ table: "session", id: ID, tokens: [10, 5, 2, 3, 4] }]);
     expect(await read()).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("OpenCode v2 layout lacks session_v2.id") });
+  });
+  it("reads session_v2 when it is the only v2 marker, never the frozen v1 row", async () => {
+    captured(`${OPENCODE_V1_SCHEMA}${OPENCODE_V2_SCHEMA}\nDROP TABLE session_message; DROP TABLE session_part;`,
+      [{ table: "session", id: ID, tokens: [100, 8, 0, 0, 0] }, { table: "session_v2", id: ID, tokens: [10, 5, 2, 3, 4] }]);
+    expect(await read()).toMatchObject({ input: 17, output: 7, source: expect.stringContaining("read from session_v2 (the v2 layout)") });
+  });
+  it.each([["message", "DROP TABLE session; DROP TABLE part;"], ["part", "DROP TABLE session; DROP TABLE message;"]])(
+    "reports the v1 layout gap, not neither, when %s is the only v1 marker", async (_, drop) => {
+    captured(`${OPENCODE_V1_SCHEMA}\n${drop}`, []);
+    expect(await read()).toEqual({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("OpenCode v1 layout lacks session.id") });
   });
   it("reads the exact session row of a v1-only database on the captured v1 DDL", async () => {
     captured(OPENCODE_V1_SCHEMA, [{ table: "session", id: ID, tokens: [10, 5, 2, 3, 4] }, { table: "session", id: "ses_child", parent: ID, tokens: [999, 999, 999, 999, 999] }]);

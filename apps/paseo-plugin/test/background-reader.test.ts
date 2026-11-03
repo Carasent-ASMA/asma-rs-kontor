@@ -250,6 +250,13 @@ describe("OpenCode provider-native background", () => {
     seed(f.database, (db) => { db.session(HANDLE); db.session("ses_child", HANDLE); db.message("ses_child", done); db.part("ses_child", { type: "tool", tool: "bash", state: { status } }); });
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("(first 20 ids: ses_child)") });
   });
+  it("O9 counts only tool parts: text and step parts carry no status and leave the source and its child settled", async () => {
+    const f = await fixture("opencode");
+    seed(f.database, (db) => { db.session(HANDLE); db.session("ses_child", HANDLE); db.message("ses_child", done);
+      for (const session of [HANDLE, "ses_child"]) for (const data of [{ type: "text", text: "ok" }, { type: "step-start" }, { type: "tool", tool: "bash", state: { status: "completed" } }]) db.part(session, data); });
+    const read = await f.read(); if (!read.complete) throw new Error(read.gap);
+    expect(read.accounting.workers.map((worker) => [worker.id, worker.state])).toEqual([["ses_child", "finished"]]);
+  });
 });
 
 describe("OpenCode v2 provider-native background", () => {
@@ -332,11 +339,14 @@ describe("OpenCode v2 provider-native background", () => {
       .toEqual({ complete: false, gap: expect.stringContaining("session_part rows, a layout this reader has not qualified") });
   });
   it.each([["session_part", "session_part.session_id"], ["session_v2", "session_v2.id, session_v2.parent_id"],
-    ["session_message", "session_message.session_id, session_message.type, session_message.seq, session_message.data"]])(
-    "L5 refuses a both-layout database without %s and never reads the frozen v1 rows", async (table, lacks) => {
+    ["session_message", "session_message.session_id, session_message.type, session_message.seq, session_message.data"],
+    // A single remaining v2 marker still selects v2.
+    ["session_v2 and session_part", "session_v2.id, session_v2.parent_id, session_part.session_id"],
+    ["session_message and session_part", "session_message.session_id, session_message.type, session_message.seq, session_message.data, session_part.session_id"]])(
+    "L5 refuses a both-layout database without %s and never reads the frozen v1 rows", async (tables, lacks) => {
     // The settled v1 source and child would complete if the reader fell back to v1.
     expect(await read((db) => { db.session(HANDLE); db.session("ses_old", HANDLE); db.message("ses_old", { role: "assistant", time: { created: 1, completed: 2 } }); },
-      `${BOTH}\nDROP TABLE ${table};`)).toEqual({ complete: false, gap: `The OpenCode v2 layout lacks ${lacks}; nothing is retired.` });
+      `${BOTH}\n${tables.split(" and ").map((table) => `DROP TABLE ${table};`).join("\n")}`)).toEqual({ complete: false, gap: `The OpenCode v2 layout lacks ${lacks}; nothing is retired.` });
   });
   it("L6 opens the database read-only: a missing database refuses and is not created", async () => {
     const f = await fixture("opencode");
