@@ -57,6 +57,8 @@ export function modelVendor(model: string | null): Vendor {
   if (/(^|\/)o\d/.test(id)) return "openai";
   // OpenAI's computer-use family has no vendor word in the model name.
   if (/(^|\/)computer-use(-|$)/.test(id)) return "openai";
+  // OpenAI's speech families omit it too: `whisper-large-v3`, `tts-1`.
+  if (/(^|\/)(whisper|tts)(-|$)/.test(id)) return "openai";
   for (const part of modelWords(id)) if (ANTHROPIC_SERIES.has(part)) return "anthropic";
   for (const part of modelWords(id)) if (WORDS[part]) return WORDS[part]![0];
   for (const [name, [vendor]] of Object.entries(FAMILY)) if (id.includes(name)) return vendor;

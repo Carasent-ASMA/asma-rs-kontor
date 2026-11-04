@@ -148,26 +148,37 @@ function bounded<T>(work: Promise<T>, ms: number): Promise<T> {
 export async function readProviderCatalog(client: CatalogClient, cwd: string, options: CatalogOptions = {}): Promise<ProviderCatalog> {
   let entries: readonly ProviderSnapshotEntry[] = options.snapshot?.entries ?? (await client.providers.snapshot({ cwd })).entries;
   const overrides = options.overrides ?? null, problems = new Map<string, string>();
+  const refreshed = new Set<string>();
+  let freshReadConfirmed = false;
+  let unconfirmedReason = "The host did not confirm a fresh read of the harness's own model list.";
   if (options.fresh !== false) {
     const refresh = client.providers.refresh;
     const present = [...new Set(entries.map((entry) => entry.provider)
       .filter((provider) => (FRESH_CATALOG_PROVIDERS as readonly string[]).includes(harnessBase(provider, overrides))))];
     if (present.length) {
       if (typeof refresh !== "function") {
-        for (const provider of present) problems.set(provider, withheld(provider, "This host cannot re-read the harness's own model list."));
+        unconfirmedReason = "This host cannot re-read the harness's own model list.";
       } else {
         try {
           await bounded(refresh.call(client.providers, { cwd, providers: present }), options.refreshMs ?? CATALOG_REFRESH_MS);
           entries = (await client.providers.snapshot({ cwd })).entries;
-        } catch {
-          for (const provider of present) problems.set(provider, withheld(provider, "The host did not confirm a fresh read of the harness's own model list."));
-        }
+          for (const provider of present) refreshed.add(provider);
+          freshReadConfirmed = true;
+        } catch { /* the final-snapshot check below withholds every fresh-harness route */ }
       }
     }
   }
-  // The final snapshot is the one that is served: an account may finish loading, or first appear, while a fresh
-  // Codex read was in flight. Without the daemon's provider overrides every route Paseo does not define itself is
-  // withheld — including one whose model list is still empty at this moment.
+  // The final snapshot is the one served. A fresh-harness route that was not part of a confirmed read — including
+  // one that first appears after it — is withheld, so no route is served from a list no fresh read covers.
+  if (options.fresh !== false)
+    for (const entry of entries) {
+      if (!(FRESH_CATALOG_PROVIDERS as readonly string[]).includes(harnessBase(entry.provider, overrides))) continue;
+      if (freshReadConfirmed && refreshed.has(entry.provider)) continue;
+      problems.set(entry.provider, withheld(entry.provider, unconfirmedReason));
+    }
+  // An account may finish loading, or first appear, while a fresh Codex read was in flight. Without the daemon's
+  // provider overrides every route Paseo does not define itself is withheld — including one whose model list is
+  // still empty at this moment.
   if (options.overridesProblem)
     for (const entry of entries)
       if (!BUILTIN_ROUTES.has(entry.provider))
