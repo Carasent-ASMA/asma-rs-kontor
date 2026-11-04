@@ -91,17 +91,20 @@ export function ancestorDirectories(cwd: string, stopAt?: string): string[] {
  * `opencode.json`, then its `opencode.jsonc`, then the same names under its `.opencode` directory).
  * `OPENCODE_CONFIG_CONTENT` is a document, not a file, and is appended by {@link readOpenCodeConfig}.
  *
- * Two environment controls change that set, exactly as the installed binary applies them: `OPENCODE_CONFIG_DIR`
- * replaces the user directory and starts the project scan there, which is the directory already read, so no
- * project document is added; `OPENCODE_CONFIG_PROJECT_DISABLE` (alias `OPENCODE_DISABLE_PROJECT_CONFIG`) removes
- * the project walk entirely.
+ * Two environment controls change that set, as the installed binary applies them: `OPENCODE_CONFIG_DIR` replaces
+ * the user directory (the global source) but does not itself stop the project walk; the walk is skipped only when
+ * the request directory is itself one of the loaded global/system directories, or when
+ * `OPENCODE_CONFIG_PROJECT_DISABLE` (alias `OPENCODE_DISABLE_PROJECT_CONFIG`) is set.
  */
 export function opencodeConfigPaths(cwd: string, deps: HostConfigDeps = {}): string[] {
   const env = deps.env ?? process.env, paths: string[] = [];
   const projectDisabled = opencodeFlag(env.OPENCODE_CONFIG_PROJECT_DISABLE ?? env.OPENCODE_DISABLE_PROJECT_CONFIG);
-  const ancestors = env.OPENCODE_CONFIG_DIR?.trim() || projectDisabled ? [] : ancestorDirectories(cwd, deps.stopAt);
-  const directories = deps.system === false ? [opencodeConfigDirectory(deps)] : [opencodeSystemDirectory(deps), opencodeConfigDirectory(deps)];
-  for (const dir of directories) for (const name of OPENCODE_CONFIG_NAMES) paths.push(join(dir, name));
+  const globalDirectories = deps.system === false ? [opencodeConfigDirectory(deps)] : [opencodeSystemDirectory(deps), opencodeConfigDirectory(deps)];
+  // The native Location directory is the one the request runs in; a custom global directory alone is not a reason
+  // to skip the project's own documents. It only is when that request directory is the global directory itself.
+  const location = resolve(cwd), atGlobalDirectory = globalDirectories.some((dir) => resolve(dir) === location);
+  const ancestors = projectDisabled || atGlobalDirectory ? [] : ancestorDirectories(cwd, deps.stopAt);
+  for (const dir of globalDirectories) for (const name of OPENCODE_CONFIG_NAMES) paths.push(join(dir, name));
   const explicit = env.OPENCODE_CONFIG?.trim();
   if (explicit) paths.push(explicit);
   for (const dir of ancestors) for (const name of OPENCODE_CONFIG_NAMES) paths.push(join(dir, name));

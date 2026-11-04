@@ -148,10 +148,6 @@ function bounded<T>(work: Promise<T>, ms: number): Promise<T> {
 export async function readProviderCatalog(client: CatalogClient, cwd: string, options: CatalogOptions = {}): Promise<ProviderCatalog> {
   let entries: readonly ProviderSnapshotEntry[] = options.snapshot?.entries ?? (await client.providers.snapshot({ cwd })).entries;
   const overrides = options.overrides ?? null, problems = new Map<string, string>();
-  if (options.overridesProblem)
-    for (const entry of entries)
-      if (!BUILTIN_ROUTES.has(entry.provider) && (entry.models ?? []).length)
-        problems.set(entry.provider, withheld(entry.provider, options.overridesProblem));
   if (options.fresh !== false) {
     const refresh = client.providers.refresh;
     const present = [...new Set(entries.map((entry) => entry.provider)
@@ -169,6 +165,13 @@ export async function readProviderCatalog(client: CatalogClient, cwd: string, op
       }
     }
   }
+  // The final snapshot is the one that is served: an account may finish loading, or first appear, while a fresh
+  // Codex read was in flight. Without the daemon's provider overrides every route Paseo does not define itself is
+  // withheld — including one whose model list is still empty at this moment.
+  if (options.overridesProblem)
+    for (const entry of entries)
+      if (!BUILTIN_ROUTES.has(entry.provider))
+        problems.set(entry.provider, withheld(entry.provider, options.overridesProblem));
   const opencodeRoutes = opencodeRouteIds(overrides), selections = new Map<string, { selection?: OpenCodeSelection; problem?: string }>();
   async function selectionFor(route: string): Promise<{ selection?: OpenCodeSelection; problem?: string }> {
     const env = routeEnvironment(route, overrides), deps = routeConfigDeps(options.config, env);

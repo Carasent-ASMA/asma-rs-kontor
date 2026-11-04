@@ -378,7 +378,11 @@ describe("create options", () => {
   it("is available without the operator's switch, and notes an unreadable profile list", async () => {
     const s = await setup({ switchText: null });
     vi.mocked(s.client.config.get).mockRejectedValueOnce(new Error("config unavailable"));
-    expect(await s.service.options()).toMatchObject({ enabled: true, disabledReason: null, profile: null, notes: ["Agent profiles unavailable: config unavailable."] });
+    const options = await s.service.options();
+    expect(options).toMatchObject({ enabled: true, disabledReason: null, profile: null });
+    expect(options.notes[0]).toBe("Agent profiles unavailable: config unavailable.");
+    // Without the provider authority every configured route is withheld, even one whose model list is empty.
+    expect(options.notes).toEqual(["Agent profiles unavailable: config unavailable.", expect.stringContaining("gemini:")]);
   });
 });
 
