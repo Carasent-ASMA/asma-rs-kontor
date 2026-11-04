@@ -14,6 +14,7 @@ import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
 import { StateToolbar } from "./mobile-quick-toolbar";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS } from "./mobile-quick-filter-options";
+import { RunningRainbowMark } from "./running-mark";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { OrganizationRowView } from "./organization-row";
 import { Action, COARSE_POINTER, IconButton, type Colors } from "./page-controls";
@@ -148,9 +149,10 @@ function SwitchStrip({ colors, status, counts, more, onStatus, onMore, onKontor 
 function MorePanel({ colors, status, counts, onStatus, onArchived }: {
   colors: Colors; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>; onStatus(status: StatusFilter): void; onArchived(): void;
 }) {
-  const item = (key: string, label: string, icon: string, help: string, selected: boolean, onPress: () => void, count?: string, iconColor?: string) => <MoreItem key={key} testID={`kontor-switch-more-${key}`}
-    label={label} icon={icon} iconColor={iconColor} help={help} selected={selected} count={count} colors={colors} onPress={onPress} />;
-  const state = (filter: StatusFilter, iconColor?: string) => item(filter, quickFilterLabel(filter), QUICK_FILTER_ICONS[filter], stateHelp(filter, counts[filter]), status === filter, () => onStatus(filter), counts[filter]?.text, iconColor);
+  const item = (key: string, label: string, icon: string, help: string, selected: boolean, onPress: () => void, count?: string, iconColor?: string, iconNode?: ReactNode) => <MoreItem key={key} testID={`kontor-switch-more-${key}`}
+    label={label} icon={icon} iconNode={iconNode} iconColor={iconColor} help={help} selected={selected} count={count} colors={colors} onPress={onPress} />;
+  const state = (filter: StatusFilter, iconColor?: string) => item(filter, quickFilterLabel(filter), QUICK_FILTER_ICONS[filter], stateHelp(filter, counts[filter]), status === filter, () => onStatus(filter), counts[filter]?.text, iconColor,
+    filter === "running" ? <RunningRainbowMark colors={colors} size={16} shape="play" /> : undefined);
   const group = { flexDirection: "row", flexWrap: "wrap", gap: 4 } as const;
   return <View testID="kontor-switch-more-panel" style={{ gap: 8 }}>
     <View role="group" accessibilityLabel="All states" style={group}>{QUICK_STATUS_FILTERS.map((filter) => state(filter, sessionStatusInk(filter, colors)))}</View>
@@ -161,13 +163,13 @@ function MorePanel({ colors, status, counts, onStatus, onArchived }: {
   </View>;
 }
 
-function MoreItem({ label, icon, iconColor, help, selected, count, colors, onPress, testID }: { label: string; icon: string; iconColor?: string; help: string; selected: boolean; count?: string; colors: Colors; onPress(): void; testID: string }) {
+function MoreItem({ label, icon, iconNode, iconColor, help, selected, count, colors, onPress, testID }: { label: string; icon: string; iconNode?: ReactNode; iconColor?: string; help: string; selected: boolean; count?: string; colors: Colors; onPress(): void; testID: string }) {
   const hint = useActionHelp(help);
   return <Pressable {...hint.bindings} testID={testID} accessibilityRole="button" accessibilityLabel={count ? `${label}, ${count}` : label} aria-pressed={selected} accessibilityState={{ selected }}
     onPress={() => { hint.dismiss(); onPress(); }}
     style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ flexBasis: "48%", flexGrow: 1, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8,
       borderRadius: 7, borderWidth: selected || focused ? 2 : 1, borderColor: selected || focused ? colors.accent : colors.border, backgroundColor: pressed || selected ? colors.surface2 : colors.surface1 })}>
-    <Icon name={icon} size={16} color={iconColor ?? colors.foreground} />
+    {iconNode ?? <Icon name={icon} size={16} color={iconColor ?? colors.foreground} />}
     <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 12 }}>{label}</Text>
     {count ? <Text style={{ color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{count}</Text> : null}
   </Pressable>;

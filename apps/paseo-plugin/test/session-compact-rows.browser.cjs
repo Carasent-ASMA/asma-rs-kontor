@@ -108,8 +108,9 @@ async function pulseCheck(width, theme, longList = false) {
     const samples = [];
     for (let index = 0; index < 5; index++) { samples.push(await glyph.evaluate(node => ({ transform:getComputedStyle(node).transform, tone:node.querySelector('[data-testid="composer-running-tone"]')?.style.opacity }))); await page.waitForTimeout(180); }
     assert.ok(new Set(samples.map(value => value.transform)).size > 1, 'running mark pulses');
-    assert.ok(new Set(samples.map(value => value.tone)).size > 1, 'running blue/green layers change');
-    assert.deepEqual(await glyph.locator('svg').evaluateAll(nodes => nodes.map(node => node.getAttribute('stroke'))), [theme === 'dark' ? '#9cbfff' : '#245bba', theme === 'dark' ? '#6cb17b' : '#3e704a']);
+    const strokes = await glyph.locator('svg').evaluateAll(nodes => nodes.map(node => node.getAttribute('stroke')));
+    assert.equal(strokes.length, 6, 'the six pre-rendered gradient frames are mounted');
+    assert.ok(strokes.every(value => value && value.startsWith('url(#kontor-rainbow-')), 'every frame paints the rainbow gradient');
     assert.equal(await page.getByTestId('organization-state-counts').getByTestId('composer-running-pulse').count(), 0, 'aggregate badges stay static');
     if (!longList) {
       const idle = page.getByTestId('sessions-row-agt_model_report_2');
@@ -134,10 +135,13 @@ async function pulseCheck(width, theme, longList = false) {
     await page.screenshot({ path:path.join(output,name+'-running.png') });
     await page.emulateMedia({ reducedMotion:'reduce' });
     await expect(tones).toHaveCount(0);
+    const resting = page.getByTestId('composer-running-pulse').first();
+    assert.equal(await resting.locator('svg[stroke^="url(#kontor-rainbow-"]').count(), 1, 'reduced motion keeps the static rainbow, never motion');
     await page.emulateMedia({ reducedMotion:'no-preference' }); await expect(tones.first()).toBeVisible();
     await page.evaluate(async () => (await import('/src/host/runtime.ts')).setHostStatus('offline'));
     await expect(tones).toHaveCount(0);
     assert.equal(await page.getByTestId('composer-running-pulse').count(), 0, 'last-known running does not animate');
+    assert.equal(await page.locator('[data-testid="composer-running-pulse"]').count(), 0, 'no rainbow mark node remains');
     await page.screenshot({ path:path.join(output,name+'.png') });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors,[]);

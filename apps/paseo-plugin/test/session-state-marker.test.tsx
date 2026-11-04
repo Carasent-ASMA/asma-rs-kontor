@@ -2,7 +2,9 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("react-native", () => ({ View: "View", Text: "Text" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
-import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { SessionStateMarker, SessionStatusIcon, runningMarkNode } from "../client/session-state-marker";
+import { ComposerPulse } from "../client/composer-pulse";
+import { RunningRainbowMark } from "../client/running-mark";
 import { sessionStatusInk } from "../client/session-status-ink";
 import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
 import type { StatusFilter } from "../client/session-view";
@@ -29,8 +31,8 @@ function elements(node: ReactNode): Element[] {
 function drawing(state: OrganizationState, colors = dark) {
   const adapted = SessionStateMarker({ state, colors });
   const root = SessionStatusIcon(adapted.props);
-  const symbol = elements(root).find(node => node.type === "Icon")!;
-  return { root, symbol, color: symbol.props.color as string };
+  const symbol = elements(root).find(node => node.type === "Icon" || node.type === RunningRainbowMark)!;
+  return { root, symbol, color: symbol.props.color as string | undefined };
 }
 function luminance(hex: string): number {
   const channels = hex.match(/[a-f\d]{2}/gi)!.map(value => parseInt(value, 16) / 255);
@@ -47,9 +49,40 @@ describe("compact session status markers", () => {
     const marker = SessionStatusIcon({ status: "running", colors: dark, session: true });
     expect(elements(marker).some((node) => node.type === "Icon")).toBe(false);
     for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
-      expect(elements(SessionStatusIcon({ status, colors: dark })).some((node) => node.type === "Icon")).toBe(true);
-      if (status !== "running") expect(elements(SessionStatusIcon({ status, colors: dark, session: true })).some((node) => node.type === "Icon")).toBe(true);
+      const staticMark = SessionStatusIcon({ status, colors: dark });
+      if (status === "running") {
+        expect(elements(staticMark).some((node) => node.type === RunningRainbowMark)).toBe(true);
+        expect(elements(staticMark).some((node) => node.type === ComposerPulse)).toBe(false);
+        expect(elements(SessionStatusIcon({ status, colors: dark, session: true })).some((node) => node.type === "Icon")).toBe(false);
+      } else {
+        expect(elements(staticMark).some((node) => node.type === "Icon")).toBe(true);
+        expect(elements(SessionStatusIcon({ status, colors: dark, session: true })).some((node) => node.type === "Icon")).toBe(true);
+      }
     }
+  });
+
+  it("paints the running filter and legend with the static rainbow of the same shape, in every theme", () => {
+    for (const colors of [dark, light]) {
+      const mark = elements(SessionStatusIcon({ status: "running", colors })).find(node => node.type === RunningRainbowMark)!;
+      expect(mark.props).toEqual({ colors, size: 16, shape: "play" });
+    }
+  });
+
+  it("keeps last-known running muted on today's ink: the rainbow never claims live", () => {
+    const muted = runningMarkNode({ live: false, visible: false }, dark, 22);
+    expect(muted.type).toBe("Icon");
+    expect(muted.props).toMatchObject({ name: QUICK_FILTER_ICONS.running, color: dark.foregroundMuted, size: 22 });
+    const lastKnownRow = SessionStatusIcon({ status: "running", colors: dark, session: true });
+    expect(elements(lastKnownRow).some((node) => node.type === RunningRainbowMark)).toBe(false);
+  });
+
+  it("hands a live running-session mark to the shared pulse, viewability on and off", () => {
+    const live = runningMarkNode({ live: true, visible: true }, dark, 22);
+    expect(live.type).toBe(ComposerPulse);
+    expect(live.props).toEqual({ name: QUICK_FILTER_ICONS.running, colors: dark, size: 22, enabled: true });
+    const hidden = runningMarkNode({ live: true, visible: false }, dark, 22);
+    expect(hidden.type).toBe(ComposerPulse);
+    expect(hidden.props).toEqual({ name: QUICK_FILTER_ICONS.running, colors: dark, size: 22, enabled: false });
   });
 
   it("uses the agreed session icons and keeps history and filter choices distinct", () => {
@@ -62,17 +95,20 @@ describe("compact session status markers", () => {
   it("distinguishes all seven states without hue or repeated status words", () => {
     const monochrome = { ...dark, accent: dark.foregroundMuted, statusSuccess: dark.foregroundMuted, statusWarning: dark.foregroundMuted, statusDanger: dark.foregroundMuted };
     const drawings = states.map(state => drawing(state, monochrome));
-    expect(new Set(drawings.map(value => value.symbol.props.name)).size).toBe(7);
-    expect(drawings.map(value => value.symbol.props.name)).toEqual(states.map(state => QUICK_FILTER_ICONS[state === "failed" ? "error" : state]));
+    // Running carries the rainbow Play instead of a named glyph; its shape still separates it from all six inks.
+    const identities = drawings.map(value => value.symbol.type === RunningRainbowMark ? "rainbow-play" : value.symbol.props.name);
+    expect(new Set(identities).size).toBe(7);
+    expect(identities).toEqual(states.map(state => state === "running" ? "rainbow-play" : QUICK_FILTER_ICONS[state === "failed" ? "error" : state]));
     for (const { root, symbol } of drawings) {
-      expect(symbol.props.children).toBeUndefined();
       expect(root.props.style).toMatchObject({ width: 16, height: 18, flexShrink: 0 });
+      if (symbol.type !== RunningRainbowMark) expect(symbol.props.children).toBeUndefined();
     }
   });
 
   it.each([dark, light])("shares exact quick-filter icon identity and semantic ink without selection-dependent color", colors => {
     for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
       const root = SessionStatusIcon({ status, colors });
+      if (status === "running") continue; // running is the rainbow mark; its stops carry their own themed contrast
       const icon = elements(root).find(node => node.type === "Icon")!;
       expect(icon.props).toMatchObject({ name: QUICK_FILTER_ICONS[status], color: sessionStatusInk(status, colors) });
     }
@@ -95,17 +131,18 @@ describe("compact session status markers", () => {
     }
   });
 
-  it.each([dark, light])("keeps every meaningful shape at least 3:1 on every row surface", colors => {
+  it.each([dark, light])("keeps every inked shape at least 3:1 on every row surface", colors => {
     for (const state of states) {
       const { color } = drawing(state, colors);
+      if (color === undefined) continue; // running paints with gradient stops, gated in rainbow-running-mark.test.ts
       for (const surface of [colors.surface0, colors.surface1, colors.surface2]) expect(contrast(color, surface)).toBeGreaterThanOrEqual(3);
     }
   });
 
-  it("uses a contrasting theme token when the dark accent would disappear on hover", () => {
+  it("keeps a readable ink helper for any future accent consumer despite the rainbow paint", () => {
     expect(contrast(dark.accent, dark.surface2)).toBeLessThan(3);
-    expect(drawing("running", dark).color).toBe(dark.foreground);
-    expect(drawing("running", light).color).toBe(light.accent);
+    expect(sessionStatusInk("running", dark)).toBe(dark.foreground);
+    expect(sessionStatusInk("running", light)).toBe(light.accent);
     expect(drawing("failed", dark).color).toBe(dark.statusDanger);
   });
 });

@@ -7,7 +7,12 @@ export const KONTOR_BLUE_DARK = "#9cbfff";
 
 /** Reuse Kontor's appearance blues: a host's CTA accent can be green. */
 export function composerRunningInk(colors: Colors): string {
-  return readableInk(luminance(colors.surface0) < 0.5 ? KONTOR_BLUE_DARK : KONTOR_BLUE_LIGHT, colors);
+  return readableInk(surfaceIsDark(colors) ? KONTOR_BLUE_DARK : KONTOR_BLUE_LIGHT, colors);
+}
+
+/** The shared light/dark surface rule for paint that carries its own themed stops. */
+export function surfaceIsDark(colors: Pick<Colors, "surface0">): boolean {
+  return luminance(colors.surface0) < 0.5;
 }
 
 function statusColor(status: StatusFilter | null, colors: Colors): string {

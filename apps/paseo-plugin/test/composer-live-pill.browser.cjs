@@ -19,7 +19,10 @@ fs.writeFileSync(path.join(fixture, 'package.json'), '{"private":true,"type":"mo
 fs.writeFileSync(path.join(fixture, 'index.html'), '<html><meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script type="module" src="/main.tsx"></script></html>');
 fs.writeFileSync(path.join(fixture, 'sdk.ts'), 'export const getPaseoClient = id => window.fixture.client(id);\n');
 fs.writeFileSync(path.join(fixture, 'icons.tsx'), `import React from 'react';
-export const Icon = ({name,color,size}) => <span aria-hidden="true" data-icon={name} style={{color,width:size,height:size,display:'inline-flex',alignItems:'center',justifyContent:'center'}}>{({Building2:'▦',Play:'▶',Pause:'Ⅱ',CircleAlert:'!',MessageCircleQuestion:'?',Bell:'♧',Loader:'◌',Square:'□'})[name]}</span>;`);
+export const Icon = ({name,icon,color,size}) => {
+  if (icon && typeof icon.svg === 'string') return <span aria-hidden="true" data-icon="kontor-rainbow" style={{width:size,height:size,display:'inline-flex',alignItems:'center',justifyContent:'center'}} dangerouslySetInnerHTML={{__html:icon.svg}} />;
+  return <span aria-hidden="true" data-icon={name} style={{color,width:size,height:size,display:'inline-flex',alignItems:'center',justifyContent:'center'}}>{({Building2:'▦',Play:'▶',Pause:'Ⅱ',CircleAlert:'!',MessageCircleQuestion:'?',Bell:'♧',Loader:'◌',Square:'□'})[name]}</span>;
+};`);
 fs.writeFileSync(path.join(fixture, 'popover.tsx'), `import React from 'react';import {Pressable,Text} from 'react-native';
 export function StartSwitchPopover({openScreen,screenId,close}) { return <Pressable accessibilityRole="button" accessibilityLabel="Open Kontor" onPress={()=>{openScreen({screenId});close();}}><Text>Open Kontor</Text></Pressable>; }`);
 fs.writeFileSync(path.join(fixture, 'main.tsx'), `
@@ -74,16 +77,21 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
         await page.getByRole('button',{name:'Synthetic a · Idle',exact:true}).waitFor();
         const baseline=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));
         await page.getByRole('textbox',{name:'Chat draft'}).fill('Preserve this draft');
-        // Running uses Kontor's existing blue appearance ink even when the host's CTA accent is green.
-        const transitions=[['running','Running','rgb(156, 191, 255)',{}],['running','Needs input','rgb(192, 150, 100)',{pendingPermissions:[{id:'permission-a',provider:'codex',name:'Read',kind:'tool'}]}],['error','Error','rgb(216, 132, 123)',{}],['idle','Attention','rgb(108, 177, 123)',{requiresAttention:true,attentionReason:'finished'}],['idle','Idle','rgb(161, 165, 164)',{}],['initializing','Starting','rgb(161, 165, 164)',{}],['closed','Closed','rgb(161, 165, 164)',{}]];
+        // Live running paints the rainbow; every other state keeps its ink on the Kontor building.
+        const transitions=[['running','Running','rainbow',{}],['running','Needs input','rgb(192, 150, 100)',{pendingPermissions:[{id:'permission-a',provider:'codex',name:'Read',kind:'tool'}]}],['error','Error','rgb(216, 132, 123)',{}],['idle','Attention','rgb(108, 177, 123)',{requiresAttention:true,attentionReason:'finished'}],['idle','Idle','rgb(161, 165, 164)',{}],['initializing','Starting','rgb(161, 165, 164)',{}],['closed','Closed','rgb(161, 165, 164)',{}]];
         const measurements=[];
-        for(const [status,label,ink,extra]of transitions){await page.evaluate(({status,extra})=>window.fixture.emit('a',{status,...extra}),{status,extra});await waitForATitle(page,'Synthetic a · '+label);assert.deepEqual(await a.locator('[data-icon]').evaluateAll(nodes=>nodes.map(node=>[node.dataset.icon,getComputedStyle(node).color])),[['Building2',ink]]);assert.equal(await b.getAttribute('aria-label'),'Synthetic b · Running');
+        for(const [status,label,ink,extra]of transitions){await page.evaluate(({status,extra})=>window.fixture.emit('a',{status,...extra}),{status,extra});await waitForATitle(page,'Synthetic a · '+label);
+          const marks=await a.locator('[data-icon]').evaluateAll(nodes=>nodes.map(node=>node.dataset.icon));
+          if(ink==='rainbow'){assert.deepEqual(marks,['kontor-rainbow']);assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-dark-"]').count(),1);}
+          else{assert.deepEqual(marks,['Building2']);assert.equal(await a.locator('[data-icon]').evaluate(node=>getComputedStyle(node).color),ink);}
+          assert.equal(await b.getAttribute('aria-label'),'Synthetic b · Running');
           await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));measurements.push({label,ms:await page.evaluate(()=>window.fixture.paints.at(-1)?.eventToPaintOpportunityMs)});
         }
         await page.evaluate(()=>window.fixture.emit('a',{status:'running'}));await waitForATitle(page,'Synthetic a · Running');
-        const beforeOffline=await a.locator('[data-icon]').evaluate(node=>getComputedStyle(node).color);
+        assert.equal(await a.locator('[data-icon]').getAttribute('data-icon'),'kontor-rainbow');
         await page.evaluate(()=>window.fixture.offline());await waitForATitle(page,'Synthetic a · Last known: Running');
-        assert.equal(await a.locator('[data-icon]').evaluate(node=>getComputedStyle(node).color),'rgb(161, 165, 164)');assert.notEqual(beforeOffline,'rgb(161, 165, 164)');
+        assert.equal(await a.locator('[data-icon]').getAttribute('data-icon'),'Building2');
+        assert.equal(await a.locator('[data-icon]').evaluate(node=>getComputedStyle(node).color),'rgb(161, 165, 164)');
         const offline=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));assert.deepEqual(offline,baseline);
         await page.evaluate(()=>window.fixture.online());await waitForATitle(page,'Synthetic a · Running');
         const reconnected=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));assert.equal(reconnected.adds,2);assert.equal(reconnected.subscriptions,2);
@@ -94,15 +102,17 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
           await page.emulateMedia({reducedMotion:'no-preference'});
           const pulse=a.getByTestId('composer-running-pulse'),tone=a.getByTestId('composer-running-tone');
           await tone.waitFor();
+          const frame0=pulse.locator('[data-testid="composer-running-frame-0"]');
           const opacity=await tone.evaluate(node=>getComputedStyle(node).opacity);
-          await page.waitForFunction(()=>Number(document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-tone"]')?.style.opacity)>0.95);
-          const peak=await pulse.evaluate(node=>({transform:getComputedStyle(node).transform,opacity:getComputedStyle(node.querySelector('[data-testid="composer-running-tone"]')).opacity}));
+          await page.waitForFunction(()=>Number(document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-frame-0"]')?.style.opacity)>0.95);
+          const peak=await pulse.evaluate(node=>({transform:getComputedStyle(node).transform,opacity:getComputedStyle(node.querySelector('[data-testid="composer-running-frame-0"]')).opacity}));
           assert.ok(Number(peak.opacity)>0.95);
-          await page.waitForFunction(()=>Number(document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-tone"]')?.style.opacity)<0.05);
+          await page.waitForFunction(()=>Number(document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-frame-0"]')?.style.opacity)<0.05);
           const rest=await pulse.evaluate(node=>getComputedStyle(node).transform);
           await page.screenshot({path:path.join(output,'390-dark-motion.png')});
           await page.evaluate(()=>window.fixture.light());
-          assert.deepEqual(await a.locator('[data-icon]').evaluateAll(nodes=>nodes.map(node=>getComputedStyle(node).color)),['rgb(36, 91, 186)','rgb(62, 112, 74)']);
+          assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-light-"]').count(),6,'light theme re-paints every frame with light stops');
+          assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-dark-"]').count(),0);
           await page.screenshot({path:path.join(output,'390-light-motion.png')});
           await page.emulateMedia({reducedMotion:'reduce'});await tone.waitFor({state:'detached'});
           assert.equal(await pulse.evaluate(node=>getComputedStyle(node).transform),'matrix(1, 0, 0, 1, 0, 0)');

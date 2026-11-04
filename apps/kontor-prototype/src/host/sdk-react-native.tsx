@@ -10,9 +10,13 @@ import { FlatList as WebFlatList, Modal as WebModal, Pressable, ScrollView as We
 import { shellColors } from "./theme";
 import { logHostEvent } from "./event-log";
 
-export function Icon({ name, size = 16, color }: { name: string; size?: number; color?: string }) {
+export function Icon({ name, icon, size = 16, color }: { name?: string; icon?: { svg: string }; size?: number; color?: string }) {
+  // Inline plugin SVG: the host renders it through SvgXml with width/height = size and the markup's own viewBox.
+  if (icon && typeof icon.svg === "string") {
+    return <div aria-hidden="true" style={{ width: size, height: size, display: "inline-flex", alignItems: "center", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: icon.svg }} />;
+  }
   // Canonical names first, then lucide's exported aliases (Building2 is an alias of Building in 1.50).
-  const Glyph = (Lucide.icons as Record<string, typeof Lucide.Building>)[name] ?? (Lucide as unknown as Record<string, typeof Lucide.Building | undefined>)[name];
+  const Glyph = name ? ((Lucide.icons as Record<string, typeof Lucide.Building>)[name] ?? (Lucide as unknown as Record<string, typeof Lucide.Building | undefined>)[name]) : undefined;
   if (!Glyph) return <View style={{ width: size, height: size }} />;
   return <Glyph size={size} color={color} strokeWidth={2} aria-hidden />;
 }

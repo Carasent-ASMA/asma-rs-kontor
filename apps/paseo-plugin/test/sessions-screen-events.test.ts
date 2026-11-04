@@ -313,6 +313,7 @@ import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolba
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { indentOf, StateBadge } from "../client/organization-row";
 import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { RunningRainbowMark } from "../client/running-mark";
 import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
 import type { StatusFilter } from "../client/session-view";
 import { SessionDetailSection } from "../client/session-detail-section";
@@ -662,8 +663,12 @@ describe("SessionsScreen toolbar events", () => {
       for (const active of [false, true]) {
         const chip = FilterChip({ status, label: status, count: 3, colors, compact, active, onPress, onFocus, onBlur });
         const marker = walk(chip).find(element => element.type === SessionStatusIcon)!;
-        const icon = walk(SessionStatusIcon(marker.props as Parameters<typeof SessionStatusIcon>[0])).find(element => element.type === "Icon")!;
-        expect(icon.props.name).toBe(QUICK_FILTER_ICONS[status]);
+        const drawn = walk(SessionStatusIcon(marker.props as Parameters<typeof SessionStatusIcon>[0]));
+        if (status === "running") {
+          expect(drawn.find(element => element.type === RunningRainbowMark)!.props).toMatchObject({ colors, size: 16, shape: "play" });
+        } else {
+          expect(drawn.find(element => element.type === "Icon")!.props.name).toBe(QUICK_FILTER_ICONS[status]);
+        }
         expect(chip.props.accessibilityLabel).toBe(`${status}, 3`);
         expect(chip.props.accessibilityState).toEqual({ selected: active, disabled: false });
         expect(chip.props.style).toMatchObject({ borderColor: active ? colors.accent : colors.border, backgroundColor: active ? colors.surface2 : colors.surface1 });

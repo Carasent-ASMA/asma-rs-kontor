@@ -1,9 +1,10 @@
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { AccessibilityInfo, Animated, AppState, Platform, type LayoutChangeEvent, type View } from "react-native";
+import { AccessibilityInfo, Animated, AppState, Platform, type LayoutChangeEvent, type StyleProp, type ViewStyle, View } from "react-native";
 import type { Colors } from "./page-controls";
 import { observePulseEnvironment } from "./composer-pulse-environment";
 import { composerRunningInk } from "./session-status-ink";
+import { RAINBOW_FRAMES, RunningRainbowMark, rainbowFrameInterpolation, rainbowMarkSvg, runningMarkShape, type RunningMarkShape } from "./running-mark";
 
 // One clock and one OS subscription for the visible running marks, never one timer per directory entry.
 let progress: Animated.Value | undefined;
@@ -57,8 +58,28 @@ function observeViewport(element: Element, notify: (visible: boolean) => void) {
   return () => { viewport?.unobserve(element); observed.delete(element); if (!observed.size) { viewport?.disconnect(); viewport = undefined; } };
 }
 
+const absoluteFill: StyleProp<ViewStyle> = { position: "absolute", top: 0, left: 0, width: "100%", height: "100%" };
+
+/** K gradient frames stacked and crossfaded on the shared clock; opacity is the only animated property. */
+function RainbowFlow({ colors, size, shape, clock }: { colors: Colors; size: number; shape: RunningMarkShape; clock: Animated.Value }) {
+  const svgs = useMemo(
+    () => Array.from({ length: RAINBOW_FRAMES }, (_, frame) => rainbowMarkSvg(shape, colors, frame)),
+    [shape, colors],
+  );
+  const opacities = useMemo(
+    () => Array.from({ length: RAINBOW_FRAMES }, (_, frame) => clock.interpolate(rainbowFrameInterpolation(frame, RAINBOW_FRAMES))),
+    [clock],
+  );
+  return <View testID="composer-running-tone" style={{ width: size, height: size }}>
+    {svgs.map((svg, frame) => <Animated.View key={frame} testID={`composer-running-frame-${frame}`} style={[absoluteFill, { opacity: opacities[frame] }]}>
+      <Icon icon={{ svg }} size={size} />
+    </Animated.View>)}
+  </View>;
+}
+
 /** The composer keeps Building2; actual session rows supply their existing running glyph. */
 export function ComposerPulse({ colors, size, name = "Building2", enabled = true }: { colors: Colors; size: number; name?: string; enabled?: boolean }) {
+  const shape = runningMarkShape(name);
   const [visible, setVisible] = useState(false);
   // shortcut: native host-scrolled popovers lack child viewability; adopt a public signal when one is available.
   const [inViewport, setInViewport] = useState(Platform.OS !== "web");
@@ -75,10 +96,12 @@ export function ComposerPulse({ colors, size, name = "Building2", enabled = true
   const scale = useMemo(() => value.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] }), [value]);
   const onLayout = useCallback(({ nativeEvent: { layout } }: LayoutChangeEvent) => { setVisible(layout.width > 0 && layout.height > 0); }, []);
   const carrierStyle = useMemo(() => ({ width: size, height: size, transform: [{ scale: active ? scale : 1 }] }), [size, active, scale]);
-  const toneStyle = useMemo(() => ({ position: "absolute" as const, top: 0, left: 0, opacity: value }), [value]);
   useEffect(() => active ? retainClock() : undefined, [active]);
   return <Animated.View ref={carrier} testID="composer-running-pulse" onLayout={onLayout} style={carrierStyle}>
-    <Icon name={name} size={size} color={composerRunningInk(colors)} />
-    {active && <Animated.View testID="composer-running-tone" style={toneStyle}><Icon name={name} size={size} color={colors.statusSuccess} /></Animated.View>}
+    {shape === undefined
+      ? <Icon name={name} size={size} color={composerRunningInk(colors)} />
+      : active
+        ? <RainbowFlow colors={colors} size={size} shape={shape} clock={value} />
+        : <RunningRainbowMark colors={colors} size={size} shape={shape} />}
   </Animated.View>;
 }
