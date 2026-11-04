@@ -90,6 +90,15 @@ async function pulseCheck(width, theme, longList = false) {
   try {
     await page.goto(`${server.resolvedUrls.local[0]}?embed=1&scenario=${longList ? 'long-list' : 'compact-icons'}&theme=${theme}`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 30000 });
+    // D2: no per-mark JS scheduling. Instrument timer creation before any mark mounts, so a per-mark
+    // interval clock (M09's 16 ms setValue loop) is counted even though RAF counting stays within bounds.
+    await page.evaluate(() => {
+      window.__kontorTimers = [];
+      for (const name of ["setInterval", "setTimeout"]) {
+        const original = window[name].bind(window);
+        window[name] = (fn, period, ...rest) => { window.__kontorTimers.push({ kind: name, period }); return original(fn, period, ...rest); };
+      }
+    });
     await page.evaluate(async longList => {
       const runtime = await import('/src/host/runtime.ts');
       const chosen = longList ? runtime.fixtureSessions().filter(row => !row.agent.archivedAt).slice(0, 200).map(row => row.agent.id) : ['agt_model_report_0','agt_model_report_1'];
@@ -130,6 +139,21 @@ async function pulseCheck(width, theme, longList = false) {
       const frames = await page.evaluate(() => window.pulseFrames);
       const mean = frames.reduce((sum, frame) => sum + frame.callbacks, 0) / Math.max(1, frames.length);
       assert.ok(mean <= 4, `bounded shared clock: ${mean} callbacks/frame`);
+      // D2: no per-mark JS scheduling. Timer creation is instrumented from before the marks mount, and the
+      // shared clock means every mounted mark shows the same crossfade phase at any instant — a per-mark
+      // interval or timeout clock (M09) drifts apart and fails both checks.
+      const intervals = await page.evaluate(() => window.__kontorTimers.filter((timer) => timer.kind === "setInterval"));
+      assert.deepEqual(intervals, [], 'no per-mark intervals are scheduled');
+      const framePhases = await page.evaluate(() => {
+        const perFrame = new Map();
+        for (const node of document.querySelectorAll('[data-testid^="composer-running-frame-"]')) {
+          const index = node.getAttribute('data-testid').replace('composer-running-frame-', '');
+          if (!perFrame.has(index)) perFrame.set(index, new Set());
+          perFrame.get(index).add(node.style.opacity);
+        }
+        return [...perFrame.entries()].map(([index, values]) => ({ index, phases: [...values] }));
+      });
+      for (const entry of framePhases) assert.equal(entry.phases.length, 1, `frame ${entry.index} shows one shared phase across marks, got ${entry.phases.length}`);
       report.cases.push({ name:name+'-work', status:'PASS', runningEntries:200, activeNodes:activeBoxes.length, callbacksPerFrame:mean, scope:'RN Web instrumentation; no native performance claim' });
     }
     await page.screenshot({ path:path.join(output,name+'-running.png') });

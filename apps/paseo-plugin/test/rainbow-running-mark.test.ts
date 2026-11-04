@@ -100,17 +100,45 @@ describe("rainbow running mark", () => {
     expect(rainbowThemeKey(light)).toBe("light");
   });
 
-  it("crossfades the K frames so the paint is total and the loop is continuous", () => {
+  it("composites the K frames at full coverage so the rendered stroke never thins", () => {
     const windows = Array.from({ length: RAINBOW_FRAMES }, (_, frame) => rainbowFrameInterpolation(frame, RAINBOW_FRAMES));
     for (let step = 0; step <= 240; step++) {
       const value = step / 240;
-      const total = windows.reduce((sum, window) => sum + opacityAt(window, value), 0);
-      expect(Math.abs(total - 1)).toBeLessThan(1e-6);
+      // Bottom-to-top alpha compositing of the mounted frames, as the stacked Animated.Views paint.
+      let coverage = 0;
+      for (let frame = 0; frame < RAINBOW_FRAMES; frame++) {
+        const alpha = opacityAt(windows[frame]!, value);
+        coverage = alpha + (1 - alpha) * coverage;
+      }
+      expect(coverage).toBeGreaterThan(1 - 1e-6);
     }
-    for (const window of windows.slice(1)) expect(opacityAt(window, 0)).toBe(0);
+    // The loop seam is invisible: frame 0 holds the paint at both ends and every other frame is dropped beneath it.
     expect(opacityAt(windows[0]!, 0)).toBe(1);
     expect(opacityAt(windows[0]!, 1)).toBe(1);
-    expect(opacityAt(windows[RAINBOW_FRAMES - 1]!, 1)).toBe(0);
+    for (const window of windows.slice(1)) expect(opacityAt(window, 1)).toBe(0);
+    // The outgoing layer stays opaque beneath the fading incoming one; blends only happen over full paint.
+    for (const window of windows) {
+      expect(opacityAt(window, 0)).toBeLessThanOrEqual(1);
+      expect(window.extrapolate).toBe("clamp");
+    }
+  });
+
+  it("keeps every blended handoff paint at least 3:1: the composite is an opaque mix of two readable frames", () => {
+    // During a handoff the visible stroke is alpha-mixed from two consecutive frames' gradient stops over
+    // surface0. Both endpoints are readable, and a mix of two same-side colors stays readable, so the
+    // composited stroke keeps its contrast through the whole fade (WCAG 1.4.11).
+    for (const colors of [dark, light]) {
+      const surface = colors.surface0;
+      const stopsOf = (frame: number) => [...rainbowMarkSvg("play", colors, frame).matchAll(/stop-color="([^"]+)"/g)].map((match) => match[1]!);
+      for (let frame = 0; frame < RAINBOW_FRAMES; frame++) {
+        const next = stopsOf((frame + 1) % RAINBOW_FRAMES);
+        for (const from of stopsOf(frame)) for (const to of next) for (const alpha of [0, 0.25, 0.5, 0.75, 1]) {
+          const mixed = "#" + [0, 2, 4].map((at) => Math.round(parseInt(from.slice(at + 1, at + 3), 16) * alpha + parseInt(to.slice(at + 1, at + 3), 16) * (1 - alpha))
+            .toString(16).padStart(2, "0")).join("");
+          expect(contrast(mixed, surface)).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
   });
 
   it("pre-renders each frame as the same gradient rotated 360/K about the centre", () => {

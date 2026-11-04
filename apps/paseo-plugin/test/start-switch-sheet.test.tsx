@@ -58,6 +58,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput",
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: object) => { model.directoryArgs.push(args); return { state: model.directory, refresh: () => {} }; } }));
 
+import { SessionPulseContext } from "../client/session-state-marker";
 import { createAvailability, popoverBodyHeight, StartSwitchPopover, StartSwitchSheet, switchList, switchRows } from "../client/start-switch-sheet";
 import { NewLsaForm } from "../client/new-lsa-form";
 import { DenseSessionRow } from "../client/dense-session-row";
@@ -209,6 +210,33 @@ describe("Start or switch sheet", () => {
     expect(byTestId(row, "session-actions-agent-a")?.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "Actions for LSA • ASMA-1 • Route", "aria-haspopup": "menu" });
     press(byTestId(row, "session-row-body"));
     expect(s.onOpen).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "agent-a" }));
+  });
+
+  it("gates native row motion on measured visibility, and leaves web rows to the mark's own observer", () => {
+    model.platform = "ios";
+    const native = sheet();
+    native.render();
+    // Every row draws behind a measuring gate: until a row measures into the viewport it stays static,
+    // so offscreen marks never animate (D3) and an always-visible mutant cannot survive here.
+    const gates = native.tree.filter((node) => typeof node.props.testID === "string" && node.props.testID.includes("-gate"));
+    expect(gates.length).toBeGreaterThan(0);
+    for (const gate of gates) {
+      expect(gate.props.ref).toBeTypeOf("function");
+      expect(gate.props.onLayout).toBeTypeOf("function");
+      const provider = elements(gate).find((node) => node.type === SessionPulseContext.Provider || node.type === SessionPulseContext)!;
+      expect(provider.props.value).toMatchObject({ live: true, visible: false });
+    }
+    // The sheet's own scroll body carries the measurement wiring the gate evaluates on.
+    const list = byTestId(native.tree, "kontor-switch-list")!;
+    expect(list.props.onScroll).toBeTypeOf("function");
+    expect(list.props.onLayout).toBeTypeOf("function");
+    // Web keeps each mark's own viewport observer: no gate wrappers, and the body provider stays visible.
+    model.platform = "web";
+    const web = sheet();
+    web.render();
+    expect(web.tree.filter((node) => typeof node.props.testID === "string" && node.props.testID.includes("-gate"))).toHaveLength(0);
+    const webProvider = elements(web.tree).find((node) => node.type === SessionPulseContext.Provider || node.type === SessionPulseContext)!;
+    expect(webProvider.props.value).toMatchObject({ live: true, visible: true });
   });
 
   it("orders a row's menu as the board does, keeps unsupported operations listed with their reason, and runs none until one is chosen", async () => {

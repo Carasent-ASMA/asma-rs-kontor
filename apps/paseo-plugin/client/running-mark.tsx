@@ -54,14 +54,20 @@ export function rainbowMarkSvg(shape: RunningMarkShape, colors: Colors, frame: n
 }
 
 /**
- * Crossfade windows for one frame on the shared clock: each frame peaks at its own K-th of the loop and
- * hands over linearly to the next. `inputRange` stays monotonic inside [0, 1]; clamping keeps every other
- * frame's paint at zero outside its window, and frame 0 holds both loop ends.
+ * Compositing windows for one frame on the shared clock, so the visible stroke is ALWAYS a full-coverage
+ * opaque blend of two frames (WCAG 1.4.11): during a handoff the outgoing frame stays opaque beneath and
+ * only the incoming topmost layer fades in — two half-transparent layers would drop coverage to 0.75 and
+ * thin the light-theme stroke below 3:1. Frames render bottom-to-top in index order; the wrap handoff
+ * (K-1 → 0) therefore fades the TOPMOST frame out over the always-opaque frame 0 beneath it. Every drop
+ * happens beneath an already-opaque layer, where it is invisible.
  */
 export function rainbowFrameInterpolation(frame: number, frames: number): { inputRange: number[]; outputRange: number[]; extrapolate: "clamp" } {
   const at = (step: number) => Number((step / frames).toFixed(6));
-  if (frame === 0) return { inputRange: [0, at(1), at(frames - 1), 1], outputRange: [1, 0, 0, 1], extrapolate: "clamp" };
-  return { inputRange: [at(frame - 1), at(frame), Math.min(at(frame + 1), 1)], outputRange: [0, 1, 0], extrapolate: "clamp" };
+  const after = (step: number) => Number((step / frames + 1e-4).toFixed(6));
+  if (frames < 2) return { inputRange: [0, 1], outputRange: [1, 1], extrapolate: "clamp" };
+  if (frame === 0) return { inputRange: [0, at(1), after(1), at(frames - 1), 1], outputRange: [1, 1, 0, 1, 1], extrapolate: "clamp" };
+  if (frame === frames - 1) return { inputRange: [at(frame - 1), at(frame), 1], outputRange: [0, 1, 0], extrapolate: "clamp" };
+  return { inputRange: [at(frame - 1), at(frame), after(frame + 1), 1], outputRange: [0, 1, 1, 0], extrapolate: "clamp" };
 }
 
 /** The resting rainbow for controls, legends and reduced motion: one static frame, no clock. */

@@ -1,6 +1,6 @@
 import type { TakeoverOutcome } from "../shared/session-lifecycle";
 import { SummaryAttachmentHelp } from "./summary-attachments";
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useHosts, useRpc, type PluginButtonContentProps, type PluginHostSummary, type PluginOpenScreenInput } from "@getpaseo/plugin/client";
@@ -15,6 +15,7 @@ import { focusControl } from "./mobile-filters";
 import { StateToolbar } from "./mobile-quick-toolbar";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS } from "./mobile-quick-filter-options";
 import { RunningRainbowMark } from "./running-mark";
+import { useRowVisibility, type MeasurableView } from "./row-visibility";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { OrganizationRowView } from "./organization-row";
 import { Action, COARSE_POINTER, IconButton, type Colors } from "./page-controls";
@@ -249,6 +250,17 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const create = useCreateOptions(hostStatus === "online", initialScope);
   const archive = useStartSwitchArchive(hostId, directory, hostStatus === "online");
   const clock = useClock();
+  // Native scroll bodies give running marks no viewport observer, so measured row bounds gate their motion
+  // the same way Sessions' FlatList viewability does; web keeps each mark's own observer (and the desktop
+  // host-scrolls the popover body itself, which the mark cannot see on any platform).
+  const nativeGated = !popover && Platform.OS !== "web";
+  const pulseGate = useRowVisibility();
+  const pulseBody = useRef<ScrollView>(null);
+  const pulseEvaluate = useCallback(() => {
+    if (!nativeGated) return;
+    // react-native's ScrollView type omits measureInWindow, but every mounted instance carries it.
+    pulseGate.measure(pulseBody.current as MeasurableView | null);
+  }, [nativeGated, pulseGate]);
   const entries = archive.directory.entries;
   const recentIds = recentRows(entries, recent.record).map((row) => row.entry.id);
   const opened = new Map(recent.record.visits.map((visit) => [visit.id, visit.at]));
@@ -300,11 +312,19 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
         perform: () => archive.onArchive(entry) },
     ];
   };
-  const row = (entry: DirectoryEntry, testID?: string) => <DenseSessionRow key={entry.id} testID={testID} entry={entry} colors={colors} clock={clock} opened={opened.get(entry.id) ?? null}
-    current={entry.id === currentId} totals={totals.get(entry.id) ?? null} onSelectStart={entry.archivedAt === null ? () => select(entry) : undefined}
-    mode={selection.selecting ? { kind: "select", selected: selection.selected.includes(entry.id), unavailable: entry.archivedAt !== null ? "Archived sessions are not selected." : null }
-      : { kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={actionsFor(entry)} /> }}
-    onPress={() => selection.selecting ? select(entry) : onOpen(entry)} />;
+  const row = (entry: DirectoryEntry, testID?: string) => {
+    const inner = <DenseSessionRow key={entry.id} testID={testID} entry={entry} colors={colors} clock={clock} opened={opened.get(entry.id) ?? null}
+      current={entry.id === currentId} totals={totals.get(entry.id) ?? null} onSelectStart={entry.archivedAt === null ? () => select(entry) : undefined}
+      mode={selection.selecting ? { kind: "select", selected: selection.selected.includes(entry.id), unavailable: entry.archivedAt !== null ? "Archived sessions are not selected." : null }
+        : { kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={actionsFor(entry)} /> }}
+      onPress={() => selection.selecting ? select(entry) : onOpen(entry)} />;
+    if (!nativeGated) return inner;
+    return <View key={entry.id} testID={testID ? `${testID}-gate` : `session-row-gate-${entry.id}`}
+      ref={(node) => { if (node) pulseGate.register(entry.id, node); else pulseGate.forget(entry.id); }}
+      onLayout={pulseEvaluate}>
+      <SessionPulseContext.Provider value={{ live: directory.live, visible: pulseGate.visible.has(entry.id) }}>{inner}</SessionPulseContext.Provider>
+    </View>;
+  };
   const current = currentId === null ? null : directory.entries.find((entry) => entry.id === currentId && (currentWorkspaceId === undefined || entry.workspaceId === currentWorkspaceId));
   const sessionTitle = currentId === null ? "Start or switch session" : current?.title.trim() || "Untitled session";
   const headingTitle = mode === "new" ? "New lead" : sessionTitle;
@@ -395,7 +415,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       header={<><IconButton label="Back to sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />{heading}</>} />
     // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
     : popover ? <View {...list}>{items}</View>
-    : <ScrollView {...list} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
+    : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate} style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
   // Board D1's sticky bar under the list, and the sheets the row menu and the bar open.
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
   const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure}

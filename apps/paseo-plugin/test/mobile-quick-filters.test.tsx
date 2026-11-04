@@ -10,11 +10,14 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView
 vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ dismiss() {} }) }));
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { MobileQuickToolbar, StateToolbar } from "../client/mobile-quick-toolbar";
+import { ComposerPulse } from "../client/composer-pulse";
+import { RunningRainbowMark } from "../client/running-mark";
 import type { SessionStateCount } from "../client/session-state-counts";
 import { QUICK_FILTER_ICONS, visibleQuickFilters } from "../client/mobile-quick-filter-options";
 import { MORE_STATUS_FILTERS, QUICK_STATUS_FILTERS, type StatusFilter } from "../client/session-view";
 
-function walk(node: ReactNode): { type?: unknown; props: Record<string, unknown> }[] {
+type WalkedElement = { type?: unknown; props: Record<string, unknown> };
+function walk(node: ReactNode | WalkedElement): WalkedElement[] {
   if (Array.isArray(node)) return node.flatMap(walk);
   if (!isValidElement<{ children?: ReactNode }>(node)) return [];
   // The shared state toolbar is drawn in place, so its tiles and pinned utilities are visible.
@@ -92,5 +95,12 @@ describe("mobile quick filter discovery", () => {
     (choices[3]!.props.onPress as () => void)();
     expect(onStatus).toHaveBeenCalledExactlyOnceWith("needs_input");
     expect(choices[3]!.props.accessibilityLabel).toContain("Questions, 3 sessions");
+    // D3: the Running chooser item paints the static rainbow of the same shape — no motion carrier anywhere,
+    // so a mutant that swaps in ComposerPulse cannot survive here.
+    const runningChoice = choices[QUICK_STATUS_FILTERS.indexOf("running")]!;
+    const chooserColors = { foreground: "#111111", foregroundMuted: "#555555", surface0: "#ffffff", surface1: "#f8f8f8", surface2: "#eeeeee", accent: "#0060c0", statusDanger: "#b00020", statusWarning: "#805000", statusSuccess: "#006b3c" } as PluginTheme["colors"];
+    expect(walk(runningChoice).find((node) => node.type === RunningRainbowMark)).toMatchObject({ props: { colors: chooserColors, size: 20, shape: "play" } });
+    expect(walk(runningChoice).some((node) => node.type === "Icon")).toBe(false);
+    expect(walk(tree).some((node) => node.type === ComposerPulse)).toBe(false);
   });
 });
