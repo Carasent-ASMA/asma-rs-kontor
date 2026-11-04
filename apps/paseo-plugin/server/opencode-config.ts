@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { lstat, readFile as readFileDefault, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 /** The two file names OpenCode loads from each configuration directory; `.json` first, `.jsonc` after it. */
 export const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"] as const;
@@ -110,6 +110,23 @@ async function directoryAvailable(path: string): Promise<boolean> {
 }
 
 /**
+ * Whether a directory entry exists at `path`, regardless of whether it can be read. `null` means the check itself
+ * failed for a reason other than absence, which is an unreadable source rather than an absent optional file.
+ */
+async function entryExists(path: string): Promise<boolean | null> {
+  try { await lstat(path); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : null; }
+}
+
+/** Whether `path` is the explicitly selected directory or a document path constructed underneath it. */
+function insideDirectory(path: string, directory: string): boolean {
+  const base = resolve(directory), target = resolve(path);
+  return target === base || target.startsWith(`${base}${sep}`);
+}
+
+const unavailableDirectory = (directory: string) => `OpenCode config directory ${directory} could not be read as a directory.`;
+
+/**
  * Every file the loader tries, in OpenCode's order of precedence: the system directory, the user's configuration
  * directory, `OPENCODE_CONFIG`, then the project walk from the outermost ancestor to `cwd` (each directory's
  * `opencode.json`, then its `opencode.jsonc`, then the same names under its `.opencode` directory).
@@ -199,25 +216,35 @@ function stringList(value: unknown, where: string): { values: string[] } | { pro
 }
 
 /**
- * Every file OpenCode would load for this working directory, parsed. A missing file is not a document and not a
- * problem; a file that exists but cannot be read or parsed fails the whole read, so no route can fall back to
- * the unfiltered catalogue. An explicitly selected `OPENCODE_CONFIG_DIR` that is unavailable is a problem in its
- * own right: its restrictions did not simply disappear because the directory did.
+ * Every file OpenCode would load for this working directory, parsed. A name with no directory entry is absent and
+ * not a problem; a file that exists but cannot be read or parsed fails the whole read, so no route can fall back to
+ * the unfiltered catalogue. An explicitly selected `OPENCODE_CONFIG_DIR` is checked when it is selected and again
+ * if a document beneath it is missing, because its restrictions did not simply disappear with the directory.
  */
 export async function readOpenCodeConfig(cwd: string, deps: HostConfigDeps = {}): Promise<OpenCodeConfigRead> {
   const env = deps.env ?? process.env, readFile = deps.readFile ?? ((path: string) => readFileDefault(path, "utf8"));
-  if (env.OPENCODE_CONFIG_DIR?.trim()) {
-    const directory = opencodeConfigDirectory(deps);
-    if (!(await (deps.isDirectory ?? directoryAvailable)(directory)))
-      return { problem: `OpenCode config directory ${directory} could not be read as a directory.` };
-  }
+  // An explicitly selected directory is a source the user named; losing it is a config problem, not permission to
+  // load the catalogue with that source's restrictions gone. A default location is only read when present.
+  const selected = env.OPENCODE_CONFIG_DIR?.trim() ? opencodeConfigDirectory(deps) : null;
+  const isDirectory = deps.isDirectory ?? directoryAvailable;
+  // One predicate for both checks, so the explicit selection cannot lose its enforcement between them.
+  const selectedAvailable = async (): Promise<boolean> => selected === null || (await isDirectory(selected));
+  if (selected !== null && !(await selectedAvailable())) return { problem: unavailableDirectory(selected) };
   const documents: OpenCodeDocument[] = [];
   const load = async (path: string): Promise<{ info: Record<string, unknown> } | { problem: string } | null> => {
     let text: string;
     try { text = await readFile(path); }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return null;
+      if (code === "ENOENT") {
+        // ENOENT is ordinary absence only when no entry exists at the path. A dangling symlink is an existing source
+        // that could not be read. The selected directory can also vanish between the check above and this read, so
+        // it is checked again when a document beneath it turns out to be missing.
+        if (await entryExists(path) !== false) return { problem: `OpenCode config ${path} could not be read (ENOENT).` };
+        if (selected !== null && insideDirectory(path, selected) && !(await selectedAvailable()))
+          return { problem: unavailableDirectory(selected) };
+        return null;
+      }
       return { problem: `OpenCode config ${path} could not be read${typeof code === "string" ? ` (${code})` : ""}.` };
     }
     const parsed = parseJsonc(text);
