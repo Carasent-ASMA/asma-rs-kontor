@@ -39,6 +39,8 @@ export type CreateClient = {
 
 /** How long a dispatched create may stay unanswered before its outcome is reported unknown. */
 export const CREATE_ANSWER_MS = 120_000;
+/** Why a configured route cannot be filtered when the daemon's own provider configuration cannot be read. */
+export const UNCONFIRMED_HARNESS = "The host's provider configuration could not be read, so this route's harness is unconfirmed.";
 const MAX_BYTES = 2 * 1024 * 1024;
 
 /** The operator-owned switch on the host, read on every request: `<PASEO_HOME or ~/.paseo>/plugin-config/kontor/create.json`. */
@@ -554,8 +556,10 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const desks = deskProjects(workspaces), desk = (projectId ? desks.find((entry) => entry.projectId === projectId) : desks[0]) ?? null;
     const role = scope.role ?? CREATE_ROLES[0], start = scope.start ?? CREATE_STARTS[0];
     // Every surface that shows a model list reads the catalogue through this one rule: the harness's own list,
-    // filtered by the harness's own configuration, with vendor exclusivity on top.
-    const catalog = desk?.cwd ? await readProviderCatalog(client, desk.cwd, { fresh: scope.freshCatalog !== false, config: hostConfig, overrides: config?.config.providers ?? null }) : null;
+    // filtered by the harness's own configuration, with vendor exclusivity on top. Without the daemon's provider
+    // overrides a configured account's harness is unconfirmed, so it is withheld instead of read as a base harness.
+    const catalog = desk?.cwd ? await readProviderCatalog(client, desk.cwd, { fresh: scope.freshCatalog !== false, config: hostConfig,
+      overrides: config?.config.providers ?? null, overridesProblem: config ? null : UNCONFIRMED_HARNESS }) : null;
     if (catalog) notes.push(...catalog.problems);
     const providers = catalog ? createProviders(catalog) : [];
     const profile = config?.config.agentProfiles?.find((entry) => [entry.name, entry.id].some((value) => value.trim().toUpperCase() === role));
@@ -595,7 +599,8 @@ export function createSessionCreateService(client: CreateClient, root: string, s
         cwd = snapshot.workspaceDirectory;
       }
       const config = await client.config.get().catch(() => null);
-      const catalog = await readProviderCatalog(client, cwd, { fresh: true, config: hostConfig, overrides: config?.config.providers ?? null });
+      const catalog = await readProviderCatalog(client, cwd, { fresh: true, config: hostConfig, overrides: config?.config.providers ?? null,
+        overridesProblem: config ? null : UNCONFIRMED_HARNESS });
       const withheld = catalog.problemFor(spec.provider);
       if (withheld) return { problem: withheld };
       const choice = createChoiceProblem(createProviders(catalog), spec);

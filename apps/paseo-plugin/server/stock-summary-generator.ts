@@ -28,9 +28,9 @@ export async function selectSummaryRoute(paseo: PaseoApi, cwd: string, host: Hos
     catch { throw new Error("Summary provider discovery did not finish within the readiness budget. Capture retained; no worker was created."); }
   }
   // The summary picks from the same catalogue the pickers offer: each harness's own list, filtered by its own
-  // configuration. It never re-reads a list here; a summary is not a picker.
+  // configuration, including the fresh Codex read. A stale Codex row is never a valid summary route.
   const { config: daemon } = await paseo.config.get();
-  const catalog = await readProviderCatalog(paseo, cwd, { fresh: false, snapshot, config: host, overrides: daemon.providers ?? null });
+  const catalog = await readProviderCatalog(paseo, cwd, { snapshot, config: host, overrides: daemon.providers ?? null });
   const providers = createProviders(catalog);
   const profile = daemon.agentProfiles?.find(entry => [entry.id, entry.name].some(name => name.toLowerCase() === "summary"));
   const choices = providers.filter(p => p.available).flatMap(p => p.models.flatMap(model => {

@@ -36,7 +36,8 @@ async function harness() {
     return { id, provider: options.config.provider.split("/")[0], model: options.config.provider.split("/").slice(1).join("/"), cwd: options.cwd, currentModeId: options.config.modeId, archivedAt: archived.has(id) ? "2026-10-29T00:00:00Z" : null, status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides };
   };
   const forbidden = async () => { sends++; throw new Error("Must not send a source/destination turn"); };
-  const api = { providers: { snapshot: async (_options?: unknown) => catalog, waitForReady: async (_options?: unknown) => catalog }, config: { get: async () => ({ config: {} }) }, agents: {
+  const refresh = async () => ({ requestId: "fixture", acknowledged: true });
+  const api = { providers: { snapshot: async (_options?: unknown) => catalog, waitForReady: async (_options?: unknown) => catalog, refresh }, config: { get: async () => ({ config: {} }) }, agents: {
     ref: (id: string) => id === SOURCE ? {
       refresh: async () => ({ agent: source }), timeline: { refetch: async (options: unknown) => { historyCalls.push(options); return page; } }, run: forbidden, send: forbidden,
     } : {
@@ -165,7 +166,8 @@ describe("stock summary generator", () => {
     h.api.providers.snapshot = async options => { calls.push(options); return (options as { cwd: string }).cwd === h.source.cwd ? h.catalog : { entries: [] }; };
     const service = h.service();
     const saved = await service.save(SOURCE);
-    expect(calls).toEqual([{ cwd: h.source.cwd }]);
+    // One snapshot for the catalogue and one after the forced Codex re-read, both in the validated cwd.
+    expect(calls).toEqual([{ cwd: h.source.cwd }, { cwd: h.source.cwd }]);
     expect(await service.save(SOURCE)).toEqual(saved);
     expect(h.created).toHaveLength(1);
     expect(h.counts().sends).toBe(0);
@@ -173,8 +175,9 @@ describe("stock summary generator", () => {
 
   it.each(["empty", "loading"])("waits within the public readiness budget for a lazy %s source catalogue", async state => {
     const h = await harness(); const readyCalls: unknown[] = [];
-    h.api.providers.snapshot = async () => state === "empty" ? { entries: [] } : { entries: [{ ...h.catalog.entries[0]!, status: "loading", models: [], modes: [] }] };
-    h.api.providers.waitForReady = async options => { readyCalls.push(options); return h.catalog; };
+    let ready = false;
+    h.api.providers.snapshot = async () => ready ? h.catalog : state === "empty" ? { entries: [] } : { entries: [{ ...h.catalog.entries[0]!, status: "loading", models: [], modes: [] }] };
+    h.api.providers.waitForReady = async options => { ready = true; readyCalls.push(options); return h.catalog; };
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(readyCalls).toEqual([{ cwd: h.source.cwd, timeoutMs: SUMMARY_PROVIDER_READY_MS }]);
     expect(h.created[0]!.config).toMatchObject({ provider: "codex/model-mini", modeId: "auto" });
@@ -189,7 +192,7 @@ describe("stock summary generator", () => {
     const name = (await readdir(jobs)).find(name => name.endsWith(".capture.json"))!;
     const before = await readFile(join(jobs, name), "utf8");
     expect(h.created).toHaveLength(0);
-    h.api.providers.waitForReady = async () => h.catalog;
+    h.api.providers.waitForReady = async () => { h.api.providers.snapshot = async () => h.catalog; return h.catalog; };
     const service = h.service();
     const saved = await service.save(SOURCE);
     expect(await readFile(join(jobs, name), "utf8")).toBe(before);

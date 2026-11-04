@@ -44,9 +44,23 @@ export function normalizeOpenCodeProviderId(id: string): string {
   return id;
 }
 
-/** The configuration directory OpenCode reads: `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. */
+/**
+ * OpenCode's environment flag: `1` or `true`, invariant of case, and nothing else. The installed 2.2.5 binary
+ * parses every `OPENCODE_*` on/off switch through this one predicate.
+ */
+export function opencodeFlag(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true";
+}
+
+/**
+ * The configuration directory OpenCode reads: `OPENCODE_CONFIG_DIR` when set, else `$XDG_CONFIG_HOME/opencode`,
+ * else `~/.config/opencode`. The installed binary gives the custom directory to its global path service, so it
+ * replaces the user directory rather than adding one.
+ */
 export function opencodeConfigDirectory(deps: HostConfigDeps = {}): string {
   const env = deps.env ?? process.env, home = deps.home ?? homedir();
+  const custom = env.OPENCODE_CONFIG_DIR?.trim();
+  if (custom) return resolve(custom);
   return join(env.XDG_CONFIG_HOME?.trim() || join(home, ".config"), "opencode");
 }
 
@@ -76,9 +90,16 @@ export function ancestorDirectories(cwd: string, stopAt?: string): string[] {
  * directory, `OPENCODE_CONFIG`, then the project walk from the outermost ancestor to `cwd` (each directory's
  * `opencode.json`, then its `opencode.jsonc`, then the same names under its `.opencode` directory).
  * `OPENCODE_CONFIG_CONTENT` is a document, not a file, and is appended by {@link readOpenCodeConfig}.
+ *
+ * Two environment controls change that set, exactly as the installed binary applies them: `OPENCODE_CONFIG_DIR`
+ * replaces the user directory and starts the project scan there, which is the directory already read, so no
+ * project document is added; `OPENCODE_CONFIG_PROJECT_DISABLE` (alias `OPENCODE_DISABLE_PROJECT_CONFIG`) removes
+ * the project walk entirely.
  */
 export function opencodeConfigPaths(cwd: string, deps: HostConfigDeps = {}): string[] {
-  const env = deps.env ?? process.env, ancestors = ancestorDirectories(cwd, deps.stopAt), paths: string[] = [];
+  const env = deps.env ?? process.env, paths: string[] = [];
+  const projectDisabled = opencodeFlag(env.OPENCODE_CONFIG_PROJECT_DISABLE ?? env.OPENCODE_DISABLE_PROJECT_CONFIG);
+  const ancestors = env.OPENCODE_CONFIG_DIR?.trim() || projectDisabled ? [] : ancestorDirectories(cwd, deps.stopAt);
   const directories = deps.system === false ? [opencodeConfigDirectory(deps)] : [opencodeSystemDirectory(deps), opencodeConfigDirectory(deps)];
   for (const dir of directories) for (const name of OPENCODE_CONFIG_NAMES) paths.push(join(dir, name));
   const explicit = env.OPENCODE_CONFIG?.trim();
@@ -107,7 +128,14 @@ export function parseJsonc(text: string): JsoncParse {
     }
     if (char === "\"") { inString = true; clean += char; continue; }
     if (char === "/" && next === "/") { while (index < text.length && text[index] !== "\n") index += 1; clean += "\n"; continue; }
-    if (char === "/" && next === "*") { index += 2; while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) index += 1; index += 1; continue; }
+    if (char === "/" && next === "*") {
+      // An unterminated block comment is a truncated source, not a comment that runs to the end: OpenCode rejects
+      // the document, so this parser must not hand JSON.parse the text before the opening marker.
+      const end = text.indexOf("*/", index + 2);
+      if (end < 0) return { ok: false };
+      index = end + 1;
+      continue;
+    }
     clean += char;
   }
   let sansTrailingCommas = "", quoted = false;
