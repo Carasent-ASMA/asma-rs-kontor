@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { readFile as readFileDefault } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -86,6 +87,15 @@ export function ancestorDirectories(cwd: string, stopAt?: string): string[] {
 }
 
 /**
+ * A directory's identity for native discovery's Location check: its real path when it exists, and its lexical
+ * absolute path when it does not, as OpenCode 2.2.5 resolves both sides through `realPath` with a not-found fallback.
+ * A symlink to the global directory is therefore the same Location as that directory.
+ */
+function canonicalDirectory(path: string): string {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+/**
  * Every file the loader tries, in OpenCode's order of precedence: the system directory, the user's configuration
  * directory, `OPENCODE_CONFIG`, then the project walk from the outermost ancestor to `cwd` (each directory's
  * `opencode.json`, then its `opencode.jsonc`, then the same names under its `.opencode` directory).
@@ -102,7 +112,8 @@ export function opencodeConfigPaths(cwd: string, deps: HostConfigDeps = {}): str
   const globalDirectories = deps.system === false ? [opencodeConfigDirectory(deps)] : [opencodeSystemDirectory(deps), opencodeConfigDirectory(deps)];
   // The native Location directory is the one the request runs in; a custom global directory alone is not a reason
   // to skip the project's own documents. It only is when that request directory is the global directory itself.
-  const location = resolve(cwd), atGlobalDirectory = globalDirectories.some((dir) => resolve(dir) === location);
+  // Both sides are canonical real paths, so an alias of the global directory is still that directory.
+  const location = canonicalDirectory(cwd), atGlobalDirectory = globalDirectories.some((dir) => canonicalDirectory(dir) === location);
   const ancestors = projectDisabled || atGlobalDirectory ? [] : ancestorDirectories(cwd, deps.stopAt);
   for (const dir of globalDirectories) for (const name of OPENCODE_CONFIG_NAMES) paths.push(join(dir, name));
   const explicit = env.OPENCODE_CONFIG?.trim();
