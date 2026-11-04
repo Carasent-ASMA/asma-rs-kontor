@@ -46,7 +46,7 @@ describe("review-a delta-1 regressions", () => {
   });
 
   it("N2 keeps a distinct project's configuration when a custom global directory is set", async () => {
-    const config: HostConfigDeps = { ...host, env: { OPENCODE_CONFIG_DIR: "/synthetic/custom" },
+    const config: HostConfigDeps = { ...host, env: { OPENCODE_CONFIG_DIR: "/synthetic/custom" }, isDirectory: async () => true,
       readFile: async (path: string) => path === "/synthetic/custom/opencode.json" ? "{}"
         : path === `${cwd}/opencode.json` ? JSON.stringify({ disabled_providers: ["deepseek"] }) : absent() };
     const catalog = await readProviderCatalog({ providers: { snapshot: async () => ({ entries: [route("opencode", ["deepseek/hidden", "other/model"])] }) } }, cwd, { config });

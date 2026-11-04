@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { readFile as readFileDefault } from "node:fs/promises";
+import { lstat, readFile as readFileDefault, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -18,6 +18,8 @@ export type HostConfigDeps = {
   /** The outermost directory the project walk considers; the filesystem root in production. */
   readonly stopAt?: string;
   readonly readFile?: (path: string) => Promise<string>;
+  /** Whether an explicitly selected configuration directory is available; a test that invents paths answers true. */
+  readonly isDirectory?: (path: string) => Promise<boolean>;
 };
 
 /** One parsed OpenCode configuration document, in the order OpenCode loads it. */
@@ -93,6 +95,18 @@ export function ancestorDirectories(cwd: string, stopAt?: string): string[] {
  */
 function canonicalDirectory(path: string): string {
   try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+/**
+ * Whether an explicitly selected configuration directory is available to read. A missing directory, a stat error
+ * and a symlink whose target is gone are all unavailable; a symlink to an existing directory is available.
+ */
+async function directoryAvailable(path: string): Promise<boolean> {
+  try {
+    const entry = await lstat(path);
+    if (entry.isSymbolicLink()) return (await stat(path)).isDirectory();
+    return entry.isDirectory();
+  } catch { return false; }
 }
 
 /**
@@ -187,10 +201,16 @@ function stringList(value: unknown, where: string): { values: string[] } | { pro
 /**
  * Every file OpenCode would load for this working directory, parsed. A missing file is not a document and not a
  * problem; a file that exists but cannot be read or parsed fails the whole read, so no route can fall back to
- * the unfiltered catalogue.
+ * the unfiltered catalogue. An explicitly selected `OPENCODE_CONFIG_DIR` that is unavailable is a problem in its
+ * own right: its restrictions did not simply disappear because the directory did.
  */
 export async function readOpenCodeConfig(cwd: string, deps: HostConfigDeps = {}): Promise<OpenCodeConfigRead> {
   const env = deps.env ?? process.env, readFile = deps.readFile ?? ((path: string) => readFileDefault(path, "utf8"));
+  if (env.OPENCODE_CONFIG_DIR?.trim()) {
+    const directory = opencodeConfigDirectory(deps);
+    if (!(await (deps.isDirectory ?? directoryAvailable)(directory)))
+      return { problem: `OpenCode config directory ${directory} could not be read as a directory.` };
+  }
   const documents: OpenCodeDocument[] = [];
   const load = async (path: string): Promise<{ info: Record<string, unknown> } | { problem: string } | null> => {
     let text: string;

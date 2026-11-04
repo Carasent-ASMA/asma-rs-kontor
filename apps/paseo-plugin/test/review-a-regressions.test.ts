@@ -96,6 +96,7 @@ describe("review-a regressions", () => {
   it("F4 reads OPENCODE_CONFIG_DIR and honours both project-disable names", async () => {
     const project = "/fixture/project";
     const custom = await readOpenCodeConfig(project, syntheticHost("/fixture", { env: { OPENCODE_CONFIG_DIR: "/fixture/custom" },
+      isDirectory: async () => true,
       readFile: async (path: string) => path === "/fixture/custom/opencode.json" ? JSON.stringify({ disabled_providers: ["deepseek"] }) : absent() }));
     if ("problem" in custom) throw new Error(custom.problem);
     expect(custom.documents.map((document) => document.path)).toEqual(["/fixture/custom/opencode.json"]);
