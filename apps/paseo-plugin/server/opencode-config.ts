@@ -110,12 +110,25 @@ async function directoryAvailable(path: string): Promise<boolean> {
 }
 
 /**
- * Whether a directory entry exists at `path`, regardless of whether it can be read. `null` means the check itself
- * failed for a reason other than absence, which is an unreadable source rather than an absent optional file.
+ * What an ENOENT from reading a configuration file means. Walk upward from the leaf with `lstat` to the first path
+ * that exists. Only when that path is an ancestor that resolves to a real directory are all names below it —
+ * including the leaf — genuinely missing, which is ordinary absence. The leaf itself existing (a dangling link,
+ * for example), a broken ancestor link, a non-directory ancestor, or a walk error other than ENOENT is a source
+ * problem, never permission to load without that source's restrictions.
  */
-async function entryExists(path: string): Promise<boolean | null> {
-  try { await lstat(path); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : null; }
+async function missingSource(path: string): Promise<"absent" | "problem"> {
+  const leaf = resolve(path);
+  for (let current = leaf; ; current = dirname(current)) {
+    try {
+      await lstat(current);
+      if (current === leaf) return "problem";
+      try { return (await stat(current)).isDirectory() ? "absent" : "problem"; }
+      catch { return "problem"; }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "problem";
+    }
+    if (dirname(current) === current) return "problem";
+  }
 }
 
 /** Whether `path` is the explicitly selected directory or a document path constructed underneath it. */
@@ -216,10 +229,12 @@ function stringList(value: unknown, where: string): { values: string[] } | { pro
 }
 
 /**
- * Every file OpenCode would load for this working directory, parsed. A name with no directory entry is absent and
- * not a problem; a file that exists but cannot be read or parsed fails the whole read, so no route can fall back to
- * the unfiltered catalogue. An explicitly selected `OPENCODE_CONFIG_DIR` is checked when it is selected and again
- * if a document beneath it is missing, because its restrictions did not simply disappear with the directory.
+ * Every file OpenCode would load for this working directory, parsed. Every source path is classified through one
+ * ENOENT rule: a file is absent only when its nearest existing ancestor resolves to a real directory and every name
+ * below it is genuinely missing. An existing leaf that cannot be read, a broken ancestor link or any other read
+ * error fails the whole read, so no route can fall back to the unfiltered catalogue. An explicitly selected
+ * `OPENCODE_CONFIG_DIR` is checked when it is selected and again if a document beneath it is missing, because its
+ * restrictions did not simply disappear with the directory.
  */
 export async function readOpenCodeConfig(cwd: string, deps: HostConfigDeps = {}): Promise<OpenCodeConfigRead> {
   const env = deps.env ?? process.env, readFile = deps.readFile ?? ((path: string) => readFileDefault(path, "utf8"));
@@ -237,10 +252,11 @@ export async function readOpenCodeConfig(cwd: string, deps: HostConfigDeps = {})
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
-        // ENOENT is ordinary absence only when no entry exists at the path. A dangling symlink is an existing source
-        // that could not be read. The selected directory can also vanish between the check above and this read, so
-        // it is checked again when a document beneath it turns out to be missing.
-        if (await entryExists(path) !== false) return { problem: `OpenCode config ${path} could not be read (ENOENT).` };
+        // Every enumerated source — the global directories, OPENCODE_CONFIG and the project walk — is read through
+        // here. ENOENT is ordinary absence only when the nearest existing ancestor is a real directory and every
+        // name below it is genuinely missing; the selected directory is then re-checked in case it vanished.
+        if (await missingSource(path) === "problem")
+          return { problem: `OpenCode config ${path} could not be read (ENOENT).` };
         if (selected !== null && insideDirectory(path, selected) && !(await selectedAvailable()))
           return { problem: unavailableDirectory(selected) };
         return null;
