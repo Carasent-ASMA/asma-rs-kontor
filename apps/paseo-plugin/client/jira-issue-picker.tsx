@@ -30,7 +30,7 @@ export function JiraIssuePicker({ colors, scope, desks, initialQuery, selected, 
     let live = true;
     setBusy(true);
     const timer = setTimeout(() => {
-      read({ ...scope, start: "from-jira", issueKey: query.trim(), issueClass: ISSUE_CLASS_BY_FILTER[filter] }).then(
+      read({ ...scope, start: "from-jira", issueKey: query.trim(), issueClass: ISSUE_CLASS_BY_FILTER[filter], freshCatalog: false }).then(
         (options) => { if (live) { setResult({ query, filter, issues: options.issues, error: options.jiraProblem }); setBusy(false); } },
         (error: unknown) => { if (live) { setResult({ query, filter, issues: [], error: `Jira could not be read: ${error instanceof Error ? error.message : String(error)}` }); setBusy(false); } });
     }, 250);

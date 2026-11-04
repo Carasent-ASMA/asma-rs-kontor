@@ -114,8 +114,10 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     providers: {
       snapshot: async () => ({ ...SNAPSHOT, entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
       listFeatures: async () => ({ features, error: null }),
+      refresh: async () => ({ requestId: "fixture", acknowledged: true }),
     },
-    config: { get: async () => ({ requestId: "fixture", config: {} }) },
+    // The synthetic account route is a Claude harness account, as the daemon config declares a real one.
+    config: { get: async () => ({ requestId: "fixture", config: { providers: targetProvider === "claude" ? {} : { [targetProvider]: { extends: "claude" } } } }) },
   };
   const run: ResolverRun = async (_command, args) => {
     effects.resolve.push(args);
@@ -134,7 +136,9 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
       return { sections: { task: text, decisions: "Keep the verified decisions.", currentState: "The task is at its captured checkpoint.", nextStep: "Continue the captured next action." }, cutoff: "2026-10-25T08:00:00Z" };
     },
   });
-  const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"), undefined, undefined, summaryRoot);
+  // No real OpenCode configuration is read: the fixture host has none.
+  const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"), undefined, undefined, summaryRoot,
+    { env: {}, home: join(tmp, "home"), system: false, stopAt: tmp });
   const observedAt = new Date().toISOString();
   const fleetCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, promotionRoot: createRoot,

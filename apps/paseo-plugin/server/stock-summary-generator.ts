@@ -6,6 +6,8 @@ import type { PaseoApi, PaseoAgent } from "@getpaseo/client";
 import { summaryRevisionSchema, type SummaryHistoryBoundary } from "../shared/session-navigator";
 import { latestStoredSummary, type CompactSummaryPayload, type SessionSummaryGenerator } from "./session-summaries";
 import { createProviders } from "../shared/session-create";
+import { readProviderCatalog } from "./provider-catalog";
+import type { HostConfigDeps } from "./opencode-config";
 
 export const SUMMARY_SOURCE_ITEMS = 48;
 export const SUMMARY_SOURCE_CHARACTERS = 24_000;
@@ -19,15 +21,18 @@ export type SummaryRoute = z.infer<typeof routeSchema>;
 /** The host resolver still resolves provider/model at create; this selects only catalogued, enabled routes. */
 export const SUMMARY_PROVIDER_READY_MS = 10_000;
 
-export async function selectSummaryRoute(paseo: PaseoApi, cwd: string): Promise<SummaryRoute> {
+export async function selectSummaryRoute(paseo: PaseoApi, cwd: string, host: HostConfigDeps = {}): Promise<SummaryRoute> {
   let snapshot = await paseo.providers.snapshot({ cwd });
   if (!snapshot.entries.length || snapshot.entries.some(entry => entry.status === "loading")) {
     try { snapshot = await paseo.providers.waitForReady({ cwd, timeoutMs: SUMMARY_PROVIDER_READY_MS }); }
     catch { throw new Error("Summary provider discovery did not finish within the readiness budget. Capture retained; no worker was created."); }
   }
-  const providers = createProviders(snapshot);
-  const { config } = await paseo.config.get();
-  const profile = config.agentProfiles?.find(entry => [entry.id, entry.name].some(name => name.toLowerCase() === "summary"));
+  // The summary picks from the same catalogue the pickers offer: each harness's own list, filtered by its own
+  // configuration. It never re-reads a list here; a summary is not a picker.
+  const { config: daemon } = await paseo.config.get();
+  const catalog = await readProviderCatalog(paseo, cwd, { fresh: false, snapshot, config: host, overrides: daemon.providers ?? null });
+  const providers = createProviders(catalog);
+  const profile = daemon.agentProfiles?.find(entry => [entry.id, entry.name].some(name => name.toLowerCase() === "summary"));
   const choices = providers.filter(p => p.available).flatMap(p => p.models.flatMap(model => {
     const requested = profile?.provider === p.id ? profile.modeId : null;
     const mode = requested
@@ -75,7 +80,7 @@ function sameSession(left: PaseoAgent, right: PaseoAgent) {
 }
 
 /** Only public stock SDK calls. A worker receives the captured excerpt, never a turn on the source. */
-export function stockSummaryGenerator(paseo: PaseoApi, root: string): SessionSummaryGenerator | undefined {
+export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostConfigDeps = {}): SessionSummaryGenerator | undefined {
   if (typeof paseo.agents?.create !== "function" || typeof paseo.agents?.ref !== "function") return undefined;
   return { generate: agentId => {
     const key = `${root}\0${agentId}`;
@@ -162,7 +167,7 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string): SessionSum
         await writeJob(join(superseded, `${job.workerId}.json`), job);
       }
       if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
-      const route = await selectSummaryRoute(paseo, agent.cwd);
+      const route = await selectSummaryRoute(paseo, agent.cwd, host);
       job = { workerId: randomUUID(), state: "creating", previousWorkers: job ? [...job.previousWorkers, job.workerId] : [], clientMessageId: randomUUID(), promptHash: digest(prompt), route, promptVersion: SUMMARY_PROMPT_VERSION };
       await writeJob(file, job);
     }

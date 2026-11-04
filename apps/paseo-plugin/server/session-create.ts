@@ -12,6 +12,8 @@ import { resolveAsmaCommand } from "./asma-cli";
 import { readConfig } from "./config";
 import { canonicalLeadProblem } from "./session-canonical";
 import { readPinnedSummary, summaryStateRoot } from "./session-summaries";
+import { readProviderCatalog } from "./provider-catalog";
+import type { HostConfigDeps } from "./opencode-config";
 import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createChoiceProblem, createOutcomeSchema, createProviders, createRequestSchema,
@@ -30,7 +32,8 @@ export type CreateClient = {
     create(options: PaseoWorkspaceCreateOptions): Promise<Pick<WorkspaceHandle, "id" | "refresh">>;
   };
   agents: { list(options?: PaseoAgentListOptions): Promise<PaseoAgentListResult>; ref(id: string): Pick<AgentHandle, "refresh" | "timeline"> };
-  providers: Pick<PaseoApi["providers"], "snapshot" | "listFeatures">;
+  /** `refresh` is optional: a host or SDK without it cannot re-read a harness's own model list, and that route is withheld. */
+  providers: Pick<PaseoApi["providers"], "snapshot" | "listFeatures"> & Partial<Pick<PaseoApi["providers"], "refresh">>;
   config: Pick<PaseoApi["config"], "get">;
 };
 
@@ -457,7 +460,9 @@ export function serial<T>(step: () => Promise<T>): Promise<T> {
  * Host-local durable intents: a request is written before its dispatch, and its outcome after. An unsettled
  * request blocks the next creation until a Check settles it; nothing is ever re-dispatched.
  */
-export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch, summaryRoot = summaryStateRoot()) {
+export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch, summaryRoot = summaryStateRoot(),
+  /** The OpenCode configuration host reads; a test injects them so it never reads the machine it runs on. */
+  hostConfig: HostConfigDeps = {}) {
   const path = (requestId: string) => join(root, `${requestId}.json`);
   async function readRecord(requestId: string): Promise<CreateRecord | null> {
     try { return recordSchema.parse(JSON.parse(await readFile(path(requestId), "utf8"))); }
@@ -548,7 +553,11 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const projectId = scope.projectId ?? (scope.workspaceId ? workspaces.find((entry) => entry.id === scope.workspaceId)?.projectId : undefined);
     const desks = deskProjects(workspaces), desk = (projectId ? desks.find((entry) => entry.projectId === projectId) : desks[0]) ?? null;
     const role = scope.role ?? CREATE_ROLES[0], start = scope.start ?? CREATE_STARTS[0];
-    const providers = desk?.cwd ? createProviders(await client.providers.snapshot({ cwd: desk.cwd })) : [];
+    // Every surface that shows a model list reads the catalogue through this one rule: the harness's own list,
+    // filtered by the harness's own configuration, with vendor exclusivity on top.
+    const catalog = desk?.cwd ? await readProviderCatalog(client, desk.cwd, { fresh: scope.freshCatalog !== false, config: hostConfig, overrides: config?.config.providers ?? null }) : null;
+    if (catalog) notes.push(...catalog.problems);
+    const providers = catalog ? createProviders(catalog) : [];
     const profile = config?.config.agentProfiles?.find((entry) => [entry.name, entry.id].some((value) => value.trim().toUpperCase() === role));
     let pending: CreateOutcome | null = null;
     try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], catalogProjectId: null, providers: [], profile: null, issues: [], jiraProblem: null, pending: null, notes }; }
@@ -585,7 +594,11 @@ export function createSessionCreateService(client: CreateClient, root: string, s
         }
         cwd = snapshot.workspaceDirectory;
       }
-      const choice = createChoiceProblem(createProviders(await client.providers.snapshot({ cwd })), spec);
+      const config = await client.config.get().catch(() => null);
+      const catalog = await readProviderCatalog(client, cwd, { fresh: true, config: hostConfig, overrides: config?.config.providers ?? null });
+      const withheld = catalog.problemFor(spec.provider);
+      if (withheld) return { problem: withheld };
+      const choice = createChoiceProblem(createProviders(catalog), spec);
       if (choice) return { problem: choice };
       if (spec.featureValues && Object.keys(spec.featureValues).length) {
         const listed = await createFeatures(client, cwd, spec);

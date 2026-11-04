@@ -220,6 +220,8 @@ export const createScopeSchema = z.object({
   issueKey: z.string().max(200).optional(),
   /** The picker's selected Jira class, filtered before the 50-slot cap. */
   issueClass: z.enum(JIRA_ISSUE_CLASSES).optional(),
+  /** Whether a harness whose own list changes between sessions must be re-read; default true. A Jira search reuses the list. */
+  freshCatalog: z.boolean().optional(),
 }).strict();
 export type CreateScope = z.infer<typeof createScopeSchema>;
 

@@ -91,6 +91,10 @@ describe("model alias and vendor", () => {
     expect(alias.length).toBeLessThanOrEqual(4);
   });
 
+  it("reads the author from DeepSeek's own composite harness id, never from the route", () => {
+    expect(modelVendor('["deepseek-official","deepseek-flash"]')).toBe("deepseek");
+  });
+
   it("gives distinct models of one author distinct aliases; only one model on two routes shares one", () => {
     // One underlying model, without its route and pricing tag: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" and "opencode/nemotron-3-ultra-free" are both Nemotron 3 Ultra.
     const underlying = (model: string) => model.split("/").pop()!.replace(/(:|-)free$/, "").replace(/-\d+b-a\d+b$/, "");

@@ -52,14 +52,17 @@ async function harness() {
     },
     create: async (options: Record<string, any>) => { created.push(options); workers.add(options.agentId); if (refuseCreate) { refuseCreate = false; throw new Error("Creation answer lost"); } return api.agents.ref(options.agentId); },
   } };
-  const generator = () => stockSummaryGenerator(api as never, root)!;
-  return { root, api, source, page, created, historyCalls, generator, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
+  // The OpenCode configuration is never read from the machine running the test: a synthetic host with no documents.
+  const host = { env: {}, home: join(root, "home"), system: false, stopAt: root };
+  const generator = () => stockSummaryGenerator(api as never, root, host)!;
+  const service = () => createSessionSummaryService(api as never, root, stockSummaryGenerator(api as never, root, host));
+  return { root, api, source, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
 }
 
 describe("stock summary generator", () => {
   it("uses stock structured creation in a separate host-supported worker, saves the exact source boundary and reopens the same revision", async () => {
     const h = await harness();
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     const saved = await service.save(SOURCE);
     expect(saved).toMatchObject({ sourceAgentId: SOURCE, revision: 1, cutoff: "2026-10-28T10:01:00Z", sections: SECTIONS,
       historyBoundary: { epoch: "epoch-1", fromSeq: 7, toSeq: 8, partial: true, providerSessionId: "source-session" } });
@@ -70,7 +73,7 @@ describe("stock summary generator", () => {
     expect(h.created[0]!.agentId).not.toBe(SOURCE);
     expect(h.created[0]!.prompt).toContain('"sourceAgentId":"' + SOURCE + '"');
     expect(h.counts()).toEqual({ waits: 1, sends: 0 });
-    const reopened = createSessionSummaryService(h.api as never, h.root);
+    const reopened = h.service();
     expect(await reopened.save(SOURCE)).toEqual(saved);
     expect(await readPinnedSummary(h.root, saved)).toEqual(saved);
     expect(h.created).toHaveLength(1);
@@ -81,7 +84,7 @@ describe("stock summary generator", () => {
     const h = await harness(); h.page.hasOlder = false;
     Object.assign(h.page.entries[0]!, { seqStart: 1, seqEnd: 2 });
     Object.assign(h.page.entries[0]!.item, { type: "tool_call", name: "agent_message", agentMessage: { event: "message", text: "Preserve the user's uncommitted work and report the pending review." } });
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     const first = await service.save(SOURCE);
     const excerpt = JSON.parse(h.created[0]!.prompt.split("\n\n").at(-1));
     expect(excerpt[0]).toEqual({ seqStart: 1, seqEnd: 2, role: "agent_message", text: "Preserve the user's uncommitted work and report the pending review." });
@@ -137,7 +140,7 @@ describe("stock summary generator", () => {
 
   it("uses another available summarizer when Codex is unavailable", async () => {
     const h = await harness(); h.catalog.entries[0]!.provider = "opencode";
-    const saved = await createSessionSummaryService(h.api as never, h.root).save(SOURCE);
+    const saved = await h.service().save(SOURCE);
     expect(saved.sections).toEqual(SECTIONS);
     expect(h.created[0]!.config.provider).toBe("opencode/model-mini");
   });
@@ -160,7 +163,7 @@ describe("stock summary generator", () => {
   it("discovers in the validated source cwd rather than the empty state directory and saves once", async () => {
     const h = await harness(); const calls: unknown[] = [];
     h.api.providers.snapshot = async options => { calls.push(options); return (options as { cwd: string }).cwd === h.source.cwd ? h.catalog : { entries: [] }; };
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     const saved = await service.save(SOURCE);
     expect(calls).toEqual([{ cwd: h.source.cwd }]);
     expect(await service.save(SOURCE)).toEqual(saved);
@@ -187,7 +190,7 @@ describe("stock summary generator", () => {
     const before = await readFile(join(jobs, name), "utf8");
     expect(h.created).toHaveLength(0);
     h.api.providers.waitForReady = async () => h.catalog;
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     const saved = await service.save(SOURCE);
     expect(await readFile(join(jobs, name), "utf8")).toBe(before);
     expect(await service.save(SOURCE)).toEqual(saved);
@@ -206,17 +209,17 @@ describe("stock summary generator", () => {
   it("validates the configured summary model and mode against the host instead of reusing the source", async () => {
     const h = await harness();
     h.api.config.get = async () => ({ config: { agentProfiles: [{ id: "summary", name: "Summary", provider: "codex", model: "model-mini", modeId: "auto-review" }] } });
-    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ model: "model-mini", modeId: "auto-review" });
+    expect(await selectSummaryRoute(h.api as never, h.root, h.host)).toMatchObject({ model: "model-mini", modeId: "auto-review" });
     h.catalog.entries[0]!.modes = [{ id: "full-access", label: "Full access", colorTier: "dangerous" }];
-    await expect(selectSummaryRoute(h.api as never, h.root)).rejects.toThrow("configured summary route");
+    await expect(selectSummaryRoute(h.api as never, h.root, h.host)).rejects.toThrow("configured summary route");
   });
 
   it("uses the Codex defaultMode when no explicit default mode is offered", async () => {
     const h = await harness();
     h.catalog.entries = [{ provider: "codex", enabled: true, status: "ready", defaultModeId: "auto-review", models: [{ id: "model-mini", label: "Mini", isDefault: true }],
       modes: [{ id: "auto", label: "Auto" }, { id: "auto-review", label: "Review" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }];
-    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "codex", model: "model-mini", modeId: "auto-review" });
-    expect((await createSessionSummaryService(h.api as never, h.root).save(SOURCE)).sections).toEqual(SECTIONS);
+    expect(await selectSummaryRoute(h.api as never, h.root, h.host)).toMatchObject({ provider: "codex", model: "model-mini", modeId: "auto-review" });
+    expect((await h.service().save(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created[0]!.config).toMatchObject({ modeId: "auto-review" });
   });
 
@@ -224,7 +227,7 @@ describe("stock summary generator", () => {
     const h = await harness();
     h.catalog.entries[0]!.modes = [{ id: "full-access", label: "Full access", colorTier: "dangerous" }];
     h.api.config.get = async () => ({ config: { agentProfiles: [{ id: "summary", name: "Summary", provider: "codex", model: "model-mini", modeId: "full-access" }] } });
-    await expect(selectSummaryRoute(h.api as never, h.root)).rejects.toThrow("configured summary route");
+    await expect(selectSummaryRoute(h.api as never, h.root, h.host)).rejects.toThrow("configured summary route");
     expect(h.created).toEqual([]);
   });
 
@@ -232,8 +235,8 @@ describe("stock summary generator", () => {
     const h = await harness();
     h.catalog.entries = [{ provider: "claude", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "claude-haiku-4-5", label: "Haiku", isDefault: true }],
       modes: [{ id: "auto", label: "Auto" }, { id: "default", label: "Default" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }];
-    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "claude", model: "claude-haiku-4-5", modeId: "default" });
-    expect((await createSessionSummaryService(h.api as never, h.root).save(SOURCE)).sections).toEqual(SECTIONS);
+    expect(await selectSummaryRoute(h.api as never, h.root, h.host)).toMatchObject({ provider: "claude", model: "claude-haiku-4-5", modeId: "default" });
+    expect((await h.service().save(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created[0]!.config).toMatchObject({ provider: "claude/claude-haiku-4-5", modeId: "default" });
   });
 
@@ -241,21 +244,21 @@ describe("stock summary generator", () => {
     const h = await harness();
     h.catalog.entries = [{ provider: "claude", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "claude-haiku-4-5", label: "Haiku", isDefault: true }],
       modes: [{ id: "auto", label: "Auto" }, { id: "review", label: "Review" }] }];
-    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "claude", modeId: "auto" });
+    expect(await selectSummaryRoute(h.api as never, h.root, h.host)).toMatchObject({ provider: "claude", modeId: "auto" });
   });
 
   it("skips dangerous default modes for the first non-dangerous mode", async () => {
     const h = await harness();
     h.catalog.entries = [{ provider: "claude", enabled: true, status: "ready", defaultModeId: "full-access", models: [{ id: "claude-haiku-4-5", label: "Haiku", isDefault: true }],
       modes: [{ id: "default", label: "Default", colorTier: "dangerous" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }, { id: "review", label: "Review" }] }];
-    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "claude", modeId: "review" });
+    expect(await selectSummaryRoute(h.api as never, h.root, h.host)).toMatchObject({ provider: "claude", modeId: "review" });
   });
 
   it.each(["codex", "opencode"] as const)("keeps native %s route behavior unchanged", async (provider) => {
     const h = await harness();
     h.catalog.entries = [{ provider, enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "model-mini", label: "Mini", isDefault: true }],
       modes: [{ id: "auto", label: "Auto" }, { id: "review", label: "Review" }] }];
-    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider, model: "model-mini", modeId: "auto" });
+    expect(await selectSummaryRoute(h.api as never, h.root, h.host)).toMatchObject({ provider, model: "model-mini", modeId: "auto" });
   });
 
   it("refuses a running source and a history gap before generation", async () => {
@@ -291,7 +294,7 @@ describe("stock summary generator", () => {
     ["surrounding whitespace and CRLF", ` \r\n\`\`\`json \t\r\n\r\n${JSON.stringify(SECTIONS, null, 2).replaceAll("\n", "\r\n")}\r\n\r\n  \`\`\` \r\n`],
   ])("accepts whole-response %s while preserving exact pin/retry/cleanup", async (_name, response) => {
     const h = await harness(); h.setResult({ lastMessage: response });
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     const saved = await service.save(SOURCE);
     expect(saved.sections).toEqual(SECTIONS);
     expect(await service.save(SOURCE)).toEqual(saved);
@@ -315,7 +318,7 @@ describe("stock summary generator", () => {
     ["extra schema field", `\`\`\`json\n${JSON.stringify({ ...SECTIONS, unexpected: true })}\n\`\`\``],
   ])("rejects %s without saving and cleans the finished helper", async (_name, response) => {
     const h = await harness(); h.setResult({ lastMessage: response });
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     await expect(service.save(SOURCE)).rejects.toThrow("four nonempty summary sections");
     expect(await service.latest([SOURCE])).toEqual({ [SOURCE]: null });
     expect(h.created).toHaveLength(1);
@@ -327,7 +330,7 @@ describe("stock summary generator", () => {
     const h = await harness();
     const body = JSON.stringify({ ...SECTIONS, captureStatus: "provider says full continuity", blockers: [" Awaiting review ", "", "Need fixture readback"] });
     h.setResult({ lastMessage: fenced ? "```json\n" + body + "\n```" : body });
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     const saved = await service.save(SOURCE);
     expect(saved.sections).toEqual({ ...SECTIONS, currentState: SECTIONS.currentState + "\n\nBlockers (provider-reported):\nAwaiting review\nNeed fixture readback" });
     expect(saved.text).not.toContain("provider says full continuity");
@@ -361,7 +364,7 @@ describe("stock summary generator", () => {
     ["missing required section", { nextStep: undefined, blockers: "No next step" }],
   ])("rejects %s before persistence and cleans the finished helper", async (_name, metadata) => {
     const h = await harness(); h.setResult({ lastMessage: "```json\n" + JSON.stringify({ ...SECTIONS, ...metadata }) + "\n```" });
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     await expect(service.save(SOURCE)).rejects.toThrow("four nonempty summary sections");
     expect(await service.latest([SOURCE])).toEqual({ [SOURCE]: null });
     expect(h.archived.has(h.created[0]!.agentId)).toBe(true);
@@ -404,7 +407,7 @@ describe("stock summary generator", () => {
     expect(pending.promptHash).not.toBe(old.job.promptHash);
     expect(pending.clientMessageId).not.toBe(old.job.clientMessageId);
     expect(JSON.parse(await readFile(join(old.jobs, "superseded", old.job.workerId + ".json"), "utf8"))).toEqual(old.job);
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     const [first, second] = await Promise.all([service.save(SOURCE), service.save(SOURCE)]);
     expect(first).toEqual(second); expect(first.sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(2);
@@ -428,7 +431,7 @@ describe("stock summary generator", () => {
 
   it("does not save malformed provider output and permits an explicit retry after a terminal failure", async () => {
     const h = await harness(); h.setResult({ lastMessage: "{}" });
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     await expect(service.save(SOURCE)).rejects.toThrow("four nonempty");
     expect(await service.latest([SOURCE])).toEqual({ [SOURCE]: null });
     h.setResult({ lastMessage: JSON.stringify(SECTIONS) });
@@ -437,7 +440,7 @@ describe("stock summary generator", () => {
   });
 
   it("a new epoch makes a new revision without replacing the old saved pin", async () => {
-    const h = await harness(); const service = createSessionSummaryService(h.api as never, h.root);
+    const h = await harness(); const service = h.service();
     const first = await service.save(SOURCE);
     h.page.epoch = "epoch-2";
     const second = await service.save(SOURCE);
@@ -448,11 +451,11 @@ describe("stock summary generator", () => {
   });
 
   it("holds unrelated later valid JSON after timeout across service restart without resending", async () => {
-    const h = await harness(); const service = createSessionSummaryService(h.api as never, h.root);
+    const h = await harness(); const service = h.service();
     h.setResult({ status: "timeout" });
     await expect(service.save(SOURCE)).rejects.toThrow("retry reads its result");
     h.foreignTurn(); h.setResult({ status: "idle", lastMessage: JSON.stringify({ ...SECTIONS, task: "Unrelated payroll job" }) });
-    const resumed = createSessionSummaryService(h.api as never, h.root);
+    const resumed = h.service();
     await expect(resumed.save(SOURCE)).rejects.toThrow("correlation is unconfirmed");
     expect(await resumed.latest([SOURCE])).toEqual({ [SOURCE]: null });
     expect(h.created).toHaveLength(1);
@@ -461,9 +464,9 @@ describe("stock summary generator", () => {
 
   it("persists only the same issued prompt response after timeout and service restart", async () => {
     const h = await harness(); h.setResult({ status: "timeout" });
-    await expect(createSessionSummaryService(h.api as never, h.root).save(SOURCE)).rejects.toThrow("retry reads its result");
+    await expect(h.service().save(SOURCE)).rejects.toThrow("retry reads its result");
     h.setResult({ status: "idle" });
-    const saved = await createSessionSummaryService(h.api as never, h.root).save(SOURCE);
+    const saved = await h.service().save(SOURCE);
     expect(saved.sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(1);
     expect(h.created[0]!.clientMessageId).toMatch(/^[a-f0-9-]{36}$/);
@@ -480,7 +483,7 @@ describe("stock summary generator", () => {
     if (reason === "history gap") h.workerGap();
     if (reason === "different effective provider") h.workerOverrides.provider = "opencode";
     if (reason === "different effective mode") h.workerOverrides.currentModeId = "full-access";
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     await expect(service.save(SOURCE)).rejects.toThrow("correlation is unconfirmed");
     expect(await service.latest([SOURCE])).toEqual({ [SOURCE]: null });
     expect(h.created).toHaveLength(1);
@@ -496,7 +499,7 @@ describe("stock summary generator", () => {
 
   it("refuses same-agent history from a replacement source provider session before creating a worker", async () => {
     const h = await harness(); h.page.agent.persistence = { sessionId: "replacement-source-session" };
-    const service = createSessionSummaryService(h.api as never, h.root);
+    const service = h.service();
     await expect(service.save(SOURCE)).rejects.toThrow("source provider session changed");
     expect(h.created).toEqual([]);
     expect(await service.latest([SOURCE])).toEqual({ [SOURCE]: null });
