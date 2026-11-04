@@ -112,14 +112,16 @@ export function opencodeConfigPaths(cwd: string, deps: HostConfigDeps = {}): str
 export type JsoncParse = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
 
 /**
- * JSONC as OpenCode's loader accepts it: JSON with `//` and block comments and trailing commas. A string-aware
+ * JSONC as OpenCode's loader accepts it: JSON with `//` and block comments and trailing commas. One leading
+ * U+FEFF byte-order mark is removed first, as OpenCode 2.2.5 accepts a BOM-prefixed document. A string-aware
  * scan removes the comments, so a `//` inside a value stays part of the value. A text that is not JSON after that
  * is `{ ok: false }`; the text itself never leaves this function.
  */
 export function parseJsonc(text: string): JsoncParse {
+  const source = text.startsWith("\uFEFF") ? text.slice(1) : text;
   let clean = "", inString = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]!, next = text[index + 1];
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!, next = source[index + 1];
     if (inString) {
       clean += char;
       if (char === "\\") { clean += next ?? ""; index += 1; }
@@ -127,11 +129,11 @@ export function parseJsonc(text: string): JsoncParse {
       continue;
     }
     if (char === "\"") { inString = true; clean += char; continue; }
-    if (char === "/" && next === "/") { while (index < text.length && text[index] !== "\n") index += 1; clean += "\n"; continue; }
+    if (char === "/" && next === "/") { while (index < source.length && source[index] !== "\n") index += 1; clean += "\n"; continue; }
     if (char === "/" && next === "*") {
       // An unterminated block comment is a truncated source, not a comment that runs to the end: OpenCode rejects
       // the document, so this parser must not hand JSON.parse the text before the opening marker.
-      const end = text.indexOf("*/", index + 2);
+      const end = source.indexOf("*/", index + 2);
       if (end < 0) return { ok: false };
       index = end + 1;
       continue;

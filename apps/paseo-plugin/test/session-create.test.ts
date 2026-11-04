@@ -382,6 +382,53 @@ describe("create options", () => {
   });
 });
 
+describe("catalogue freshness at the create surfaces", () => {
+  const CODEX_READY = { ...SNAPSHOT, entries: [...SNAPSHOT.entries.filter((entry) => entry.provider !== "codex"), {
+    provider: "codex", label: "Codex", enabled: true, status: "ready" as const, defaultModeId: "auto",
+    models: [{ provider: "codex", id: "gpt", label: "GPT", isSelectable: true }],
+    modes: [{ id: "auto", label: "Auto" }],
+  }] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>;
+  const codexRequest = () => request({ provider: "codex", model: "gpt", effort: null, modeId: "auto" });
+
+  it("re-reads Codex for options() by default, and not when the caller reuses the list", async () => {
+    const s = await setup();
+    await s.service.options();
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex"] });
+    s.refresh.mockClear();
+    await s.service.options({ freshCatalog: false });
+    expect(s.refresh).not.toHaveBeenCalled();
+  });
+
+  it("re-reads a derived Codex account wherever options() sees one", async () => {
+    const s = await setup();
+    const account = { ...CODEX_READY.entries.find((entry) => entry.provider === "codex")!, provider: "codex-work", label: "Codex Work" };
+    s.snapshot.mockResolvedValue({ ...CODEX_READY, entries: [account] } as never);
+    vi.mocked(s.client.config.get).mockResolvedValueOnce({ requestId: "fixture", config: { providers: { "codex-work": { extends: "codex" } } } } as never);
+    await s.service.options();
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex-work"] });
+  });
+
+  it("re-reads Codex before a create, and refuses it when the fresh read cannot be confirmed", async () => {
+    const s = await setup();
+    s.snapshot.mockResolvedValue(CODEX_READY as never);
+    s.refresh.mockRejectedValueOnce(new Error("app-server did not start"));
+    const outcome = await s.service.create(codexRequest());
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex"] });
+    expect(outcome).toMatchObject({ state: "refused", message: expect.stringContaining("did not confirm a fresh read") });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(s.intents).toEqual([]);
+  });
+
+  it("dispatches a valid Codex create only after the fresh read", async () => {
+    const s = await setup();
+    s.snapshot.mockResolvedValue(CODEX_READY as never);
+    const outcome = await s.service.create(codexRequest());
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex"] });
+    expect(s.create).toHaveBeenCalledTimes(1);
+    expect(outcome.state).not.toBe("refused");
+  });
+});
+
 describe("host provider eligibility", () => {
   it.each([
     [true, "ready", "ready", true],

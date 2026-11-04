@@ -17,6 +17,12 @@ const WORDS: Record<string, readonly [Vendor, string]> = {
   gemma: ["google", "G"], nemotron: ["nvidia", "N"], longcat: ["meituan", "LC"], mimo: ["xiaomi", "MM"], minimax: ["minimax", "MX"],
   inkling: ["thinkingmachines", "I"], ling: ["inclusionai", "L"], lfm: ["liquid", "L"],
 };
+/**
+ * Anthropic's series names. Cursor writes `sonnet-4.5`/`opus-4.5` and OpenCode writes `anthropic/sonnet-5`
+ * without the vendor word; they are whole words, so "octopus" is not an Opus model. They classify the vendor
+ * only: the model-alias table keeps reading the series as a variant name, as it always has.
+ */
+const ANTHROPIC_SERIES = new Set(["sonnet", "opus", "haiku"]);
 /** The model author an `openrouter/<author>/…` route names; `openrouter/openrouter/…` is the router choosing, so no author. */
 const AUTHORS: Record<string, Vendor> = {
   openai: "openai", anthropic: "anthropic", "z-ai": "zai", deepseek: "deepseek", "x-ai": "xai", google: "google", moonshotai: "moonshot", qwen: "alibaba",
@@ -45,7 +51,13 @@ export function modelVendor(model: string | null): Vendor {
   if (!model) return "unknown";
   const id = model.toLocaleLowerCase(), segments = id.split("/");
   if (segments[0] === "openrouter" && segments.length > 2) return AUTHORS[segments[1]!] ?? (segments[1] === "openrouter" ? "unknown" : modelVendor(segments.slice(2).join("/")));
+  // OpenCode's own ids name the provider first: `anthropic/sonnet-5` is Anthropic's model and `openai/…` is
+  // OpenAI's, exactly as `openrouter/<author>/…` names the author.
+  if (segments.length > 1 && (segments[0] === "openai" || segments[0] === "anthropic")) return segments[0];
   if (/(^|\/)o\d/.test(id)) return "openai";
+  // OpenAI's computer-use family has no vendor word in the model name.
+  if (/(^|\/)computer-use(-|$)/.test(id)) return "openai";
+  for (const part of modelWords(id)) if (ANTHROPIC_SERIES.has(part)) return "anthropic";
   for (const part of modelWords(id)) if (WORDS[part]) return WORDS[part]![0];
   for (const [name, [vendor]] of Object.entries(FAMILY)) if (id.includes(name)) return vendor;
   if (id.includes("z-ai") || id.includes("zhipu")) return "zai";

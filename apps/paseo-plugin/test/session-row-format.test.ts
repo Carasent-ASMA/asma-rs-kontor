@@ -84,6 +84,10 @@ describe("model alias and vendor", () => {
     ["openrouter/google/gemma-4-26b-a4b-it:free", "google", "G426"], ["openrouter/google/gemma-4-31b-it:free", "google", "G431"],
     ["claude-opus-4-8[1m]", "anthropic", "O48M"], ["claude-opus-4-8", "anthropic", "O4.8"], ["claude-sonnet-5[1m]", "anthropic", "S5M"], ["claude-sonnet-5", "anthropic", "S5"],
     ["openrouter/openrouter/free", "unknown", "FREE"], ["opencode/beam-free", "unknown", "BEAM"], ["opencode/big-pickle", "unknown", "BIG"],
+    // R2: Cursor and OpenCode write Anthropic's series without the vendor word; OpenAI's computer-use family has none either.
+    ["sonnet-4.5", "anthropic", "S4.5"], ["opus-4.5", "anthropic", "O4.5"], ["haiku-4.5", "anthropic", "H4.5"],
+    ["opus", "anthropic", "OPUS"], ["sonnet", "anthropic", "SONN"],
+    ["computer-use-preview", "openai", "COMP"],
   ] as const;
 
   it.each(ROUTED)("%s is made by %s as %s", (model, vendor, alias) => {
