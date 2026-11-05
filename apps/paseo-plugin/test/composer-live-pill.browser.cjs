@@ -75,7 +75,8 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
       try{
         await page.goto(server.resolvedUrls.local[0]);const a=page.getByTestId('pill-a'),b=page.getByTestId('pill-b');
         await page.getByRole('button',{name:'Synthetic a · Idle',exact:true}).waitFor();
-        // D3-r2: Reduce Motion keeps the colour flow, so the shared tone mounts before the transitions run.
+        // D3-r2: Reduce Motion keeps the colour flow, so a tone mounts before the transitions run —
+        // pill a is Idle here, so this readiness wait is legitimately page-scoped (pill b is Running).
         await page.getByTestId('composer-running-tone').first().waitFor({timeout:15000});
         const baseline=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));
         await page.getByRole('textbox',{name:'Chat draft'}).fill('Preserve this draft');
@@ -85,7 +86,8 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
         for(const [status,label,ink,extra]of transitions){await page.evaluate(({status,extra})=>window.fixture.emit('a',{status,...extra}),{status,extra});await waitForATitle(page,'Synthetic a · '+label);
           // D3-r2: the tone rides the shared environment, which re-reads the OS facts asynchronously after
           // every unmount; wait for the remount before counting the eight frames.
-          if(ink==='rainbow')await page.getByTestId('composer-running-tone').first().waitFor({timeout:5000});
+          // S3: scoped to pill a like every pill-a count below; pill b may hold a tone of its own here.
+          if(ink==='rainbow')await a.getByTestId('composer-running-tone').waitFor({timeout:5000});
           const marks=await a.locator('[data-icon]').evaluateAll(nodes=>nodes.map(node=>node.dataset.icon));
           if(ink==='rainbow'){
             assert.deepEqual(marks,['kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow']);assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-dark-"]').count(),8);}

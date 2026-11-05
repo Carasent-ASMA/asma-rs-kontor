@@ -1460,7 +1460,7 @@ function Banner({
   actionLabel?: string;
   colors: ThemeColors;
   disabled?: boolean;
-  tone: "warning" | "danger";
+  tone: "info" | "warning" | "danger";
   onAction?: () => void;
   onBlur?: () => void;
   onFocus?: () => void;
@@ -1471,7 +1471,7 @@ function Banner({
       testID={testID}
       style={{
         backgroundColor: colors.surface1,
-        borderColor: tone === "danger" ? colors.statusDanger : colors.statusWarning,
+        borderColor: tone === "danger" ? colors.statusDanger : tone === "info" ? colors.accent : colors.statusWarning,
         borderWidth: 1,
         borderRadius: 8,
         padding: 10,
@@ -2727,6 +2727,19 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           {...noticeProps}
         />
       ) } : null,
+    // The catalog fallback (ready, not live, nothing stale) mutes running rows without any banner:
+    // D6 says the screen still explains the grey, calmly — the catalog IS answering, so this is not
+    // a warning. Same accent voice as the "Native · Catalog" pill.
+    !state.live && !showBanner && state.entries.some((entry) => entry.status === "running") ? { keys: [`catalog:${state.source}`], summary: "Sessions from the shared catalog", tone: "info", node: (
+        <Banner
+          key="catalog"
+          testID="sessions-source-banner"
+          message="Running sessions stay grey while this list comes from the shared catalog. They move again when the live list returns."
+          tone="info"
+          colors={colors}
+          {...noticeProps}
+        />
+      ) } : null,
     navigationMissing ? { keys: ["navigation"], summary: "Session navigation unavailable", tone: "warning", node: (
         <Banner
           key="navigation"
@@ -3531,14 +3544,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const pulseRow = <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" || pulseRows.has(listRowKey(item)) }}>{row}</SessionPulseContext.Provider>;
           if (item.kind === "result") return pulseRow;
           const key = listRowKey(item);
-          if (item.kind === "empty") return <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" }}><OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} /></SessionPulseContext.Provider>;
+          if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
           const plans = epic ? planSources?.[epic.toLocaleUpperCase()] ?? [] : [];
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           // The row menu owns favorites, Details and Archive, so the tree adds only its indent, guides and arrange handle.
+          // R1: the badge's not-live condition is the same state.live the session rows' provider
+          // below carries — NOT the banner (a catalog fallback has no banner and still mutes).
           return <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" }}><OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
-            favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
+            favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={!state.live} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
             onMove={(distance) => moveRow(item, distance)}>

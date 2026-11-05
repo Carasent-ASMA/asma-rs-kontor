@@ -36,6 +36,8 @@ export function groupStateHelp(aggregate: OrganizationAggregate, contextual = fa
 
 /** One primary state and its share, at every depth and width; the row owns focus and full help. */
 export function StateBadge({ state, aggregate, colors, compact, stale }: { state: OrganizationState | null; aggregate: OrganizationAggregate; colors: Colors; compact: boolean; stale?: boolean }) {
+  // R1: the caller passes the same not-live condition its session rows gate on, so this label
+  // always matches the badge's muting.
   if (state === null) return <Text style={{ color: colors.foregroundMuted, fontSize: 9, opacity: 0.75 }}>No sessions</Text>;
   const count = leadingStates(aggregate, 1)[0]!.count;
   return <View testID="organization-state-counts" style={{ alignItems: "flex-end", flexShrink: 0 }}>
@@ -77,8 +79,9 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   /** Saved-preference writes are unavailable; disclosure still works. */
   disabled: boolean;
   arranging: boolean; selected: boolean; favorite: boolean;
-  /** The sessions were not read live; a Role header calls its states last known. Undefined defers to
-   * the surrounding SessionPulseContext liveness, so both badge trees gate from one root cause. */
+  /** The sessions were not read live; a Role header calls its states last known. Callers pass their
+   * not-live condition — on the sessions screen the same state.live its session rows gate on (R1);
+   * undefined defers to the surrounding SessionPulseContext liveness. */
   stale?: boolean;
   /** Show in tree retains surrounding sessions outside the result filters. */
   contextual?: boolean;
@@ -87,6 +90,8 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   /** Absent hides the star, for a surface whose row menu owns favorites. */
   onFavorite?: () => void; onToggle: () => void; onMove: (distance: number) => void; onSelect: () => void;
 }) {
+  // R1: callers pass their not-live condition — on the sessions screen the same state.live its rows
+  // gate on; undefined defers to the surrounding SessionPulseContext liveness.
   const help = useControlHelp(row.kind === "group" ? `${stale ? "Last known. " : ""}${groupStateHelp(row.group.aggregate, contextual)}` : "");
   if (row.kind === "empty") {
     return <View style={{ minHeight: compact ? 36 : 30, justifyContent: "center", paddingLeft: indentOf(row.depth, compact) + 8 }}>

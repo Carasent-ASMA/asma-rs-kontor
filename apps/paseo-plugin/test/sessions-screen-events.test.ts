@@ -24,6 +24,9 @@ type HookQueueItem = {
 
 const accessibility = vi.hoisted(() => ({ screenReader: false }));
 const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void } }));
+/** The drawn components read the pulse liveness through this cell; tests set it per case and the
+ * beforeEach default is live, the normal screen state. */
+const pulseContext = vi.hoisted(() => ({ current: null as null | { live: boolean; visible: boolean } }));
 const { harness, directory } = vi.hoisted(() => {
   let slots: HookSlot[] = [];
   /** Each drawn child's own hook slots, kept across draws as React keeps a mounted instance's state. */
@@ -217,7 +220,14 @@ const { harness, directory } = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
-    ...actual, useContext: () => controlHelp.current,
+    ...actual,
+    // The pulse context routes to its per-test cell (default: the module's own default); everything
+    // else keeps the controlHelp knob the older tests drive.
+    useContext: (ctx: { _currentValue?: unknown }) => {
+      const fallback = (ctx as { _currentValue?: unknown })._currentValue;
+      if (fallback !== null && typeof fallback === "object" && "live" in (fallback as object)) return pulseContext.current ?? fallback;
+      return controlHelp.current ?? fallback;
+    },
     memo: (component: unknown) => component,
     useCallback: harness.useCallback,
     useEffect: harness.useEffect,
@@ -567,6 +577,7 @@ describe("SessionsScreen toolbar events", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
+    pulseContext.current = { live: true, visible: true };
     clearSessionViews({ work: "all", status: "current" });
     harness.reset();
     directory.inputs = [];
@@ -3458,5 +3469,58 @@ describe("independent Layout, Group by and exact scope", () => {
     directory.state = { ...(directory.state as object), live: false, staleReason: "The Paseo host is disconnected. Showing the last inventory." };
     renderScreen();
     expect(orgProviderValue()).toBe(false);
+  });
+
+  /** The badge subtree of one organization row, drawn all the way down to the mark: the row element,
+   * then StateBadge, then SessionStateMarker, then SessionStatusIcon. Each level is invoked the way
+   * the harness draws components; the marker reads the pulse context through the react mock. */
+  function orgBadgeOf(row: GroupRow): ElementLike[] {
+    const view = drawItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+    const rowTree = view.type(view.props);
+    const badge = walk(rowTree).find((node) => node.type === StateBadge)!;
+    const marker = walk((badge.type as (props: never) => ElementLike)(badge.props as never)).find((node) => node.type === SessionStateMarker)!;
+    const leaf = SessionStatusIcon(SessionStateMarker(marker.props as never).props as never);
+    return walk(leaf);
+  }
+
+  it("mutes a catalog-ready Running-led badge exactly when its own rows mute: the context is the one gate (S1/R1)", () => {
+    const catalogReady = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    directory.state = catalogReady;
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    renderScreen();
+    // The catalog fallback has no banner (staleReason null) and staleReason is null, so the badge's
+    // not-live condition comes from the same state.live the rows read — the banner is not involved.
+    const muted = orgBadgeOf(groupRows()[0] as GroupRow);
+    expect(muted.some((node) => node.type === ComposerPulse)).toBe(false);
+    expect(muted.find((node) => node.type === "Icon")!.props).toMatchObject({ color: colors.foregroundMuted });
+    // Live directory: the same badge rides the animated carrier again.
+    directory.state = { ...catalogReady, live: true };
+    renderScreen();
+    const live = orgBadgeOf(groupRows()[0] as GroupRow);
+    expect(live.some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(live.some((node) => node.type === "Icon")).toBe(false);
+  });
+
+  it("explains the catalog fallback's grey in a calm notice, and says nothing on a live list (R2)", () => {
+    directory.state = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    renderScreen();
+    const notice = walk(harness.current()).find((node) => typeof node.props.message === "string" && (node.props.message as string).includes("stay grey while this list comes from the shared catalog"))!;
+    expect(notice.props.message).toBe("Running sessions stay grey while this list comes from the shared catalog. They move again when the live list returns.");
+    expect(notice.props.tone).toBe("info");
+    // The stale/error sentence belongs to the banner path only.
+    expect(String(notice.props.message)).not.toContain("until Kontor is live again");
+    // A live list carries no such notice.
+    directory.state = { ...(directory.state as object), live: true };
+    renderScreen();
+    expect(walk(harness.current()).some((node) => typeof node.props.message === "string" && String(node.props.message).includes("grey"))).toBe(false);
   });
 });

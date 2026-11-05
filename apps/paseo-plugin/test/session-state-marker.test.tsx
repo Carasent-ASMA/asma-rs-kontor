@@ -3,11 +3,12 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("react-native", () => ({ View: "View", Text: "Text" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 // SessionStateMarker reads the pulse context through useContext; outside a renderer the stub hands back
-// the value each test sets (live by default, not-live where a badge must stay muted).
-const pulseContext = vi.hoisted(() => ({ current: { live: true, visible: true } }));
+// the value each test sets, and with no value set it reads the module's own createContext default —
+// exactly what an unprovided subtree sees (N5/D1-A1).
+const pulseContext = vi.hoisted(() => ({ current: null as null | { live: boolean; visible: boolean } }));
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
-  return { ...actual, useContext: () => pulseContext.current };
+  return { ...actual, useContext: (ctx: { _currentValue: { live: boolean; visible: boolean } }) => pulseContext.current ?? ctx._currentValue };
 });
 import { SessionStateMarker, SessionStatusIcon, runningMarkNode } from "../client/session-state-marker";
 import { ComposerPulse } from "../client/composer-pulse";
@@ -53,8 +54,18 @@ function contrast(a: string, b: string): number {
 
 describe("compact session status markers", () => {
   beforeEach(() => { pulseContext.current = { live: true, visible: true }; });
-  it("animates every running mark on the shared carrier: rows, filters and legends alike (D6)", () => {
-    const marker = SessionStatusIcon({ status: "running", colors: dark, session: true });
+
+  it("keeps an orphan badge muted: outside any provider the context default is not-live (N5/D1-A1)", () => {
+    // No provider anywhere above this badge — the module's own default decides, and it must say
+    // "not live": a forgotten tree can never animate stale data.
+    pulseContext.current = null;
+    const orphan = SessionStatusIcon(SessionStateMarker({ state: "running", colors: dark }).props);
+    expect(elements(orphan).some((node) => node.type === ComposerPulse)).toBe(false);
+    const ink = elements(orphan).find((node) => node.type === "Icon")!;
+    expect(ink.props).toMatchObject({ name: QUICK_FILTER_ICONS.running, color: dark.foregroundMuted });
+  });
+
+  it("animates every running mark on the shared carrier: rows, filters and legends alike (D6)", () => {    const marker = SessionStatusIcon({ status: "running", colors: dark, session: true });
     expect(elements(marker).some((node) => node.type === "Icon")).toBe(false);
     for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
       const runningMark = SessionStatusIcon({ status, colors: dark });

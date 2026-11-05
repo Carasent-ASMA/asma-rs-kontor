@@ -134,8 +134,8 @@ async function pulseCheck(width, theme, longList = false) {
     assert.ok(strokes.every(value => value && value.startsWith('url(#kontor-rainbow-')), 'every frame paints the rainbow gradient');
     // F1 ruling: a LIVE Running-led organization badge animates like any live row; only a stale
     // (Last known) badge is muted. The stale case is asserted after the offline transition below.
-    const badgeCount = await page.getByTestId('organization-state-counts').count();
-    report.cases.push({ probe: 'badge-count', badgeCount });
+    // The badge cases themselves live in the grouped long-list block above (live) and the offline
+    // block below (stale); the flat and short cases render no organization badges.
     if (!longList) {
       const idle = page.getByTestId('sessions-row-agt_model_report_2');
       assert.equal(await idle.getByTestId('composer-running-pulse').count(), 0, 'another session running never animates idle rows');

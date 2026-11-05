@@ -6,7 +6,7 @@ import { useActionHelp } from "./control-help";
 import { anchoredPanelOpen } from "./anchored-menu";
 
 /** One top-of-screen notice. Its keys name what it reports, so a changed or new notice is never one the operator hid. */
-export type Notice = { readonly keys: readonly string[]; readonly summary: string; readonly tone: "warning" | "danger"; readonly node: ReactNode };
+export type Notice = { readonly keys: readonly string[]; readonly summary: string; readonly tone: "info" | "warning" | "danger"; readonly node: ReactNode };
 
 /** Hidden only while every key of every current notice was hidden; anything new shows the tray again. */
 export function noticesHidden(notices: readonly Notice[], hidden: readonly string[]): boolean {
@@ -88,7 +88,9 @@ export function NoticeAction({ icon, accessibilityLabel, help, colors, onPress, 
 
 /** Icon and count for the hidden tray; its name and deliberate help retain every notice summary. */
 export function NoticesButton({ notices, colors, onPress, ref }: { notices: readonly Notice[]; colors: Colors; compact: boolean; onPress: () => void; ref?: Ref<View> }) {
-  const ink = notices.some((notice) => notice.tone === "danger") ? colors.statusDanger : colors.statusWarning;
+  // The calmest current notice sets the tray's voice: danger first, then warning, then the catalog's info accent.
+  const ink = notices.some((notice) => notice.tone === "danger") ? colors.statusDanger
+    : notices.some((notice) => notice.tone === "warning") ? colors.statusWarning : colors.accent;
   const summary = notices.map((notice) => notice.summary).join("; ");
   const hint = `Notices. Show ${notices.length} notice${notices.length === 1 ? "" : "s"}: ${summary}.`;
   const help = useActionHelp(hint, ref);
