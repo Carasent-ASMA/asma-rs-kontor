@@ -100,7 +100,7 @@ describe("review-a delta-5 regressions", () => {
     expect(after.problemFor("opencode")).toContain("ENOENT");
   });
 
-  it("E2 guards: genuine absence at every depth stays absent with no problem", async () => {
+  it("E2 guards: optional default absence stays absent; a named source is required", async () => {
     const { root, home, project } = await tree();
     const both = ["deepseek/hidden", "other/permitted"];
 
@@ -117,42 +117,43 @@ describe("review-a delta-5 regressions", () => {
     expect(ids(shallow)).toEqual(both);
     expect(shallow.problems).toEqual([]);
 
-    // A missing intermediate directory under a real explicit root.
+    // An explicitly named source is required even when a middle directory is genuinely missing.
     const global = join(root, "global");
     await mkdir(global);
     const missingMiddle = await readProviderCatalog(client, project, {
       config: deps(root, home, { OPENCODE_CONFIG_DIR: global, OPENCODE_CONFIG: join(global, "missing", "inner", "policy.json") }),
     });
-    expect(ids(missingMiddle)).toEqual(both);
-    expect(missingMiddle.problems).toEqual([]);
+    expect(ids(missingMiddle)).toEqual([]);
+    expect(missingMiddle.problemFor("opencode")).toContain(join(global, "missing", "inner", "policy.json"));
 
-    // A missing name under a valid directory link.
+    // A missing name under a valid directory link is still a named source that is required.
     const realDirectory = join(root, "real-directory");
     await mkdir(realDirectory);
     await symlink(realDirectory, join(global, "alias"), "dir");
     const linked = await readProviderCatalog(client, project, {
       config: deps(root, home, { OPENCODE_CONFIG_DIR: global, OPENCODE_CONFIG: join(global, "alias", "policy.json") }),
     });
-    expect(ids(linked)).toEqual(both);
-    expect(linked.problems).toEqual([]);
+    expect(ids(linked)).toEqual([]);
+    expect(linked.problemFor("opencode")).toContain(join(global, "alias", "policy.json"));
   });
 
   it("E2 guard: an lstat error after ENOENT stays closed", async () => {
     const { root, home, project } = await tree();
-    const parent = join(root, "blocked"), file = join(parent, "missing", "policy.json");
-    await mkdir(join(parent, "missing"), { recursive: true });
-    // The read sees ENOENT; by the time the classifier checks the path, search on the ancestor is denied.
+    const directory = join(home, ".config", "opencode");
+    const files = new Set([join(directory, "opencode.json"), join(directory, "opencode.jsonc")]);
+    await mkdir(directory, { recursive: true });
+    // The default candidates see ENOENT; by the time the classifier checks them, search on the directory is denied.
     const config: HostConfigDeps = {
-      ...deps(root, home, { OPENCODE_CONFIG: file }),
+      ...deps(root, home),
       readFile: async (path: string) => {
-        if (path === file) { await chmod(parent, 0); throw Object.assign(new Error("absent"), { code: "ENOENT" }); }
+        if (files.has(path)) { await chmod(directory, 0); throw Object.assign(new Error("absent"), { code: "ENOENT" }); }
         return readFile(path, "utf8");
       },
     };
     try {
       const after = await readProviderCatalog(client, project, { config });
       expect(ids(after)).toEqual([]);
-      expect(after.problemFor("opencode")).toContain(file);
-    } finally { await chmod(parent, 0o700); }
+      expect(after.problemFor("opencode")).toContain(join(directory, "opencode.json"));
+    } finally { await chmod(directory, 0o700); }
   });
 });

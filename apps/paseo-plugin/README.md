@@ -275,7 +275,10 @@ session/New LSA and session operations) reads it through one server rule,
   `disabled_providers`, then `provider.<id>.whitelist`/`blacklist`, loaded from
   the system and user directories, `OPENCODE_CONFIG`, the project walk and
   `OPENCODE_CONFIG_CONTENT` in OpenCode's order. A configuration that cannot be
-  read withholds the route; it never falls back to the whole catalogue.
+  read withholds the route; it never falls back to the whole catalogue. An
+  explicitly named source (`OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR`) that is
+  missing, malformed or of the wrong shape withholds the route too — a deliberate
+  fail-closed divergence from OpenCode's lenient missing-extra-file behaviour.
 - **Vendor exclusivity.** OpenAI's models are offered only through the Codex
   harness and Anthropic's only through the Claude harness, decided from the
   model's own id. No other vendor is exclusive: DeepSeek and GLM appear on their

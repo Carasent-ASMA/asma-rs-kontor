@@ -241,6 +241,7 @@ export async function readOpenCodeConfig(cwd: string, deps: HostConfigDeps = {})
   // An explicitly selected directory is a source the user named; losing it is a config problem, not permission to
   // load the catalogue with that source's restrictions gone. A default location is only read when present.
   const selected = env.OPENCODE_CONFIG_DIR?.trim() ? opencodeConfigDirectory(deps) : null;
+  const namedConfig = env.OPENCODE_CONFIG?.trim() ? resolve(env.OPENCODE_CONFIG.trim()) : null;
   const isDirectory = deps.isDirectory ?? directoryAvailable;
   // One predicate for both checks, so the explicit selection cannot lose its enforcement between them.
   const selectedAvailable = async (): Promise<boolean> => selected === null || (await isDirectory(selected));
@@ -253,8 +254,11 @@ export async function readOpenCodeConfig(cwd: string, deps: HostConfigDeps = {})
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
         // Every enumerated source — the global directories, OPENCODE_CONFIG and the project walk — is read through
-        // here. ENOENT is ordinary absence only when the nearest existing ancestor is a real directory and every
-        // name below it is genuinely missing; the selected directory is then re-checked in case it vanished.
+        // here. An explicitly named file is required even when genuinely absent; optional default candidates are not.
+        // ENOENT is ordinary absence only when the nearest existing ancestor is a real directory and every name
+        // below it is genuinely missing; the selected directory is then re-checked in case it vanished.
+        if (namedConfig !== null && resolve(path) === namedConfig)
+          return { problem: `OpenCode config ${path} could not be read (ENOENT).` };
         if (await missingSource(path) === "problem")
           return { problem: `OpenCode config ${path} could not be read (ENOENT).` };
         if (selected !== null && insideDirectory(path, selected) && !(await selectedAvailable()))
@@ -329,14 +333,18 @@ function documentDecision(rules: readonly Rule[], provider: string): "allow" | "
   return decision;
 }
 
-function providerEntries(info: Record<string, unknown>): Record<string, unknown> {
+/** The provider entries a document declares, from either container. A present container of the wrong shape is a
+ * configuration problem, not an absent setting: discarding it would silently open the catalogue it was meant to
+ * filter. */
+function providerEntries(info: Record<string, unknown>, path: string): { entries: Record<string, unknown> } | { problem: string } {
   const merged: Record<string, unknown> = {};
   for (const key of ["provider", "providers"]) {
+    if (!(key in info)) continue;
     const group = record(info[key]);
-    if (!group) continue;
+    if (!group) return { problem: `OpenCode config ${path}: ${key} must be an object.` };
     for (const [id, entry] of Object.entries(group)) merged[normalizeOpenCodeProviderId(id)] = entry;
   }
-  return merged;
+  return { entries: merged };
 }
 
 /**
@@ -351,7 +359,9 @@ export function opencodeSelection(documents: readonly OpenCodeDocument[]): OpenC
     const built = documentRules(document.info, document.path);
     if ("problem" in built) return { problem: built.problem };
     perDocument.push(built.rules);
-    for (const [id, entry] of Object.entries(providerEntries(document.info))) {
+    const entries = providerEntries(document.info, document.path);
+    if ("problem" in entries) return { problem: entries.problem };
+    for (const [id, entry] of Object.entries(entries.entries)) {
       const provider = record(entry);
       if (!provider) return { problem: `OpenCode config ${document.path}: provider ${id} must be an object.` };
       const previous = filters.get(id) ?? { whitelist: null, blacklist: null };
