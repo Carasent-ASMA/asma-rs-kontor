@@ -58,6 +58,7 @@ import { View, Text } from 'react-native';
 import Play from ${JSON.stringify(path.join(rootOf('lucide-react'), 'dist/esm/icons/play.mjs'))};
 import { ComposerPulse } from ${JSON.stringify(path.join(plugin, 'client/composer-pulse.tsx'))};
 import { RunningRainbowMark, rainbowMarkSvg, rainbowFrameInterpolation, RAINBOW_FRAMES } from ${JSON.stringify(path.join(plugin, 'client/running-mark.tsx'))};
+import { appearanceColors } from ${JSON.stringify(path.join(plugin, 'client/kontor-appearance.ts'))};
 const THEMES = ${JSON.stringify(THEMES)};
 const SIZES = ${JSON.stringify(SIZES)};
 const KLAB = ${JSON.stringify(KLAB)};
@@ -81,7 +82,7 @@ const opacityAt = (config: { inputRange: number[]; outputRange: number[] }, valu
 };
 const oldSvg = (color: string) => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="600" height="600" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>';
 const ink = (theme: string) => theme === 'dark' ? '#9cbfff' : '#245bba';
-const report: Record<string, unknown> = { frames: RAINBOW_FRAMES, iou: {}, rms: {}, composite: {} };
+const report: Record<string, unknown> = { frames: RAINBOW_FRAMES, iou: {}, rms: {}, composite: {}, hue: {} };
 (window as any).r37 = report;
 (window as any).r37LabSvg = labSvg;
 (window as any).r37FrameMarkup = (theme: string, frame: number) => rainbowMarkSvg('play', THEMES[theme], frame);
@@ -162,8 +163,9 @@ function Lab({theme}: {theme: string}) {
         const host = document.getElementById('overlay-' + theme + '-' + size);
         if (host) { host.innerHTML = ''; host.appendChild(thumb); }
       }
-      // F1 regression on the composited frame: at a handoff midpoint the stroke must be fully covered (no
-      // 0.75-coverage thinning) and every interior pixel over the surface must keep at least 3:1 contrast.
+      // F1/B1 regression on the composited frame: at a handoff midpoint the stroke must be fully covered
+      // (no 0.75-coverage thinning) and every interior pixel must keep >=3:1 contrast over EVERY surface
+      // the marks really sit on: host tokens AND the Kontor appearance overrides (review-b S2).
       {
         const frameA = await loadImage(rainbowMarkSvg('play', THEMES[theme], 2));
         const frameB = await loadImage(rainbowMarkSvg('play', THEMES[theme], 3));
@@ -191,22 +193,141 @@ function Lab({theme}: {theme: string}) {
           const linear = (channel: number) => { const value = channel / 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; };
           return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
         };
-        const surface = THEMES[theme].surface0;
-        const surfaceLum = lum(parseInt(surface.slice(1, 3), 16), parseInt(surface.slice(3, 5), 16), parseInt(surface.slice(5, 7), 16));
-        const over = document.createElement('canvas'); over.width = big; over.height = big;
-        const octx = over.getContext('2d')!;
-        octx.fillStyle = surface; octx.fillRect(0, 0, big, big);
-        octx.globalAlpha = alphaA; octx.drawImage(frameA, 0, 0, big, big);
-        octx.globalAlpha = alphaB; octx.drawImage(frameB, 0, 0, big, big);
-        octx.globalAlpha = 1;
-        const pixels = octx.getImageData(0, 0, big, big).data;
-        let minContrast = Infinity;
-        for (let at = 0, index = 0; at < solid.length; at++, index += 4) {
-          if (!solid[at]) continue;
-          const value = lum(pixels[index]!, pixels[index + 1]!, pixels[index + 2]!);
-          minContrast = Math.min(minContrast, (Math.max(value, surfaceLum) + 0.05) / (Math.min(value, surfaceLum) + 0.05));
+        const lumOf = (hex: string) => lum(parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16));
+        const surfaceSets: Record<string, string[]> = {
+          host: [THEMES[theme].surface0, THEMES[theme].surface1, THEMES[theme].surface2],
+          kontor: [appearanceColors(THEMES[theme], theme).surface0, appearanceColors(THEMES[theme], theme).surface1, appearanceColors(THEMES[theme], theme).surface2],
+        };
+        let minContrast = Infinity; const perSurface: Record<string, number> = {};
+        for (const [setName, surfaces] of Object.entries(surfaceSets)) for (const surface of surfaces) {
+          const surfaceLum = lumOf(surface);
+          const over = document.createElement('canvas'); over.width = big; over.height = big;
+          const octx = over.getContext('2d')!;
+          octx.fillStyle = surface; octx.fillRect(0, 0, big, big);
+          octx.globalAlpha = alphaA; octx.drawImage(frameA, 0, 0, big, big);
+          octx.globalAlpha = alphaB; octx.drawImage(frameB, 0, 0, big, big);
+          octx.globalAlpha = 1;
+          const pixels = octx.getImageData(0, 0, big, big).data;
+          let surfaceMin = Infinity;
+          for (let at = 0, index = 0; at < solid.length; at++, index += 4) {
+            if (!solid[at]) continue;
+            const value = lum(pixels[index]!, pixels[index + 1]!, pixels[index + 2]!);
+            const ratio = (Math.max(value, surfaceLum) + 0.05) / (Math.min(value, surfaceLum) + 0.05);
+            minContrast = Math.min(minContrast, ratio); surfaceMin = Math.min(surfaceMin, ratio);
+          }
+          perSurface[setName + ' ' + surface] = Math.round(surfaceMin * 1000) / 1000;
         }
         (report.composite as any)[theme].minContrast = Math.round(minContrast * 1000) / 1000;
+        (report.composite as any)[theme].perSurface = perSurface;
+      }
+      // B1: the composited stack alpha over the FULL clock is exactly 1, and the composited contrast is
+      // reported at the frame peaks vs the handoff midpoints (review-b's crossfade method, ours re-run).
+      {
+        const configs = Array.from({ length: RAINBOW_FRAMES }, (_, frame) => rainbowFrameInterpolation(frame, RAINBOW_FRAMES));
+        let minStackAlpha = 1;
+        for (let step = 0; step <= 2400; step++) {
+          const value = step / 2400;
+          let stack = 0;
+          for (const config of configs) { const a = opacityAt(config, value); stack = a + (1 - a) * stack; }
+          minStackAlpha = Math.min(minStackAlpha, stack);
+        }
+        const stats = (values: number[]) => {
+          const sorted = [...values].sort((a, b) => a - b);
+          const at = (share: number) => sorted[Math.min(sorted.length - 1, Math.floor(share * sorted.length))]!;
+          return { min: Math.round(at(0) * 1000) / 1000, p05: Math.round(at(0.05) * 1000) / 1000, median: Math.round(at(0.5) * 1000) / 1000 };
+        };
+        const peakAt: number[] = [0]; const crossfadeAt: number[] = [];
+        for (let frame = 1; frame < RAINBOW_FRAMES; frame++) { peakAt.push(frame / RAINBOW_FRAMES); crossfadeAt.push((frame - 0.5) / RAINBOW_FRAMES); }
+        crossfadeAt.push(((RAINBOW_FRAMES - 1) / RAINBOW_FRAMES + 1) / 2); // the wrap handoff midpoint
+        const small = 240;
+        const frames = [];
+        for (let frame = 0; frame < RAINBOW_FRAMES; frame++) frames.push(await loadImage(rainbowMarkSvg('play', THEMES[theme], frame)));
+        const lum = (r: number, g: number, b: number) => {
+          const linear = (channel: number) => { const value = channel / 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; };
+          return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+        };
+        const surface = THEMES[theme].surface0;
+        const surfaceLum = lum(parseInt(surface.slice(1, 3), 16), parseInt(surface.slice(3, 5), 16), parseInt(surface.slice(5, 7), 16));
+        const contrastAt = async (t: number) => {
+          const over = document.createElement('canvas'); over.width = small; over.height = small;
+          const octx = over.getContext('2d')!;
+          octx.fillStyle = surface; octx.fillRect(0, 0, small, small);
+          for (let frame = 0; frame < RAINBOW_FRAMES; frame++) {
+            const alpha = opacityAt(configs[frame]!, t);
+            if (alpha <= 0) continue;
+            octx.globalAlpha = alpha; octx.drawImage(frames[frame]!, 0, 0, small, small);
+          }
+          octx.globalAlpha = 1;
+          const pixels = octx.getImageData(0, 0, small, small).data;
+          const ratios: number[] = [];
+          for (let at = 0, index = 0; at < solidAt.length; at++, index += 4) {
+            if (!solidAt[at]) continue;
+            const value = lum(pixels[index]!, pixels[index + 1]!, pixels[index + 2]!);
+            ratios.push((Math.max(value, surfaceLum) + 0.05) / (Math.min(value, surfaceLum) + 0.05));
+          }
+          return stats(ratios);
+        };
+        // The sweep reads only the opaque stroke interior: one frame's alpha>=254 mask. All K frames share
+        // the exact same geometry, so the interior is identical for every frame; the union of six renders
+        // would admit boundary pixels whose partial coverage drags the contrast down.
+        const solidCanvas = document.createElement('canvas'); solidCanvas.width = small; solidCanvas.height = small;
+        const sctx = solidCanvas.getContext('2d')!;
+        sctx.drawImage(frames[0]!, 0, 0, small, small);
+        const solidData = sctx.getImageData(0, 0, small, small).data;
+        const solidAt = new Uint8Array(small * small);
+        for (let at = 0, index = 0; at < solidAt.length; at++, index += 4) solidAt[at] = solidData[index + 3]! >= 254 ? 1 : 0;
+        const peak = []; const crossfade = [];
+        for (const t of peakAt) peak.push(await contrastAt(t));
+        for (const t of crossfadeAt) crossfade.push(await contrastAt(t));
+        const fold = (entries: { min: number; p05: number; median: number }[]) => ({
+          min: Math.min(...entries.map((entry) => entry.min)),
+          p05: Math.min(...entries.map((entry) => entry.p05)),
+          median: Math.round(entries.reduce((sum, entry) => sum + entry.median, 0) / entries.length * 1000) / 1000,
+        });
+        (report.composite as any)[theme].minStackAlpha = Math.round(minStackAlpha * 1000000) / 1000000;
+        (report.composite as any)[theme].peak = fold(peak);
+        (report.composite as any)[theme].crossfade = fold(crossfade);
+      }
+      // S1: the frame-0 hue extremes. The 4..20 gradient span shows the wrapped violet ends the reference
+      // frame shows; the 0..24 span clips them to magenta/blue (review-b's measurement, re-run here).
+      {
+        const render = 176; // 8x the 24-unit viewBox
+        const canvas = document.createElement('canvas'); canvas.width = render; canvas.height = render;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(await loadImage(rainbowMarkSvg('play', THEMES[theme], 0)), 0, 0, render, render);
+        const pixels = ctx.getImageData(0, 0, render, render).data;
+        // Frame 0's gradient axis after rotate(20): the hue extremes live at the projection extremes of the
+        // stroke, so each sample window returns the most extreme pixel along that axis (max-saturation would
+        // bias to blue over violet).
+        const radians = 20 * Math.PI / 180, dirX = Math.cos(radians), dirY = Math.sin(radians);
+        const hueAt = (vx: number, vy: number, extreme: "min" | "max" | "near") => {
+          let best: { rank: number; hue: number } | null = null;
+          const unit = render / 24;
+          const centerX = vx * unit, centerY = vy * unit;
+          for (let y = Math.max(0, Math.round((vy - 1.4) * unit)); y < Math.min(render, Math.round((vy + 1.4) * unit)); y++) {
+            for (let x = Math.max(0, Math.round((vx - 1.4) * unit)); x < Math.min(render, Math.round((vx + 1.4) * unit)); x++) {
+              const index = (y * render + x) * 4;
+              if (pixels[index + 3]! < 128) continue;
+              const r = pixels[index]! / 255, g = pixels[index + 1]! / 255, b = pixels[index + 2]! / 255;
+              const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min;
+              if (!delta) continue;
+              const rank = extreme === "near" ? (x - centerX) ** 2 + (y - centerY) ** 2 : extreme === "min" ? x * dirX + y * dirY : -(x * dirX + y * dirY);
+              if (best && rank >= best.rank) continue;
+              let hue = 0;
+              if (max === r) hue = 60 * (((g - b) / delta) % 6);
+              else if (max === g) hue = 60 * ((b - r) / delta + 2);
+              else hue = 60 * ((r - g) / delta + 4);
+              if (hue < 0) hue += 360;
+              best = { rank, hue };
+            }
+          }
+          return best ? Math.round(best.hue) : null;
+        };
+        (report.hue as any)[theme] = {
+          // The two extremes sit at the stroke's projection extremes; the mid-edge hues are read at the
+          // window centre (the extreme pick would slide along the edge toward the gradient's violet start).
+          leftTop: hueAt(5.9, 4.9, "min"), leftMiddle: hueAt(5.2, 12, "near"), leftBottom: hueAt(5.5, 18.7, "near"), rightTip: hueAt(18.9, 12.3, "max"),
+        };
       }
       document.title = 'r37-rainbow-ready';
     })();
@@ -281,18 +402,31 @@ const report = { scope: 'Web-only evidence on the pinned renderer with the real 
     report.iou = state.iou;
     report.rms = state.rms;
     report.composite = state.composite;
+    report.hue = state.hue;
     assert.equal(state.frames, Number(process.env.R37_CHOSEN_K ?? state.frames), 'the shipped K equals the chosen K');
     for (const [key, value] of Object.entries(state.iou)) assert.ok(value >= 0.98, `silhouette IoU ${key} = ${value}`);
     for (const theme of Object.keys(state.rms)) {
       for (const k of KLAB) assert.ok(state.rms[theme]['k' + k] >= 0, `rms recorded for K=${k}`);
       assert.ok(state.rms[theme].k6 > 0, 'the crossfade changes pixels');
     }
-    // F1: the composited stroke stays fully covered and at least 3:1 over the surface at a handoff midpoint.
-    // The solid share of visible stroke pixels separates the compositing modes: broken half-opacity stacks
-    // collapse it near zero, correct opaque-under compositing keeps everything but the antialiased ring.
+    // F1/B1: the composited stroke stays fully covered, the stack alpha is exactly 1 over the whole clock,
+    // and the composited contrast stays >=3 at every surface (host tokens AND Kontor overrides, review-b S2).
     for (const theme of Object.keys(THEMES)) {
       assert.ok(state.composite[theme].coverage >= 0.6, `full-coverage crossfade on ${theme}: ${state.composite[theme].coverage}`);
+      assert.equal(state.composite[theme].minStackAlpha, 1, `stack alpha exactly 1 over the loop on ${theme}`);
       assert.ok(state.composite[theme].minContrast >= 3, `composited contrast on ${theme}: ${state.composite[theme].minContrast}`);
+      for (const [surface, ratio] of Object.entries(state.composite[theme].perSurface)) assert.ok(ratio >= 3, `midpoint contrast ${ratio} on ${surface} (${theme})`);
+      assert.ok(state.composite[theme].crossfade.min >= 3, `full-loop crossfade contrast on ${theme}: ${state.composite[theme].crossfade.min}`);
+      assert.ok(state.composite[theme].peak.min >= 3, `full-loop peak contrast on ${theme}: ${state.composite[theme].peak.min}`);
+      // S1: the wrapped violet ends are visible at the frame-0 extremes (reference: ~252 left top, ~255 right tip).
+      const hue = state.hue[theme];
+      const inBand = (value, low, high) => value !== null && value >= low && value <= high;
+      assert.ok(inBand(hue.leftTop, 235, 295), `violet left top on ${theme}: ${hue.leftTop}`);
+      assert.ok(inBand(hue.rightTip, 235, 295), `violet right tip on ${theme}: ${hue.rightTip}`);
+      const mod360 = (value) => ((value % 360) + 360) % 360;
+      const inWrap = (value, low, high) => value !== null && (mod360(value - low) <= mod360(high - low));
+      assert.ok(inWrap(hue.leftMiddle, 300, 30), `magenta/red left middle on ${theme}: ${hue.leftMiddle}`);
+      assert.ok(inWrap(hue.leftBottom, 330, 70), `orange/amber left bottom on ${theme}: ${hue.leftBottom}`);
     }
     const live = page.getByTestId('composer-running-tone');
     await live.first().waitFor({ timeout: 10000 });

@@ -1,7 +1,17 @@
 import { findSvgIconProblem } from "@getpaseo/plugin";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { appearanceColors } from "../client/kontor-appearance";
 import type { Colors } from "../client/page-controls";
-import { RAINBOW_FRAMES, RAINBOW_STOPS, RUNNING_MARK_PATHS, rainbowFrameInterpolation, rainbowMarkSvg, rainbowThemeKey, runningMarkShape } from "../client/running-mark";
+import { RAINBOW_FRAMES, RAINBOW_STOPS, RUNNING_MARK_PATHS, RunningRainbowMark, rainbowFrameInterpolation, rainbowGradientId, rainbowMarkSvg, rainbowThemeKey, runningMarkShape } from "../client/running-mark";
+
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
+vi.mock("react", async (original) => ({
+  ...await original<typeof import("react")>(),
+  // Per-instance gradient ids: every mounted mark draws its own defs, so two marks never share an id.
+  useId: vi.fn(() => `:r${++useIdCounter.value}:`),
+  useMemo: (fn: () => unknown) => fn(),
+}));
+const useIdCounter = vi.hoisted(() => ({ value: 0 }));
 
 const dark: Colors = {
   surface0: "#181B1A", surface1: "#1E2120", surface2: "#272A29", border: "#252B2A",
@@ -93,6 +103,19 @@ describe("rainbow running mark", () => {
       for (const surface of [colors.surface0, colors.surface1, colors.surface2]) expect(contrast(stop, surface)).toBeGreaterThanOrEqual(3);
   });
 
+  it("keeps every stop at least 3:1 on the Kontor appearance-override surfaces too, in both themes", () => {
+    // Settings -> Appearance = light/dark replaces the host tokens with the plugin's own surfaces
+    // (kontor-appearance.ts); marks on Kontor chrome sit on these, so they gate next to the host tokens.
+    for (const appearance of ["light", "dark"] as const) {
+      const base = appearance === "light" ? light : dark;
+      const overridden = appearanceColors(base, appearance);
+      expect(rainbowThemeKey(overridden)).toBe(rainbowThemeKey(base));
+      for (const stop of RAINBOW_STOPS[rainbowThemeKey(overridden)])
+        for (const surface of [overridden.surface0, overridden.surface1, overridden.surface2])
+          expect(contrast(stop, surface), `${stop} on ${surface} (${appearance} override)`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   it("picks the deeper amber on light surfaces and the brighter set on dark ones", () => {
     expect(RAINBOW_STOPS.light[4]).toBe("#a16207");
     expect(RAINBOW_STOPS.dark[4]).toBe("#facc15");
@@ -102,21 +125,23 @@ describe("rainbow running mark", () => {
 
   it("composites the K frames at full coverage so the rendered stroke never thins", () => {
     const windows = Array.from({ length: RAINBOW_FRAMES }, (_, frame) => rainbowFrameInterpolation(frame, RAINBOW_FRAMES));
-    for (let step = 0; step <= 240; step++) {
-      const value = step / 240;
+    for (let step = 0; step <= 2400; step++) {
+      const value = step / 2400;
       // Bottom-to-top alpha compositing of the mounted frames, as the stacked Animated.Views paint.
+      // The stack alpha must be EXACTLY 1 everywhere (review-b B1): a symmetric 0.5/0.5 handoff would
+      // composite to 0.75 and let 25% of the surface through the stroke, six times per loop. The design
+      // keeps at least one frame fully opaque at every instant, so every visible blend happens over a
+      // full-coverage base and a fading layer is always beneath an opaque one.
       let coverage = 0;
-      for (let frame = 0; frame < RAINBOW_FRAMES; frame++) {
-        const alpha = opacityAt(windows[frame]!, value);
-        coverage = alpha + (1 - alpha) * coverage;
-      }
-      expect(coverage).toBeGreaterThan(1 - 1e-6);
+      const alphas = windows.map((window) => opacityAt(window, value));
+      for (const alpha of alphas) coverage = alpha + (1 - alpha) * coverage;
+      expect(coverage).toBe(1);
+      expect(alphas.some((alpha) => alpha === 1)).toBe(true);
     }
     // The loop seam is invisible: frame 0 holds the paint at both ends and every other frame is dropped beneath it.
     expect(opacityAt(windows[0]!, 0)).toBe(1);
     expect(opacityAt(windows[0]!, 1)).toBe(1);
     for (const window of windows.slice(1)) expect(opacityAt(window, 1)).toBe(0);
-    // The outgoing layer stays opaque beneath the fading incoming one; blends only happen over full paint.
     for (const window of windows) {
       expect(opacityAt(window, 0)).toBeLessThanOrEqual(1);
       expect(window.extrapolate).toBe("clamp");
@@ -125,20 +150,45 @@ describe("rainbow running mark", () => {
 
   it("keeps every blended handoff paint at least 3:1: the composite is an opaque mix of two readable frames", () => {
     // During a handoff the visible stroke is alpha-mixed from two consecutive frames' gradient stops over
-    // surface0. Both endpoints are readable, and a mix of two same-side colors stays readable, so the
-    // composited stroke keeps its contrast through the whole fade (WCAG 1.4.11).
-    for (const colors of [dark, light]) {
-      const surface = colors.surface0;
+    // the surface. Both endpoints are readable, and a mix of two same-side colors stays readable, so the
+    // composited stroke keeps its contrast through the whole fade (WCAG 1.4.11) — on host tokens AND on the
+    // Kontor appearance overrides, across all three surfaces.
+    const themes = [dark, light, appearanceColors(light, "light"), appearanceColors(dark, "dark")];
+    for (const colors of themes) {
       const stopsOf = (frame: number) => [...rainbowMarkSvg("play", colors, frame).matchAll(/stop-color="([^"]+)"/g)].map((match) => match[1]!);
-      for (let frame = 0; frame < RAINBOW_FRAMES; frame++) {
-        const next = stopsOf((frame + 1) % RAINBOW_FRAMES);
-        for (const from of stopsOf(frame)) for (const to of next) for (const alpha of [0, 0.25, 0.5, 0.75, 1]) {
-          const mixed = "#" + [0, 2, 4].map((at) => Math.round(parseInt(from.slice(at + 1, at + 3), 16) * alpha + parseInt(to.slice(at + 1, at + 3), 16) * (1 - alpha))
-            .toString(16).padStart(2, "0")).join("");
-          expect(contrast(mixed, surface)).toBeGreaterThanOrEqual(3);
+      for (const surface of [colors.surface0, colors.surface1, colors.surface2]) {
+        for (let frame = 0; frame < RAINBOW_FRAMES; frame++) {
+          const next = stopsOf((frame + 1) % RAINBOW_FRAMES);
+          for (const from of stopsOf(frame)) for (const to of next) for (const alpha of [0, 0.25, 0.5, 0.75, 1]) {
+            const mixed = "#" + [0, 2, 4].map((at) => Math.round(parseInt(from.slice(at + 1, at + 3), 16) * alpha + parseInt(to.slice(at + 1, at + 3), 16) * (1 - alpha))
+              .toString(16).padStart(2, "0")).join("");
+            expect(contrast(mixed, surface)).toBeGreaterThanOrEqual(3);
+          }
         }
       }
     }
+  });
+
+  it("never shares one gradient id across two mounted marks: every instance draws its own defs", () => {
+    // Duplicate ids across marks are invalid SVG, and a later per-mark tuning would silently paint the
+    // first mark's gradient everywhere. Each RunningRainbowMark instance threads its React useId into the
+    // gradient id, so N marks yield N distinct defs and every stroke references its own instance's ids.
+    useIdCounter.value = 0;
+    const idsOf = (svg: string) => [...svg.matchAll(/id="(kontor-rainbow-[^"]+)"/g)].map((match) => match[1]!);
+    const marks = Array.from({ length: 3 }, () => {
+      const element = RunningRainbowMark({ colors: light, size: 22, shape: "play" }) as { props: { icon: { svg: string } } };
+      return element.props.icon.svg as string;
+    });
+    const allIds = marks.flatMap(idsOf);
+    expect(allIds.length).toBe(3);
+    expect(new Set(allIds).size).toBe(3);
+    for (const svg of marks) for (const id of idsOf(svg)) expect(svg).toContain(`url(#${id})`);
+    // Frame ids inside one live mark stay distinct too: the same instance suffix is per frame index.
+    const suffix = idsOf(marks[0]!)[0]!.split("-").pop();
+    expect(rainbowGradientId("light", 0, "r7")).toBe(`kontor-rainbow-light-0-r7`);
+    expect(rainbowGradientId("light", 1, "r7")).toBe("kontor-rainbow-light-1-r7");
+    expect(rainbowGradientId("light", 0)).toBe("kontor-rainbow-light-0");
+    expect(suffix).toBeTruthy();
   });
 
   it("pre-renders each frame as the same gradient rotated 360/K about the centre", () => {

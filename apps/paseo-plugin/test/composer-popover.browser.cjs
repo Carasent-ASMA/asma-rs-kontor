@@ -47,7 +47,7 @@ export {TextInput,ScrollView,FlatList} from 'react-native';
 export const copyText = async () => {};
 export const Modal = Object.assign(({open,title,onOpenChange,children}) => open ? <View role="dialog" aria-label={title}><Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={()=>onOpenChange(false)}><Text>×</Text></Pressable>{children}</View> : null, { Content: ({children}) => <View>{children}</View> });
 export const useToast = () => ({ error: message => { window.fixture.toasts.push(message); }, show: () => {} });
-export const Icon = ({name,size=16,color}) => {const Glyph=icons[name];return Glyph?<Glyph aria-hidden="true" width={size} height={size} color={color}/>:<span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;};
+export const Icon = ({name,icon,size=16,color}) => {if (icon && typeof icon.svg === 'string') return <span aria-hidden="true" data-icon="kontor-rainbow" style={{display:'inline-flex',width:size,height:size,alignItems:'center',justifyContent:'center'}} dangerouslySetInnerHTML={{__html:icon.svg}} />;const Glyph=icons[name];return Glyph?<Glyph aria-hidden="true" width={size} height={size} color={color}/>:<span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;};
 `);
 fs.writeFileSync(path.join(fixture, 'main.tsx'), `import React,{StrictMode,useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client'; import {Pressable,ScrollView,Text,View} from 'react-native';

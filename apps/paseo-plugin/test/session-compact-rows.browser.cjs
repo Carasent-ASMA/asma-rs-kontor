@@ -117,6 +117,13 @@ async function pulseCheck(width, theme, longList = false) {
     const samples = [];
     for (let index = 0; index < 5; index++) { samples.push(await glyph.evaluate(node => ({ transform:getComputedStyle(node).transform, tone:node.querySelector('[data-testid="composer-running-tone"]')?.style.opacity }))); await page.waitForTimeout(180); }
     assert.ok(new Set(samples.map(value => value.transform)).size > 1, 'running mark pulses');
+    if(longList){ // S3: the breathing scale is capped at 1.12 — sweep one full loop of matrix diagonals.
+      const diagonals=[];
+      for(let sample=0;sample<16;sample++){ const m=await glyph.evaluate(node => getComputedStyle(node).transform); const d=Number((m.match(/^matrix\(([-\d.]+),/)||[])[1]); if(Number.isFinite(d))diagonals.push(d); await page.waitForTimeout(180); }
+      assert.ok(diagonals.length>5,'the breathing transform was sampled over a loop');
+      const scaleMax=Math.max(...diagonals);
+      assert.ok(scaleMax<=1.125,`breathing scale stays <=1.12 over a loop, got ${scaleMax}`);
+    }
     const strokes = await glyph.locator('svg').evaluateAll(nodes => nodes.map(node => node.getAttribute('stroke')));
     assert.equal(strokes.length, 6, 'the six pre-rendered gradient frames are mounted');
     assert.ok(strokes.every(value => value && value.startsWith('url(#kontor-rainbow-')), 'every frame paints the rainbow gradient');

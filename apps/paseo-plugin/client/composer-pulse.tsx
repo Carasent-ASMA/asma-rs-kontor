@@ -1,5 +1,5 @@
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AccessibilityInfo, Animated, AppState, Platform, type LayoutChangeEvent, type StyleProp, type ViewStyle, View } from "react-native";
 import type { Colors } from "./page-controls";
 import { observePulseEnvironment } from "./composer-pulse-environment";
@@ -14,7 +14,7 @@ const pulseProgress = () => progress ??= new Animated.Value(0);
 function retainClock() {
   if (users++ === 0) {
     animation = Animated.loop(Animated.timing(pulseProgress(), {
-      toValue: 1, duration: 2700, easing: (phase) => (1 - Math.cos(phase * Math.PI * 2)) / 2,
+      toValue: 1, duration: 2700, easing: pulseScaleEasing,
       useNativeDriver: Platform.OS !== "web", isInteraction: false,
     }));
     animation.start();
@@ -60,11 +60,18 @@ function observeViewport(element: Element, notify: (visible: boolean) => void) {
 
 const absoluteFill: StyleProp<ViewStyle> = { position: "absolute", top: 0, left: 0, width: "100%", height: "100%" };
 
+/** The breathing scale is capped at 1.12 (D2); both the component and the tests pin this constant. */
+export const PULSE_SCALE_MAX = 1.12;
+export const pulseScaleInterpolation: { inputRange: number[]; outputRange: number[] } = { inputRange: [0, 1], outputRange: [1, PULSE_SCALE_MAX] };
+/** The shared clock's cosine easing: 0 -> 1 -> 0 once per loop, driving both the crossfade and the breathe. */
+export const pulseScaleEasing = (phase: number) => (1 - Math.cos(phase * Math.PI * 2)) / 2;
+
 /** K gradient frames stacked and crossfaded on the shared clock; opacity is the only animated property. */
 function RainbowFlow({ colors, size, shape, clock }: { colors: Colors; size: number; shape: RunningMarkShape; clock: Animated.Value }) {
+  const instance = useId();
   const svgs = useMemo(
-    () => Array.from({ length: RAINBOW_FRAMES }, (_, frame) => rainbowMarkSvg(shape, colors, frame)),
-    [shape, colors],
+    () => Array.from({ length: RAINBOW_FRAMES }, (_, frame) => rainbowMarkSvg(shape, colors, frame, instance)),
+    [shape, colors, instance],
   );
   const opacities = useMemo(
     () => Array.from({ length: RAINBOW_FRAMES }, (_, frame) => clock.interpolate(rainbowFrameInterpolation(frame, RAINBOW_FRAMES))),
@@ -93,7 +100,7 @@ export function ComposerPulse({ colors, size, name = "Building2", enabled = true
   const allowed = useSyncExternalStore(eligible ? subscribeMotion : noSubscription, eligible ? motionSnapshot : noMotion, noMotion);
   const active = eligible && allowed;
   const [value] = useState(pulseProgress);
-  const scale = useMemo(() => value.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] }), [value]);
+  const scale = useMemo(() => value.interpolate(pulseScaleInterpolation), [value]);
   const onLayout = useCallback(({ nativeEvent: { layout } }: LayoutChangeEvent) => { setVisible(layout.width > 0 && layout.height > 0); }, []);
   const carrierStyle = useMemo(() => ({ width: size, height: size, transform: [{ scale: active ? scale : 1 }] }), [size, active, scale]);
   useEffect(() => active ? retainClock() : undefined, [active]);

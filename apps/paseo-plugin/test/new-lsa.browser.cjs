@@ -39,7 +39,7 @@ export {TextInput,ScrollView,FlatList} from 'react-native';
 export const copyText = async () => {};
 export const Modal = Object.assign(({open,title,children}) => open ? <View role="dialog" aria-label={title}>{children}</View> : null, { Content: ({children}) => <View>{children}</View> });
 export const useToast = () => ({ error: message => { throw new Error('Unexpected toast: ' + message); }, show: () => {} });
-export const Icon = ({size=16,color}) => <span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;
+export const Icon = ({name,icon,size=16,color}) => {if (icon && typeof icon.svg === 'string') return <span aria-hidden="true" data-icon="kontor-rainbow" style={{display:'inline-flex',width:size,height:size,alignItems:'center',justifyContent:'center'}} dangerouslySetInnerHTML={{__html:icon.svg}} />;return <span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;};
 `);
 fs.writeFileSync(path.join(fixture, 'main.tsx'), `import React,{useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client'; import {Pressable,Text,View} from 'react-native';

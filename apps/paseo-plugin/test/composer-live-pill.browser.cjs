@@ -109,6 +109,12 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
           assert.ok(Number(peak.opacity)>0.95);
           await page.waitForFunction(()=>Number(document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-frame-0"]')?.style.opacity)<0.05);
           const rest=await pulse.evaluate(node=>getComputedStyle(node).transform);
+          // S3: the breathing scale is capped at 1.12 — sample the matrix diagonal across a full loop.
+          const diagonals=[];
+          for(let sample=0;sample<31;sample++){ const m=await pulse.evaluate(node=>getComputedStyle(node).transform); const d=Number((m.match(/^matrix\(([-\d.]+),/)||[])[1]); if(Number.isFinite(d))diagonals.push(d); await page.waitForTimeout(90); }
+          assert.ok(diagonals.length>10,'the breathing transform was sampled over a loop');
+          const scaleMax=Math.max(...diagonals);
+          assert.ok(scaleMax<=1.125,`breathing scale stays <=1.12 over a loop, got ${scaleMax}`);
           await page.screenshot({path:path.join(output,'390-dark-motion.png')});
           await page.evaluate(()=>window.fixture.light());
           assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-light-"]').count(),6,'light theme re-paints every frame with light stops');
@@ -122,7 +128,7 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
           await page.evaluate(()=>window.fixture.hide(true));
           await tone.waitFor({state:'detached',timeout:5000});
           await page.evaluate(()=>window.fixture.hide(false));await tone.waitFor();
-          report.motion={opacityBefore:opacity,peak,rest,liveReducedMotion:'PASS',themeChange:'PASS',stateChange:'PASS',retainedDisplayNone:'PASS',nativeDriver:'UNVERIFIED: Chromium uses RN Web'};
+          report.motion={opacityBefore:opacity,peak,rest,scaleMax,liveReducedMotion:'PASS',themeChange:'PASS',stateChange:'PASS',retainedDisplayNone:'PASS',nativeDriver:'UNVERIFIED: Chromium uses RN Web'};
         }
         await page.screenshot({path:path.join(output,width+'-composer-live-pill.png')});assert.deepEqual(errors,[]);
         report.cases.push({width,status:'PASS',baseline,reconnected,measurements,longTasks:await page.evaluate(()=>window.fixture.longTasks),reducedMotion:width===390?'live motion comparison':'reduce; static',effectRPCs:0});
