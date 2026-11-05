@@ -333,16 +333,40 @@ function documentDecision(rules: readonly Rule[], provider: string): "allow" | "
   return decision;
 }
 
-/** The provider entries a document declares, from either container. A present container of the wrong shape is a
- * configuration problem, not an absent setting: discarding it would silently open the catalogue it was meant to
- * filter. */
-function providerEntries(info: Record<string, unknown>, path: string): { entries: Record<string, unknown> } | { problem: string } {
-  const merged: Record<string, unknown> = {};
+/** The selection keys one declared provider entry states; an absent key says nothing about that filter. */
+type DeclaredFilters = { readonly whitelist?: readonly string[]; readonly blacklist?: readonly string[] };
+
+/** Validate one declared provider entry before any merge can shadow it. Only its stated selection keys are kept. */
+function declaredFilters(id: string, entry: unknown, path: string): { filters: DeclaredFilters } | { problem: string } {
+  const provider = record(entry);
+  if (!provider) return { problem: `OpenCode config ${path}: provider ${id} must be an object.` };
+  const filters: { whitelist?: readonly string[]; blacklist?: readonly string[] } = {};
+  for (const key of ["whitelist", "blacklist"] as const) {
+    if (!(key in provider)) continue;
+    const listed = stringList(provider[key], `${path}: provider.${id}.${key}`);
+    if ("problem" in listed) return { problem: listed.problem };
+    filters[key] = listed.values;
+  }
+  return { filters };
+}
+
+/**
+ * The provider entries a document declares, from either container. Every entry and its selection keys are
+ * validated while the containers are read, before normalization or precedence can let a later entry shadow a
+ * malformed one. A present container of the wrong shape is a configuration problem, not an absent setting.
+ */
+function providerEntries(info: Record<string, unknown>, path: string): { entries: ReadonlyMap<string, DeclaredFilters> } | { problem: string } {
+  const merged = new Map<string, DeclaredFilters>();
   for (const key of ["provider", "providers"]) {
     if (!(key in info)) continue;
     const group = record(info[key]);
     if (!group) return { problem: `OpenCode config ${path}: ${key} must be an object.` };
-    for (const [id, entry] of Object.entries(group)) merged[normalizeOpenCodeProviderId(id)] = entry;
+    for (const [rawId, entry] of Object.entries(group)) {
+      const id = normalizeOpenCodeProviderId(rawId), declared = declaredFilters(id, entry, path);
+      if ("problem" in declared) return declared;
+      // Valid declarations keep their precedence: the last entry for a normalized id wins.
+      merged.set(id, declared.filters);
+    }
   }
   return { entries: merged };
 }
@@ -361,18 +385,12 @@ export function opencodeSelection(documents: readonly OpenCodeDocument[]): OpenC
     perDocument.push(built.rules);
     const entries = providerEntries(document.info, document.path);
     if ("problem" in entries) return { problem: entries.problem };
-    for (const [id, entry] of Object.entries(entries.entries)) {
-      const provider = record(entry);
-      if (!provider) return { problem: `OpenCode config ${document.path}: provider ${id} must be an object.` };
+    for (const [id, declared] of entries.entries) {
       const previous = filters.get(id) ?? { whitelist: null, blacklist: null };
-      const next: { whitelist: readonly string[] | null; blacklist: readonly string[] | null } = { ...previous };
-      for (const key of ["whitelist", "blacklist"] as const) {
-        if (!(key in provider)) continue;
-        const listed = stringList(provider[key], `${document.path}: provider.${id}.${key}`);
-        if ("problem" in listed) return { problem: listed.problem };
-        next[key] = listed.values;
-      }
-      filters.set(id, next);
+      filters.set(id, {
+        whitelist: "whitelist" in declared ? declared.whitelist! : previous.whitelist,
+        blacklist: "blacklist" in declared ? declared.blacklist! : previous.blacklist,
+      });
     }
   }
   const allows = (provider: string): boolean => {

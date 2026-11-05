@@ -116,4 +116,58 @@ describe("audit fail-closed regressions", () => {
     expect(ids(read)).toEqual([]);
     expect(read.problemFor("opencode")).toContain(config);
   });
+
+  it("D8-F1 rejects malformed entries shadowed by a later container", async () => {
+    const { root, config } = await freshTree();
+    await writeFile(config, JSON.stringify({ provider: { deepseek: { whitelist: [] } } }));
+    expect(ids(await readProviderCatalog(client, root, { config: host(root) }))).toEqual(["other/allowed"]);
+
+    const shadowed = [
+      { provider: { deepseek: { whitelist: "wrong-shape" } }, providers: { deepseek: {} } },
+      { provider: { deepseek: null }, providers: { deepseek: {} } },
+      { provider: { deepseek: { blacklist: "wrong-shape" } }, providers: { deepseek: {} } },
+      { provider: { deepseek: {} }, providers: { deepseek: { whitelist: "wrong-shape" } } },
+    ];
+    for (const info of shadowed) {
+      await writeFile(config, JSON.stringify(info));
+      const read = await readProviderCatalog(client, root, { config: host(root) });
+      expect(ids(read), JSON.stringify(info)).toEqual([]);
+      expect(read.problemFor("opencode"), JSON.stringify(info)).toContain(config);
+    }
+  });
+
+  it("D8-F1 rejects malformed entries across container and alias collisions", async () => {
+    const { root, config } = await freshTree();
+    const collisions = [
+      { provider: { house: { whitelist: "wrong-shape" } }, providers: { house: {} } },
+      { provider: { house: {} }, providers: { house: { whitelist: "wrong-shape" } } },
+      { provider: { "azure-cognitive-services": { whitelist: "wrong-shape" } }, providers: { azure: {} } },
+      { provider: { azure: { whitelist: "wrong-shape" } }, providers: { "azure-cognitive-services": {} } },
+    ];
+    for (const info of collisions) {
+      await writeFile(config, JSON.stringify(info));
+      const read = await readProviderCatalog(client, root, { config: host(root) });
+      expect(ids(read), JSON.stringify(info)).toEqual([]);
+      expect(read.problemFor("opencode"), JSON.stringify(info)).toContain(config);
+    }
+  });
+
+  it("D8-F1 keeps the declared precedence for valid entries", () => {
+    const path = "/synthetic/policy.fixture";
+    const read = opencodeSelection([{ path, info: {
+      provider: { house: { whitelist: ["one"] } }, providers: { house: { blacklist: ["two"] } },
+    } }]);
+    if ("problem" in read) throw new Error(read.problem);
+    expect(opencodeModelVisible("house/one", read.selection)).toBe(true);
+    expect(opencodeModelVisible("house/two", read.selection)).toBe(false);
+    expect(opencodeModelVisible("other/two", read.selection)).toBe(true);
+
+    // A valid alias collision keeps the later declaration: providers' empty entry replaces the alias filter.
+    const alias = opencodeSelection([{ path, info: {
+      provider: { "azure-cognitive-services": { whitelist: ["one"] } }, providers: { azure: {} },
+    } }]);
+    if ("problem" in alias) throw new Error(alias.problem);
+    expect(opencodeModelVisible("azure-cognitive-services/one", alias.selection)).toBe(true);
+    expect(opencodeModelVisible("azure-cognitive-services/two", alias.selection)).toBe(true);
+  });
 });
