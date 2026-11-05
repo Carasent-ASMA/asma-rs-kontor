@@ -232,7 +232,26 @@ export const createFeatureSchema = z.union([
 ]);
 export type CreateFeature = z.infer<typeof createFeatureSchema>;
 /** Only listed features with an offered value; the server checks them again and the readback confirms each one. */
-export const featureValuesSchema = z.record(id, z.union([z.string().min(1).max(200), z.boolean()]));
+const featureValueSchema = z.union([z.string().min(1).max(200), z.boolean()]);
+/**
+ * A setting id is any string, including `__proto__`. The record is built with own data properties rather than
+ * assignment, so an offered setting with such an id keeps its value through admission instead of hitting the
+ * inherited prototype setter and disappearing.
+ */
+export const featureValuesSchema = z.unknown().transform((input, ctx): Record<string, string | boolean> => {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    ctx.addIssue({ code: "custom", message: "Setting values must be an object." });
+    return z.NEVER;
+  }
+  const entries: [string, string | boolean][] = [];
+  for (const key of Object.keys(input)) {
+    if (!id.safeParse(key).success) { ctx.addIssue({ code: "custom", message: `Setting id ${key} is not valid.` }); continue; }
+    const value = featureValueSchema.safeParse((input as Record<string, unknown>)[key]);
+    if (!value.success) { ctx.addIssue({ code: "custom", message: `Setting ${key} is not a string or boolean.` }); continue; }
+    entries.push([key, value.data]);
+  }
+  return Object.fromEntries(entries);
+});
 export type FeatureValues = z.infer<typeof featureValuesSchema>;
 export const createFeaturesSchema = z.object({ features: z.array(createFeatureSchema), problem: z.string().nullable() }).strict();
 
@@ -260,12 +279,13 @@ export function settingLabel(known: readonly CreateFeature[], key: string, value
 
 /** The values these listed features offer, and the labels of those they do not, which a change of model drops. */
 export function keptFeatureValues(features: readonly CreateFeature[], values: FeatureValues, known: readonly CreateFeature[] = features): { kept: FeatureValues; dropped: string[] } {
-  const kept: FeatureValues = {}, dropped: string[] = [];
+  const kept: [string, string | boolean][] = [], dropped: string[] = [];
   for (const [key, value] of Object.entries(values)) {
-    if (!featureValuesProblem(features, { [key]: value })) kept[key] = value;
+    if (!featureValuesProblem(features, { [key]: value })) kept.push([key, value]);
     else dropped.push(settingLabel(known, key, value));
   }
-  return { kept, dropped };
+  // Own data properties, so an offered `__proto__` setting is kept rather than silently swallowed.
+  return { kept: Object.fromEntries(kept), dropped };
 }
 
 /**

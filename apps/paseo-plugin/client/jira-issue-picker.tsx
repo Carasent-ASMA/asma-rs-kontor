@@ -7,9 +7,13 @@ import { SearchPicker } from "./search-picker";
 
 export type IssueFilter = "all" | "epic" | "non-epic";
 const ISSUE_CLASS_BY_FILTER: Record<IssueFilter, JiraIssueClass> = { all: "eligible", epic: "epic", "non-epic": "non-epic" };
+const ISSUE_TYPE_ICONS: Record<string, string> = { epic: "Zap", bug: "Bug", story: "BookOpen", "user story": "BookOpen", task: "SquareCheck", "sub-task": "ListTree", subtask: "ListTree" };
+
 /** Uses actual type metadata only. These host glyphs are not Jira's configurable icon images. */
 export function issueTypeIcon(type: string): string {
-  return ({ epic: "Zap", bug: "Bug", story: "BookOpen", "user story": "BookOpen", task: "SquareCheck", "sub-task": "ListTree", subtask: "ListTree" } as Record<string, string>)[type.trim().toLocaleLowerCase()] ?? "Tag";
+  // The table's own entries only: an unknown type such as `constructor` keeps the generic icon fallback.
+  const key = type.trim().toLocaleLowerCase();
+  return Object.hasOwn(ISSUE_TYPE_ICONS, key) ? ISSUE_TYPE_ICONS[key]! : "Tag";
 }
 /** Keeps exact-key matches when a stale RPC returns broader results; class and cap stay on the backend. */
 export function jiraPickerRows(issues: readonly JiraIssue[], query = ""): JiraIssue[] {

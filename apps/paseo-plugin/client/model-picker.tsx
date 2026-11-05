@@ -40,8 +40,9 @@ export function useCreateFeatures(projectId: string | null, provider: string | n
   return key && state?.key === key ? state : null;
 }
 
-/** A listed setting's value for a lead: the operator's, else the setting's own. */
-export const featureValue = (feature: CreateFeature, values: FeatureValues) => values[feature.id] ?? featureDefault(feature);
+/** A listed setting's value for a lead: the operator's own, else the setting's own. */
+export const featureValue = (feature: CreateFeature, values: FeatureValues) =>
+  Object.hasOwn(values, feature.id) ? values[feature.id]! : featureDefault(feature);
 
 /** "Normal" for each select and "Plan off" for each toggle, as the lead will run. */
 export function featureLabels(features: readonly CreateFeature[], values: FeatureValues): { selects: string[]; toggles: string[] } {

@@ -86,14 +86,18 @@ const EFFORTS: Record<string, string> = { minimal: "MIN", low: "L", medium: "M",
 /** "XH" for xhigh; an effort the table does not know keeps its first three letters. */
 export function effortShort(effort: string | null | undefined): string | null {
   if (!effort) return null;
-  return EFFORTS[effort.toLocaleLowerCase()] ?? effort.slice(0, 3).toLocaleUpperCase();
+  // The table's own entries only: an unknown effort such as `constructor` or `__proto__` keeps its documented
+  // fallback instead of reading an inherited Object.prototype member.
+  const key = effort.toLocaleLowerCase();
+  return Object.hasOwn(EFFORTS, key) ? EFFORTS[key]! : effort.slice(0, 3).toLocaleUpperCase();
 }
 
 const ROUTES: Record<string, string> = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode", cursor: "Cursor", "glm-acp-agent": "GLM Agent", copilot: "Copilot" };
 
 /** The route a model runs through, as a subtitle: "via OpenCode". */
 export function routeLabel(provider: string, label?: string | null): string {
-  return `via ${label?.trim() || ROUTES[provider] || provider}`;
+  const known = Object.hasOwn(ROUTES, provider) ? ROUTES[provider]! : provider;
+  return `via ${label?.trim() || known}`;
 }
 
 /** The row's model line: the vendor of the model it reports, its alias, effort and the full ID for help. */
