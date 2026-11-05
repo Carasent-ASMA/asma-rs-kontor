@@ -83,4 +83,4 @@ may be listed as proposed, but they do not govern until accepted.
 
 | Id | Decision | Status | Authority | Supersedes |
 | --- | --- | --- | --- | --- |
-| — | No Kontor decision records yet | — | — | — |
+| [2026-11-05-20-34-decision-proportional-pr-review#DEC-01](2026-11-05-20-34-decision-proportional-pr-review.md#DEC-01) | Proportional PR review and bounded corrections | Accepted | Configured platform owner | none |

@@ -16,7 +16,7 @@ documents link to them instead of restating them.
 | **Paseo-direct** (`orchestration: paseo`) | The workflow run by agents through Paseo, the plan, the tracker and the project CLI, without a daemon. The default. | a lesser workflow; legacy mode |
 | **Kontor-governed** (`orchestration: kontor`) | The workflow run through `kontord`, which owns the task graph, admission, evidence and tracker projection deterministically. Requires the plan marker and the tracker governance marker. | the workflow itself; Kontor (bare) |
 | **`workflow: kontor \| free`** | Whether the epic follows the Kontor workflow at all. `free` keeps the safety floor and any named workflow piece. | the surface |
-| **Safety floor** | The rules that hold in every workflow and are never switched off: the tracker stays in the project's configured tracker project; never overwrite another person's work, one writer per branch; no force-push and no ruleset bypass; every check the repository defines must pass; merge only on the host owner's command or the pull request author's merge order in the project's configured merge rule; no secrets in files; every pull request is reviewed. Secrets stay references and the public tree carries only public material. | optional guardrails |
+| **Safety floor** | The rules that hold in every workflow and are never switched off: the tracker stays in the project's configured tracker project; never overwrite another person's work, one writer per branch; no force-push and no ruleset bypass; every check the repository defines must pass; merge only on the configured owner's command, the pull request author's configured merge order, or the owner's explicit configured automatic-merge grant, always through the shared merge gate; no secrets in files; every pull request is reviewed. Secrets stay references and the public tree carries only public material. | optional guardrails |
 | **Workflow piece** | A named procedure used on its own — a review, a committee, a takeover, a handoff, a plan hardening, a decision record. It brings its own rules only while it runs. | workflow stage; mandatory step |
 
 ### The `kontor` value
@@ -60,10 +60,10 @@ source of authority.
 | **SWE** | The delivery seat. Implements one scoped task and produces its evidence. | builder; engineer |
 | **QA** | Independent task-level verification. A rejection returns rework to the fix owner. | tester; reviewer |
 | **AUD** | Independent audit of a change or delivery evidence beyond ordinary tests. | QA; reviewer |
-| **REV A**, **REV B** | The two read-only reviewers in a review room. They use contrasting vendors. | AUD; author |
-| **JUDGE** | The read-only seat that checks each finding against the exact code and aggregates after both reviewers are complete. | REV A; approver |
+| **REV A**, **REV B** | Read-only PR reviewers: Simple/Medium use REV A; Complex uses both and a JUDGE from three distinct actual vendors, independent of writers. Risk adds specialists. | AUD; author |
+| **JUDGE** | The read-only deciding seat for Complex PRs; checks findings against the exact code after every required independent result is available. Simple/Medium use REV A as the deciding seat. | author; merger |
 | **REV SEC**, **REV DB** | Specialist read-only reviewers for security or database risk. | mandatory seats |
-| **PR Adam** | The coordinator that runs one pull-request review room. It never merges. | JUDGE; merger |
+| **PR Adam** | The coordinator for one PR review room; dispatches read-only review and SWE corrections. It never merges: the shared executor merges only under a configured grant and the shared gate. | JUDGE; merger |
 | **Seat** | A persistent role occupant bound to one role slot. An idle seat remains reusable. | process; tab; TeamRun |
 | **TeamRun** | Execution state attached to one ticket workspace. It is not a topology node and not a container. | seat; workspace |
 

@@ -72,7 +72,9 @@ applicable below):
   attested head commit). Do not use the forge CLI directly.
 - A merge needs `{{ project.merge_authority.role }}`'s permission under
   `{{ project.merge_authority.policy }}`; the PR desk merges only on that
-  authority's command or on the PR author's configured merge order.
+  authority's command, the PR author's configured merge order, or the owner's
+  explicit configured automatic-merge grant. Every path uses the shared merge
+  gate; no grant waives its checks.
 - The result always matches `{{ project.branch.pattern }}`, and that grammar is
   **enforced, not advised**: the CLI refuses to create, push, or open a PR from
   any other branch (reason codes such as `branch_key_missing`,

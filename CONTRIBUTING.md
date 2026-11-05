@@ -26,11 +26,11 @@ The delivery method is [Workflow](docs/WORKFLOW.md), the vocabulary is
 
 ### Product availability
 
-Follow the canonical workspace [Kontor product availability decision
-(Igor, 2026-10-23)](https://github.com/Carasent-ASMA/asma-modules/blob/master/.github/instructions/memory.instructions.md#kontor-product-availability):
-shipped, supported features, including **New LSA**, are standard and available
+Shipped, supported features, including **New LSA**, are standard and available
 by default, without per-feature opt-in or experimental/lab enablement.
-**Desk PR is the sole opt-in exception:** ask Igor for explicit enablement.
+**Desk PR is the sole opt-in exception:** explicit enablement comes from the
+consuming project's configured `project.owner`. Publishing implementation or
+policy does not enable the live desk or lift an explicit operator stop.
 Feature owners apply that contract through normal review/release, preserving
 permissions, real host capability guards, explicit operator-off safeguards and
 action intent; unsupported or deferred functionality stays so.
@@ -99,8 +99,8 @@ license and advisory gates.
 
 Kontor does not use GitHub Actions CI; the repository's one workflow is the
 publication branch/title check described under [Pull requests](#pull-requests),
-and it builds and tests nothing. Igor's **2026-10-25 decision** requires tests
-for changed/added behavior and specifically affected callers/contracts, with no
+and it builds and tests nothing. The approved **2026-10-25 verification policy**
+requires tests for changed/added behavior and specifically affected callers/contracts, with no
 automatic full repository/workspace/crate/package/plugin suites. The governing
 [local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md)
 amends DEC-002; missing GitHub checks are not a waiver.
