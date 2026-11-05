@@ -97,5 +97,18 @@ describe("review-b full-verdict regressions", () => {
     expect(modelVisibleOnRoute("whisper-large-v3", "codex")).toBe(true);
     // An id the tables do not name stays unknown, which no exclusivity rule hides.
     expect(modelVendor("house-model")).toBe("unknown");
+    // The boundary after the family word is load-bearing: a longer word that merely starts with it is not OpenAI.
+    expect(modelVendor("ttsish-1")).toBe("unknown");
+    expect(modelVendor("whispering-1")).toBe("unknown");
+    expect(modelVisibleOnRoute("ttsish-1", "opencode")).toBe(true);
+    expect(modelVisibleOnRoute("whispering-1", "opencode")).toBe(true);
+    // Real catalog shapes where the speech word is part of a non-OpenAI vendor's model name stay visible.
+    expect(modelVendor("gemini-2.5-flash-tts")).toBe("google");
+    expect(modelVendor("mimo-v2.5-tts")).toBe("xiaomi");
+    expect(modelVendor("grok-voice-tts-1.0")).toBe("xai");
+    expect(modelVendor("qwen3-tts-voicedesign")).toBe("alibaba");
+    expect(modelVendor("voxtral-mini-tts")).toBe("unknown");
+    for (const id of ["gemini-2.5-flash-tts", "mimo-v2.5-tts", "grok-voice-tts-1.0", "qwen3-tts-voicedesign", "voxtral-mini-tts"])
+      expect(modelVisibleOnRoute(id, "opencode")).toBe(true);
   });
 });

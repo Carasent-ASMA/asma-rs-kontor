@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -135,5 +135,24 @@ describe("review-a delta-5 regressions", () => {
     });
     expect(ids(linked)).toEqual(both);
     expect(linked.problems).toEqual([]);
+  });
+
+  it("E2 guard: an lstat error after ENOENT stays closed", async () => {
+    const { root, home, project } = await tree();
+    const parent = join(root, "blocked"), file = join(parent, "missing", "policy.json");
+    await mkdir(join(parent, "missing"), { recursive: true });
+    // The read sees ENOENT; by the time the classifier checks the path, search on the ancestor is denied.
+    const config: HostConfigDeps = {
+      ...deps(root, home, { OPENCODE_CONFIG: file }),
+      readFile: async (path: string) => {
+        if (path === file) { await chmod(parent, 0); throw Object.assign(new Error("absent"), { code: "ENOENT" }); }
+        return readFile(path, "utf8");
+      },
+    };
+    try {
+      const after = await readProviderCatalog(client, project, { config });
+      expect(ids(after)).toEqual([]);
+      expect(after.problemFor("opencode")).toContain(file);
+    } finally { await chmod(parent, 0o700); }
   });
 });
