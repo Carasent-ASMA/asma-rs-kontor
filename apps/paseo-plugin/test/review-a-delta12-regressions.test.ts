@@ -112,6 +112,15 @@ describe("narrow option (a) boundaries", () => {
     expect(read.problem).toContain("__proto__");
   });
 
+  it("refuses a listed select __proto__ setting with the named problem", async () => {
+    const read = await createFeatures(listClient([{
+      id: "__proto__", label: "House setting", type: "select", value: "slow",
+      options: [{ id: "slow", label: "Slow", isDefault: true }],
+    }]), "/synthetic/cwd", choice);
+    expect(read.features).toEqual([]);
+    expect(read.problem).toContain("__proto__");
+  });
+
   it("lists ordinary prototype-named settings unchanged", async () => {
     const read = await createFeatures(listClient([{ id: "constructor", label: "House setting", type: "toggle", value: false }]), "/synthetic/cwd", choice);
     expect(read.problem).toBeNull();
