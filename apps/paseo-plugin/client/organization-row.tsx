@@ -42,7 +42,7 @@ export function StateBadge({ state, aggregate, colors, compact, stale = false }:
     {stale ? <Text style={{ color: colors.foregroundMuted, fontSize: 9 }}>Last known</Text> : null}
     <Text style={{ color: colors.foreground, fontSize: compact ? 11 : 12, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{`${aggregate.total} session${aggregate.total === 1 ? "" : "s"}`}</Text>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-      <SessionStateMarker state={state} colors={colors} />
+      <SessionStateMarker state={state} colors={colors} stale={stale} />
       <Text style={{ color: colors.foregroundMuted, fontSize: compact ? 10 : 11, fontVariant: ["tabular-nums"] }}>{`${STATE_LABELS[state]} ${count}`}</Text>
     </View>
   </View>;

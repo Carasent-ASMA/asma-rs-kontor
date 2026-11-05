@@ -86,6 +86,28 @@ describe("compact session status markers", () => {
     expect(hidden.props).toEqual({ name: QUICK_FILTER_ICONS.running, colors: dark, size: 22, enabled: false });
   });
 
+  it("keeps a stale group's running badge muted: Last known never animates (LSA-R2-S1)", () => {
+    const stale = SessionStatusIcon({ status: "running", colors: dark, stale: true });
+    expect(elements(stale).some((node) => node.type === ComposerPulse)).toBe(false);
+    expect(elements(stale).some((node) => node.type === RunningRainbowMark)).toBe(false);
+    const muted = elements(stale).find((node) => node.type === "Icon")!;
+    expect(muted.props).toMatchObject({ name: QUICK_FILTER_ICONS.running, color: dark.foregroundMuted });
+    // The muted branch is runningMarkNode's, not a duplicate.
+    expect(muted.props).toMatchObject(runningMarkNode({ live: false, visible: true }, dark, 16).props);
+    const staleMarker = SessionStatusIcon(SessionStateMarker({ state: "running", colors: dark, stale: true }).props);
+    expect(elements(staleMarker).some((node) => node.type === ComposerPulse)).toBe(false);
+  });
+
+  it("keeps non-stale group running badges on the animated carrier (control for LSA-R2-S1)", () => {
+    const fresh = SessionStatusIcon({ status: "running", colors: dark });
+    expect(elements(fresh).some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(elements(fresh).some((node) => node.type === "Icon")).toBe(false);
+    const freshMarker = SessionStatusIcon(SessionStateMarker({ state: "running", colors: dark }).props);
+    expect(elements(freshMarker).some((node) => node.type === ComposerPulse)).toBe(true);
+    // Filter affordances keep the pulse regardless of any directory staleness.
+    expect(elements(SessionStatusIcon({ status: "running", colors: dark, stale: false })).some((node) => node.type === ComposerPulse)).toBe(true);
+  });
+
   it("uses the agreed session icons and keeps history and filter choices distinct", () => {
     expect(QUICK_FILTER_ICONS).toEqual({
       recent: "Clock", activity: "Activity", current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
