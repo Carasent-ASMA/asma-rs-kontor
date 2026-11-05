@@ -109,7 +109,7 @@ async function bounds(page, width, height, name) {
 }
 (async () => {
   const vite = await import(consoleDeps.resolve('vite'));
-  server = await vite.createServer({ root: fixture, configFile: false, define: { __DEV__: 'false', 'process.env.NODE_ENV': '"development"' },
+  server = await vite.createServer({ root: fixture, configFile: false, define: { global: 'globalThis', __DEV__: 'false', 'process.env.NODE_ENV': '"development"' },
     server: { host: '127.0.0.1', port: 0, fs: { allow: [fixture, plugin, native.split(path.sep + '.pnpm' + path.sep)[0]] } },
     resolve: { alias: [ { find: /^react$/, replacement: react }, { find: /^react\/(.*)$/, replacement: react + '/$1' }, { find: /^react-dom$/, replacement: dom }, { find: /^react-dom\/(.*)$/, replacement: dom + '/$1' }, { find: /^react-native$/, replacement: path.join(fixture, 'native.ts') }, { find: /^react-native-web$/, replacement: path.join(native, 'dist/index.js') }, { find: /^@getpaseo\/plugin$/, replacement: sdk.resolve('@getpaseo/plugin') }, { find: /^@getpaseo\/plugin\/client$/, replacement: path.join(fixture, 'sdk-client.ts') }, { find: /^@getpaseo\/plugin\/client\/react-native$/, replacement: path.join(fixture, 'sdk-native.tsx') } ] },
   });

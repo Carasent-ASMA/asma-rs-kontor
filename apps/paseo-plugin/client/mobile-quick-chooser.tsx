@@ -8,7 +8,7 @@ import { focusControl } from "./mobile-filters";
 import { Action, type Colors } from "./page-controls";
 import { useControlHelp } from "./control-help";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS } from "./mobile-quick-filter-options";
-import { RunningRainbowMark } from "./running-mark";
+import { ComposerPulse } from "./composer-pulse";
 import { QUICK_STATUS_FILTERS, type StatusFilter } from "./session-view";
 
 /** The same seven choices as desktop, with touch-readable names, counts and a noninteractive legend. */
@@ -35,7 +35,7 @@ export function MobileQuickChooser({ root, rootSize, anchor, colors, status, cou
         onPress={() => { onStatus(choice); close(); }}
         style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 7,
           borderWidth: 1, borderColor: choice === status || focused ? colors.accent : colors.border, backgroundColor: choice === status || pressed ? colors.surface2 : colors.surface1 })}>
-        {choice === "running" ? <RunningRainbowMark colors={colors} size={20} shape="play" /> : <Icon name={QUICK_FILTER_ICONS[choice]} size={20} color={sessionStatusInk(choice, colors)} />}
+        {choice === "running" ? <ComposerPulse colors={colors} size={20} name="Play" /> : <Icon name={QUICK_FILTER_ICONS[choice]} size={20} color={sessionStatusInk(choice, colors)} />}
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{quickFilterLabel(choice)} · {counts[choice].text}{choice === status ? " · Selected" : ""}</Text>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{counts[choice].label}. {QUICK_FILTER_MEANINGS[choice]}</Text>

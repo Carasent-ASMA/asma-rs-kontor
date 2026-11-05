@@ -30,8 +30,9 @@ export const RAINBOW_STOPS = {
   dark: ["#a78bfa", "#f472b6", "#f87171", "#fb923c", "#facc15", "#4ade80", "#2dd4bf", "#60a5fa"],
 } as const satisfies Record<"light" | "dark", RainbowStops>;
 
-/** Frames pre-render the gradient rotated 360/K about the centre; frame 0 is the resting rainbow. */
-export const RAINBOW_FRAMES = 6;
+/** Frames pre-render the gradient rotated 360/K about the centre; frame 0 is the resting rainbow.
+ * K = 8 (D7 minimum): eight mounted frames per mark — eight Animated.Views and eight SVG nodes. */
+export const RAINBOW_FRAMES = 8;
 const BASE_ANGLE = 20;
 
 /** Ids are themed, so light and dark marks on one screen keep distinct gradients; repeats stay identical. */

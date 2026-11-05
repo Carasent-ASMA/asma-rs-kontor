@@ -313,7 +313,7 @@ import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolba
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { indentOf, StateBadge } from "../client/organization-row";
 import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
-import { RunningRainbowMark } from "../client/running-mark";
+import { ComposerPulse } from "../client/composer-pulse";
 import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
 import type { StatusFilter } from "../client/session-view";
 import { SessionDetailSection } from "../client/session-detail-section";
@@ -665,7 +665,8 @@ describe("SessionsScreen toolbar events", () => {
         const marker = walk(chip).find(element => element.type === SessionStatusIcon)!;
         const drawn = walk(SessionStatusIcon(marker.props as Parameters<typeof SessionStatusIcon>[0]));
         if (status === "running") {
-          expect(drawn.find(element => element.type === RunningRainbowMark)!.props).toMatchObject({ colors, size: 16, shape: "play" });
+          // D6: the running chip animates on the shared carrier instead of a static rainbow.
+          expect(drawn.find(element => element.type === ComposerPulse)!.props).toMatchObject({ colors, size: 16, name: "Play" });
         } else {
           expect(drawn.find(element => element.type === "Icon")!.props.name).toBe(QUICK_FILTER_ICONS[status]);
         }

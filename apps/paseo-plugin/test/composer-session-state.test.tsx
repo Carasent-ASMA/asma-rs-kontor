@@ -101,39 +101,40 @@ function environment(initialState: string | null = "active") {
 }
 
 describe("composer pulse accessibility and lifetime", () => {
+  const fg = (foreground: boolean, reducedMotion: boolean) => ({ foreground, reducedMotion });
   it("waits for the OS preference and stops/resumes for live reduced motion and background changes", async () => {
     const fixture = environment();
-    const published: boolean[] = [];
+    const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
     expect(published).toEqual([]);
     fixture.resolveMotion(false);
     await Promise.resolve();
     fixture.state("inactive");
-    fixture.state("background");
+    fixture.state("background"); // already backgrounded: no new facts
     fixture.state("active");
     fixture.motion(true);
     fixture.motion(false);
-    expect(published).toEqual([true, false, true, false, true]);
+    expect(published).toEqual([fg(true, false), fg(false, false), fg(true, false), fg(true, true), fg(true, false)]);
     cleanup();
     expect([fixture.motions.size, fixture.states.size]).toEqual([0, 0]);
   });
 
   it("does not let an older preference read undo a live accessibility event", async () => {
     const fixture = environment();
-    const published: boolean[] = [];
+    const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
     fixture.motion(true);
     fixture.resolveMotion(false);
     await Promise.resolve();
-    expect(published).toEqual([]);
+    expect(published).toEqual([fg(true, true)]);
     fixture.motion(false);
-    expect(published).toEqual([true]);
+    expect(published).toEqual([fg(true, true), fg(true, false)]);
     cleanup();
   });
 
   it("ignores preference completion after host switch or unmount", async () => {
     const fixture = environment();
-    const published: boolean[] = [];
+    const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
     cleanup();
     fixture.resolveMotion(false);
@@ -146,7 +147,7 @@ describe("composer pulse accessibility and lifetime", () => {
 
   it("keeps motion disabled when the native preference read fails", async () => {
     const fixture = environment();
-    const published: boolean[] = [];
+    const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
     fixture.rejectMotion(new Error("preference unavailable"));
     await Promise.resolve();
@@ -158,13 +159,13 @@ describe("composer pulse accessibility and lifetime", () => {
 
   it("waits for foreground when the initial native app state is unknown", async () => {
     const fixture = environment(null);
-    const published: boolean[] = [];
+    const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
     fixture.resolveMotion(false);
     await Promise.resolve();
-    expect(published).toEqual([]);
+    expect(published).toEqual([fg(false, false)]);
     fixture.state("active");
-    expect(published).toEqual([true]);
+    expect(published).toEqual([fg(false, false), fg(true, false)]);
     cleanup();
   });
 

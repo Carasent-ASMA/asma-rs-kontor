@@ -125,7 +125,7 @@ async function pulseCheck(width, theme, longList = false) {
       assert.ok(scaleMax<=1.125,`breathing scale stays <=1.12 over a loop, got ${scaleMax}`);
     }
     const strokes = await glyph.locator('svg').evaluateAll(nodes => nodes.map(node => node.getAttribute('stroke')));
-    assert.equal(strokes.length, 6, 'the six pre-rendered gradient frames are mounted');
+    assert.equal(strokes.length, 8, 'the eight pre-rendered gradient frames are mounted');
     assert.ok(strokes.every(value => value && value.startsWith('url(#kontor-rainbow-')), 'every frame paints the rainbow gradient');
     assert.equal(await page.getByTestId('organization-state-counts').getByTestId('composer-running-pulse').count(), 0, 'aggregate badges stay static');
     if (!longList) {

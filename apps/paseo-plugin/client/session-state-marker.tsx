@@ -1,6 +1,5 @@
 import { createContext, useContext } from "react";
 import { ComposerPulse } from "./composer-pulse";
-import { RunningRainbowMark } from "./running-mark";
 import { View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { QUICK_FILTER_ICONS } from "./mobile-quick-filter-options";
@@ -23,7 +22,7 @@ export function SessionStatusIcon({ status, colors, size = 16, session = false }
     {session && status === "running"
       ? <RunningSessionMark colors={colors} size={size} />
       : status === "running"
-        ? <RunningRainbowMark colors={colors} size={size} shape="play" />
+        ? <ComposerPulse colors={colors} size={size} name="Play" />
         : <Icon name={QUICK_FILTER_ICONS[status]} color={sessionStatusInk(status, colors)} size={size} />}
   </View>;
 }

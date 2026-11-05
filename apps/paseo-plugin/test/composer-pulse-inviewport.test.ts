@@ -25,7 +25,7 @@ vi.mock("react", () => ({
   useCallback: (fn: unknown) => fn,
   useMemo: () => undefined,
   useEffect: () => {},
-  useSyncExternalStore: () => false,
+  useSyncExternalStore: () => "00",
 }));
 import { ComposerPulse } from "../client/composer-pulse";
 

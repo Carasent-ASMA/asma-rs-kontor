@@ -99,8 +99,10 @@ describe("mobile quick filter discovery", () => {
     // so a mutant that swaps in ComposerPulse cannot survive here.
     const runningChoice = choices[QUICK_STATUS_FILTERS.indexOf("running")]!;
     const chooserColors = { foreground: "#111111", foregroundMuted: "#555555", surface0: "#ffffff", surface1: "#f8f8f8", surface2: "#eeeeee", accent: "#0060c0", statusDanger: "#b00020", statusWarning: "#805000", statusSuccess: "#006b3c" } as PluginTheme["colors"];
-    expect(walk(runningChoice).find((node) => node.type === RunningRainbowMark)).toMatchObject({ props: { colors: chooserColors, size: 20, shape: "play" } });
+    // D6: the running chooser item animates on the shared carrier with the Play shape.
+    expect(walk(runningChoice).find((node) => node.type === ComposerPulse)).toMatchObject({ props: { colors: chooserColors, size: 20, name: "Play" } });
     expect(walk(runningChoice).some((node) => node.type === "Icon")).toBe(false);
-    expect(walk(tree).some((node) => node.type === ComposerPulse)).toBe(false);
+    expect(walk(tree).some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(walk(tree).some((node) => node.type === RunningRainbowMark)).toBe(false);
   });
 });

@@ -2719,7 +2719,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           testID="sessions-source-banner"
           message={`${staleMessage} ${
             state.inventoryComplete ? "Last complete read" : "Inventory read attempt"
-          }: ${updatedLabel(state.lastUpdatedAt)}.`}
+          }: ${updatedLabel(state.lastUpdatedAt)}. Running sessions show grey until Kontor is live again.`}
           tone={state.status === "error" ? "danger" : "warning"}
           actionLabel="Retry"
           onAction={retry}
