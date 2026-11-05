@@ -362,25 +362,27 @@ function declaredFilters(id: string, entry: unknown, path: string): { filters: D
  * malformed one. A present container of the wrong shape is a configuration problem, not an absent setting.
  */
 function providerEntries(info: Record<string, unknown>, path: string): { entries: ReadonlyMap<string, DeclaredFilters> } | { problem: string } {
-  const merged = new Map<string, DeclaredFilters>();
+  const declarations: { rawId: string; id: string; filters: DeclaredFilters }[] = [];
   for (const key of ["provider", "providers"]) {
     if (!(key in info)) continue;
     const group = record(info[key]);
     if (!group) return { problem: `OpenCode config ${path}: ${key} must be an object.` };
     // Validate every declaration before precedence can skip one, so a malformed alias still fails closed.
-    const declared: { rawId: string; id: string; filters: DeclaredFilters }[] = [];
     for (const [rawId, entry] of Object.entries(group)) {
       const id = normalizeOpenCodeProviderId(rawId), validated = declaredFilters(id, entry, path);
       if ("problem" in validated) return validated;
-      declared.push({ rawId, id, filters: validated.filters });
+      declarations.push({ rawId, id, filters: validated.filters });
     }
-    // Native's legacy normalizer prefers the canonical raw id when both it and its alias are declared, in either
-    // order. The canonical `providers` container is not subject to this preference; it replaces whole entries.
-    const canonical = new Set(declared.filter((entry) => entry.rawId === entry.id).map((entry) => entry.id));
-    for (const entry of declared) {
-      if (key === "provider" && entry.rawId !== entry.id && canonical.has(entry.id)) continue;
-      merged.set(entry.id, entry.filters);
-    }
+  }
+  // A document that declares the canonical spelling of an id keeps it: an alias-spelled declaration of the same
+  // normalized id never replaces or weakens it, whichever container either declaration is in. Canonical
+  // declarations keep their container order (`providers` after `provider`, whole-entry last-wins); an alias is
+  // used only when the document declares no canonical spelling. Validation above still covers a skipped alias.
+  const canonical = new Set(declarations.filter((entry) => entry.rawId === entry.id).map((entry) => entry.id));
+  const merged = new Map<string, DeclaredFilters>();
+  for (const entry of declarations) {
+    if (entry.rawId !== entry.id && canonical.has(entry.id)) continue;
+    merged.set(entry.id, entry.filters);
   }
   return { entries: merged };
 }
