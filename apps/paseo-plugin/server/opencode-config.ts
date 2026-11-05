@@ -305,6 +305,26 @@ export function resourceMatches(resource: string, pattern: string): boolean {
 type Rule = { readonly resource: string; readonly effect: "allow" | "deny" };
 
 /**
+ * One present policy group's `provider.use` rules. A malformed container, entry or recognized rule field is a
+ * source-named problem, never an absent restriction; an action outside POLICY_ACTIONS is not ours to validate and
+ * stays ignored.
+ */
+function policyRules(group: unknown, where: string): { rules: Rule[] } | { problem: string } {
+  if (!Array.isArray(group)) return { problem: `OpenCode config ${where} must be a list of policy objects.` };
+  const rules: Rule[] = [];
+  for (const entry of group) {
+    const rule = record(entry);
+    if (!rule) return { problem: `OpenCode config ${where} entries must be objects.` };
+    if (typeof rule.action !== "string") return { problem: `OpenCode config ${where} entries must state a string action.` };
+    if (!POLICY_ACTIONS.has(rule.action)) continue;
+    if (typeof rule.resource !== "string") return { problem: `OpenCode config ${where} provider.use entries must state a string resource.` };
+    if (typeof rule.effect !== "string" || !EFFECTS.has(rule.effect)) return { problem: `OpenCode config ${where} provider.use entries must state an allow or deny effect.` };
+    rules.push({ resource: rule.resource, effect: rule.effect as "allow" | "deny" });
+  }
+  return { rules };
+}
+
+/**
  * One document's `provider.use` rules, in the order OpenCode builds them: `enabled_providers` (a wildcard deny,
  * then one allow per named provider), `disabled_providers`, then explicit policies.
  */
@@ -319,15 +339,13 @@ function documentRules(info: Record<string, unknown>, path: string): { rules: Ru
     else if (key === "enabled_providers") rules.push({ resource: "*", effect: "deny" });
     else rules.push(...listed.values.map((id) => ({ resource: normalizeOpenCodeProviderId(id), effect: "deny" as const })));
   }
-  const experimental = record(info.experimental), groups = [experimental?.policies, info.policies];
-  for (const group of groups) {
-    if (!Array.isArray(group)) continue;
-    for (const entry of group) {
-      const rule = record(entry);
-      if (!rule || typeof rule.action !== "string" || !POLICY_ACTIONS.has(rule.action) || typeof rule.resource !== "string") continue;
-      if (typeof rule.effect !== "string" || !EFFECTS.has(rule.effect)) continue;
-      rules.push({ resource: rule.resource, effect: rule.effect as "allow" | "deny" });
-    }
+  const experimental = record(info.experimental), groups: { where: string; group: unknown }[] = [];
+  if (experimental && Object.hasOwn(experimental, "policies")) groups.push({ where: `${path}: experimental.policies`, group: experimental.policies });
+  if (Object.hasOwn(info, "policies")) groups.push({ where: `${path}: policies`, group: info.policies });
+  for (const { where, group } of groups) {
+    const parsed = policyRules(group, where);
+    if ("problem" in parsed) return { rules, problem: parsed.problem };
+    rules.push(...parsed.rules);
   }
   return { rules };
 }

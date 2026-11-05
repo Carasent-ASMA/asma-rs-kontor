@@ -230,3 +230,45 @@ describe("audit fail-closed regressions", () => {
     expect(read.selection.filters.get("house")).toEqual({ whitelist: ["one", "three"], blacklist: ["two"] });
   });
 });
+
+/**
+ * AUD-F3: a present policy container or a recognized `provider.use` rule of the wrong shape is a named source
+ * problem, never an absent restriction. A valid restriction hides `deepseek`; replacing only its shape must
+ * withhold the whole route rather than let the hidden model return. Unrelated policy actions stay ignored.
+ */
+describe("AUD-F3 malformed provider-use policies fail closed", () => {
+  const denied = { action: "provider.use", resource: "deepseek", effect: "deny" };
+  const shapes = [
+    { label: "policies as an object", info: { policies: denied } },
+    { label: "experimental.policies as an object", info: { experimental: { policies: denied } } },
+    { label: "policies as null", info: { policies: null } },
+    { label: "experimental.policies as null", info: { experimental: { policies: null } } },
+    { label: "provider.use resource as an array", info: { policies: [{ ...denied, resource: ["deepseek"] }] } },
+    { label: "provider.use effect as an array", info: { policies: [{ ...denied, effect: ["deny"] }] } },
+    { label: "provider.use effect outside allow and deny", info: { policies: [{ ...denied, effect: "permit" }] } },
+    { label: "a non-object policy entry", info: { policies: [null] } },
+    { label: "a policy entry with a non-string action", info: { policies: [{ ...denied, action: 7 }] } },
+  ];
+
+  it.each(shapes)("AUD-F3 withholds when $label", async ({ info }) => {
+    const { root, config } = await freshTree();
+    await writeFile(config, JSON.stringify({ policies: [denied] }));
+    expect(ids(await readProviderCatalog(client, root, { config: host(root) }))).toEqual(["other/allowed"]);
+
+    await writeFile(config, JSON.stringify(info));
+    const read = await readProviderCatalog(client, root, { config: host(root) });
+    expect(ids(read), JSON.stringify(info)).toEqual([]);
+    expect(read.problemFor("opencode"), JSON.stringify(info)).toContain(config);
+  });
+
+  it("AUD-F3 ignores an unrelated action and still applies a valid provider.use rule", async () => {
+    const { root, config } = await freshTree();
+    await writeFile(config, JSON.stringify({ policies: [
+      { action: "mcp.use", resource: 7, effect: false },
+      denied,
+    ] }));
+    const read = await readProviderCatalog(client, root, { config: host(root) });
+    expect(ids(read)).toEqual(["other/allowed"]);
+    expect(read.problemFor("opencode")).toBeNull();
+  });
+});

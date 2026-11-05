@@ -298,7 +298,8 @@ export function keptFeatureValues(features: readonly CreateFeature[], values: Fe
     if (!featureValuesProblem(features, { [key]: value })) kept.push([key, value]);
     else dropped.push(settingLabel(known, key, value));
   }
-  // Own data properties, so an offered `__proto__` setting is kept rather than silently swallowed.
+  // Ordinary owned setting ids are carried as own data properties; `__proto__` is refused by settingIdProblem
+  // with a named problem, so a refused value is named in `dropped` rather than silently swallowed.
   return { kept: Object.fromEntries(kept), dropped };
 }
 
