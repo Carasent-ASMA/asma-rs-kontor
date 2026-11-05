@@ -90,6 +90,15 @@ async function pulseCheck(width, theme, longList = false) {
   try {
     await page.goto(`${server.resolvedUrls.local[0]}?embed=1&scenario=${longList ? 'long-list' : 'compact-icons'}&theme=${theme}`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 30000 });
+    // D2: no per-mark JS scheduling. Instrument timer creation before any mark mounts, so a per-mark
+    // interval clock (M09's 16 ms setValue loop) is counted even though RAF counting stays within bounds.
+    await page.evaluate(() => {
+      window.__kontorTimers = [];
+      for (const name of ["setInterval", "setTimeout"]) {
+        const original = window[name].bind(window);
+        window[name] = (fn, period, ...rest) => { window.__kontorTimers.push({ kind: name, period }); return original(fn, period, ...rest); };
+      }
+    });
     await page.evaluate(async longList => {
       const runtime = await import('/src/host/runtime.ts');
       const chosen = longList ? runtime.fixtureSessions().filter(row => !row.agent.archivedAt).slice(0, 200).map(row => row.agent.id) : ['agt_model_report_0','agt_model_report_1'];
@@ -108,8 +117,16 @@ async function pulseCheck(width, theme, longList = false) {
     const samples = [];
     for (let index = 0; index < 5; index++) { samples.push(await glyph.evaluate(node => ({ transform:getComputedStyle(node).transform, tone:node.querySelector('[data-testid="composer-running-tone"]')?.style.opacity }))); await page.waitForTimeout(180); }
     assert.ok(new Set(samples.map(value => value.transform)).size > 1, 'running mark pulses');
-    assert.ok(new Set(samples.map(value => value.tone)).size > 1, 'running blue/green layers change');
-    assert.deepEqual(await glyph.locator('svg').evaluateAll(nodes => nodes.map(node => node.getAttribute('stroke'))), [theme === 'dark' ? '#9cbfff' : '#245bba', theme === 'dark' ? '#6cb17b' : '#3e704a']);
+    if(longList){ // S3: the breathing scale is capped at 1.12 — sweep one full loop of matrix diagonals.
+      const diagonals=[];
+      for(let sample=0;sample<16;sample++){ const m=await glyph.evaluate(node => getComputedStyle(node).transform); const d=Number((m.match(/^matrix\(([-\d.]+),/)||[])[1]); if(Number.isFinite(d))diagonals.push(d); await page.waitForTimeout(180); }
+      assert.ok(diagonals.length>5,'the breathing transform was sampled over a loop');
+      const scaleMax=Math.max(...diagonals);
+      assert.ok(scaleMax<=1.125,`breathing scale stays <=1.12 over a loop, got ${scaleMax}`);
+    }
+    const strokes = await glyph.locator('svg').evaluateAll(nodes => nodes.map(node => node.getAttribute('stroke')));
+    assert.equal(strokes.length, 6, 'the six pre-rendered gradient frames are mounted');
+    assert.ok(strokes.every(value => value && value.startsWith('url(#kontor-rainbow-')), 'every frame paints the rainbow gradient');
     assert.equal(await page.getByTestId('organization-state-counts').getByTestId('composer-running-pulse').count(), 0, 'aggregate badges stay static');
     if (!longList) {
       const idle = page.getByTestId('sessions-row-agt_model_report_2');
@@ -129,15 +146,37 @@ async function pulseCheck(width, theme, longList = false) {
       const frames = await page.evaluate(() => window.pulseFrames);
       const mean = frames.reduce((sum, frame) => sum + frame.callbacks, 0) / Math.max(1, frames.length);
       assert.ok(mean <= 4, `bounded shared clock: ${mean} callbacks/frame`);
+      // D2: no per-mark JS scheduling. Timer creation is instrumented from before the marks mount, and the
+      // shared clock means every mounted mark shows the same crossfade phase at any instant — a per-mark
+      // interval or timeout clock (M09) drifts apart and fails both checks. Framework-level long-period
+      // keepalives (a single >=1s interval) are not per-mark clocks and are tolerated; per-mark clocks run
+      // at animation periods (16 ms style) and fail the short-period filter.
+      const intervals = await page.evaluate(() => window.__kontorTimers.filter((timer) => timer.kind === "setInterval"));
+      const shortIntervals = intervals.filter((timer) => timer.period < 1000);
+      assert.deepEqual(shortIntervals, [], 'no per-mark intervals are scheduled');
+      assert.ok(intervals.length <= 1, `at most one framework keepalive interval, got ${JSON.stringify(intervals)}`);
+      const framePhases = await page.evaluate(() => {
+        const perFrame = new Map();
+        for (const node of document.querySelectorAll('[data-testid^="composer-running-frame-"]')) {
+          const index = node.getAttribute('data-testid').replace('composer-running-frame-', '');
+          if (!perFrame.has(index)) perFrame.set(index, new Set());
+          perFrame.get(index).add(node.style.opacity);
+        }
+        return [...perFrame.entries()].map(([index, values]) => ({ index, phases: [...values] }));
+      });
+      for (const entry of framePhases) assert.equal(entry.phases.length, 1, `frame ${entry.index} shows one shared phase across marks, got ${entry.phases.length}`);
       report.cases.push({ name:name+'-work', status:'PASS', runningEntries:200, activeNodes:activeBoxes.length, callbacksPerFrame:mean, scope:'RN Web instrumentation; no native performance claim' });
     }
     await page.screenshot({ path:path.join(output,name+'-running.png') });
     await page.emulateMedia({ reducedMotion:'reduce' });
     await expect(tones).toHaveCount(0);
+    const resting = page.getByTestId('composer-running-pulse').first();
+    assert.equal(await resting.locator('svg[stroke^="url(#kontor-rainbow-"]').count(), 1, 'reduced motion keeps the static rainbow, never motion');
     await page.emulateMedia({ reducedMotion:'no-preference' }); await expect(tones.first()).toBeVisible();
     await page.evaluate(async () => (await import('/src/host/runtime.ts')).setHostStatus('offline'));
     await expect(tones).toHaveCount(0);
     assert.equal(await page.getByTestId('composer-running-pulse').count(), 0, 'last-known running does not animate');
+    assert.equal(await page.locator('[data-testid="composer-running-pulse"]').count(), 0, 'no rainbow mark node remains');
     await page.screenshot({ path:path.join(output,name+'.png') });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors,[]);

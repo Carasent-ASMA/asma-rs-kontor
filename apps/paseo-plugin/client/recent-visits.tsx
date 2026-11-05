@@ -1,7 +1,8 @@
-import { Text, View } from "react-native";
+import { Platform, Text, View } from "react-native";
 import type { Colors } from "./page-controls";
 import { readSavedEntries, RECENT_KEPT, type RecentRecord, type RecentState } from "./recent-sessions";
 import type { DirectoryEntry } from "./session-directory";
+import { SessionPulseContext } from "./session-state-marker";
 import { persistenceNote, sessionPlace, SwitchRowItem } from "./start-switch-sheet";
 
 /** What Recent keeps against what this view shows. A kept visit missing from this host's current list stays kept. */
@@ -23,9 +24,9 @@ export function recentEmptyMessage(record: RecentRecord): string {
  * time and host are unknown, so they are listed apart, in stored order, never counted or sorted as visits; opening one
  * records a real visit. `known` is this host's current list, `candidates` what search and filters leave in it.
  */
-export function RecentFooter({ recent, known, candidates, shown, colors, tall, onOpen }: {
+export function RecentFooter({ recent, known, candidates, shown, colors, tall, onOpen, live }: {
   recent: RecentState; known: readonly DirectoryEntry[]; candidates: readonly DirectoryEntry[]; shown: number;
-  colors: Colors; tall: boolean; onOpen(entry: DirectoryEntry): void;
+  colors: Colors; tall: boolean; onOpen(entry: DirectoryEntry): void; live: boolean;
 }) {
   const { kept, hidden, absent } = recentAccount(recent.record, known, shown);
   const saved = readSavedEntries(recent.record);
@@ -45,7 +46,14 @@ export function RecentFooter({ recent, known, candidates, shown, colors, tall, o
     {saved.ids.length ? <View testID="sessions-recent-saved" style={{ gap: 2, marginTop: 8 }}>
       <Text accessibilityRole="header" style={{ ...muted, color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Saved entries · visit time and host unknown</Text>
       <Text style={muted}>Kept from an earlier version of Kontor. They are not visits and are not counted in Recent; opening one adds it.</Text>
-      {savedRows.map((entry) => <SwitchRowItem key={entry.id} role="button" row={{ entry, detail: `Saved entry · ${sessionPlace(entry)}` }} colors={colors} tall={tall} onPress={() => onOpen(entry)} />)}
+      {/* The saved entry's current status comes from this directory, so it shares the rows' live mark; only the
+        visit time and host stay unknown. On the web each mark observes its own viewport, so a visible live
+        saved entry animates like any live row. On native the footer has no measured visibility signal (the
+        screen's viewability covers list items, not the footer), so saved entries stay conservatively static
+        there on purpose — a live one shows the static rainbow, never muted ink; last known stays muted. */}
+      <SessionPulseContext.Provider value={{ live, visible: Platform.OS === "web" }}>
+        {savedRows.map((entry) => <SwitchRowItem key={entry.id} role="button" row={{ entry, detail: `Saved entry · ${sessionPlace(entry)}` }} colors={colors} tall={tall} onPress={() => onOpen(entry)} />)}
+      </SessionPulseContext.Provider>
       {savedHidden ? <Text style={muted}>{`${savedHidden} hidden by search, scope or filters.`}</Text> : null}
       {savedAbsent.length ? <Text testID="sessions-recent-saved-absent" selectable style={muted}>{`${savedAbsent.length} not found in this host's current list: ${savedAbsent.join(", ")}`}</Text> : null}
     </View> : null}

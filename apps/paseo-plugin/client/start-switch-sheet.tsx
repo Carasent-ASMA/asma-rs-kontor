@@ -1,6 +1,6 @@
 import type { TakeoverOutcome } from "../shared/session-lifecycle";
 import { SummaryAttachmentHelp } from "./summary-attachments";
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useHosts, useRpc, type PluginButtonContentProps, type PluginHostSummary, type PluginOpenScreenInput } from "@getpaseo/plugin/client";
@@ -14,6 +14,8 @@ import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
 import { StateToolbar } from "./mobile-quick-toolbar";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS } from "./mobile-quick-filter-options";
+import { RunningRainbowMark } from "./running-mark";
+import { useRowVisibility, type MeasurableView } from "./row-visibility";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { OrganizationRowView } from "./organization-row";
 import { Action, COARSE_POINTER, IconButton, type Colors } from "./page-controls";
@@ -148,9 +150,10 @@ function SwitchStrip({ colors, status, counts, more, onStatus, onMore, onKontor 
 function MorePanel({ colors, status, counts, onStatus, onArchived }: {
   colors: Colors; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>; onStatus(status: StatusFilter): void; onArchived(): void;
 }) {
-  const item = (key: string, label: string, icon: string, help: string, selected: boolean, onPress: () => void, count?: string, iconColor?: string) => <MoreItem key={key} testID={`kontor-switch-more-${key}`}
-    label={label} icon={icon} iconColor={iconColor} help={help} selected={selected} count={count} colors={colors} onPress={onPress} />;
-  const state = (filter: StatusFilter, iconColor?: string) => item(filter, quickFilterLabel(filter), QUICK_FILTER_ICONS[filter], stateHelp(filter, counts[filter]), status === filter, () => onStatus(filter), counts[filter]?.text, iconColor);
+  const item = (key: string, label: string, icon: string, help: string, selected: boolean, onPress: () => void, count?: string, iconColor?: string, iconNode?: ReactNode) => <MoreItem key={key} testID={`kontor-switch-more-${key}`}
+    label={label} icon={icon} iconNode={iconNode} iconColor={iconColor} help={help} selected={selected} count={count} colors={colors} onPress={onPress} />;
+  const state = (filter: StatusFilter, iconColor?: string) => item(filter, quickFilterLabel(filter), QUICK_FILTER_ICONS[filter], stateHelp(filter, counts[filter]), status === filter, () => onStatus(filter), counts[filter]?.text, iconColor,
+    filter === "running" ? <RunningRainbowMark colors={colors} size={16} shape="play" /> : undefined);
   const group = { flexDirection: "row", flexWrap: "wrap", gap: 4 } as const;
   return <View testID="kontor-switch-more-panel" style={{ gap: 8 }}>
     <View role="group" accessibilityLabel="All states" style={group}>{QUICK_STATUS_FILTERS.map((filter) => state(filter, sessionStatusInk(filter, colors)))}</View>
@@ -161,13 +164,13 @@ function MorePanel({ colors, status, counts, onStatus, onArchived }: {
   </View>;
 }
 
-function MoreItem({ label, icon, iconColor, help, selected, count, colors, onPress, testID }: { label: string; icon: string; iconColor?: string; help: string; selected: boolean; count?: string; colors: Colors; onPress(): void; testID: string }) {
+function MoreItem({ label, icon, iconNode, iconColor, help, selected, count, colors, onPress, testID }: { label: string; icon: string; iconNode?: ReactNode; iconColor?: string; help: string; selected: boolean; count?: string; colors: Colors; onPress(): void; testID: string }) {
   const hint = useActionHelp(help);
   return <Pressable {...hint.bindings} testID={testID} accessibilityRole="button" accessibilityLabel={count ? `${label}, ${count}` : label} aria-pressed={selected} accessibilityState={{ selected }}
     onPress={() => { hint.dismiss(); onPress(); }}
     style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ flexBasis: "48%", flexGrow: 1, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8,
       borderRadius: 7, borderWidth: selected || focused ? 2 : 1, borderColor: selected || focused ? colors.accent : colors.border, backgroundColor: pressed || selected ? colors.surface2 : colors.surface1 })}>
-    <Icon name={icon} size={16} color={iconColor ?? colors.foreground} />
+    {iconNode ?? <Icon name={icon} size={16} color={iconColor ?? colors.foreground} />}
     <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 12 }}>{label}</Text>
     {count ? <Text style={{ color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{count}</Text> : null}
   </Pressable>;
@@ -247,6 +250,19 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const create = useCreateOptions(hostStatus === "online", initialScope);
   const archive = useStartSwitchArchive(hostId, directory, hostStatus === "online");
   const clock = useClock();
+  // Native scroll bodies give running marks no viewport observer, so measured row bounds gate their motion
+  // the same way Sessions' FlatList viewability does; web keeps each mark's own observer. The host-scrolls
+  // the popover/bottom-sheet body itself and gives no scroll signal, so on native those rows are NEVER known
+  // visible: they stay conservatively static (D3 — a mark animates only when live AND known visible).
+  const nativeGated = Platform.OS !== "web";
+  const nativeHostScrolls = popover && nativeGated;
+  const pulseGate = useRowVisibility();
+  const pulseBody = useRef<ScrollView>(null);
+  const pulseEvaluate = useCallback(() => {
+    if (!nativeGated || nativeHostScrolls) return;
+    // react-native's ScrollView type omits measureInWindow, but every mounted instance carries it.
+    pulseGate.measure(pulseBody.current as MeasurableView | null);
+  }, [nativeGated, nativeHostScrolls, pulseGate]);
   const entries = archive.directory.entries;
   const recentIds = recentRows(entries, recent.record).map((row) => row.entry.id);
   const opened = new Map(recent.record.visits.map((visit) => [visit.id, visit.at]));
@@ -298,11 +314,19 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
         perform: () => archive.onArchive(entry) },
     ];
   };
-  const row = (entry: DirectoryEntry, testID?: string) => <DenseSessionRow key={entry.id} testID={testID} entry={entry} colors={colors} clock={clock} opened={opened.get(entry.id) ?? null}
-    current={entry.id === currentId} totals={totals.get(entry.id) ?? null} onSelectStart={entry.archivedAt === null ? () => select(entry) : undefined}
-    mode={selection.selecting ? { kind: "select", selected: selection.selected.includes(entry.id), unavailable: entry.archivedAt !== null ? "Archived sessions are not selected." : null }
-      : { kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={actionsFor(entry)} /> }}
-    onPress={() => selection.selecting ? select(entry) : onOpen(entry)} />;
+  const row = (entry: DirectoryEntry, testID?: string) => {
+    const inner = <DenseSessionRow key={entry.id} testID={testID} entry={entry} colors={colors} clock={clock} opened={opened.get(entry.id) ?? null}
+      current={entry.id === currentId} totals={totals.get(entry.id) ?? null} onSelectStart={entry.archivedAt === null ? () => select(entry) : undefined}
+      mode={selection.selecting ? { kind: "select", selected: selection.selected.includes(entry.id), unavailable: entry.archivedAt !== null ? "Archived sessions are not selected." : null }
+        : { kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={actionsFor(entry)} /> }}
+      onPress={() => selection.selecting ? select(entry) : onOpen(entry)} />;
+    if (!nativeGated || nativeHostScrolls) return inner;
+    return <View key={entry.id} testID={testID ? `${testID}-gate` : `session-row-gate-${entry.id}`}
+      ref={(node) => { if (node) pulseGate.register(entry.id, node); else pulseGate.forget(entry.id); }}
+      onLayout={pulseEvaluate}>
+      <SessionPulseContext.Provider value={{ live: directory.live, visible: pulseGate.visible.has(entry.id) }}>{inner}</SessionPulseContext.Provider>
+    </View>;
+  };
   const current = currentId === null ? null : directory.entries.find((entry) => entry.id === currentId && (currentWorkspaceId === undefined || entry.workspaceId === currentWorkspaceId));
   const sessionTitle = currentId === null ? "Start or switch session" : current?.title.trim() || "Untitled session";
   const headingTitle = mode === "new" ? "New lead" : sessionTitle;
@@ -393,7 +417,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       header={<><IconButton label="Back to sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />{heading}</>} />
     // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
     : popover ? <View {...list}>{items}</View>
-    : <ScrollView {...list} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
+    : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate} style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
   // Board D1's sticky bar under the list, and the sheets the row menu and the bar open.
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
   const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure}
@@ -409,7 +433,10 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       selection.remove(archived); setBulkOpen(false);
     }} /> : null}
   </>;
-  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : sessionTitle, header, body: <SessionPulseContext.Provider value={{ live: directory.live, visible: true }}>{body}{layers}</SessionPulseContext.Provider>, footer, dismiss };
+  // The outer provider is the conservative fallback for every descendant the per-row gate does not wrap
+  // (source-picker rows, mode bodies). On the web each mark observes its own viewport; on native an
+  // unmeasured descendant is not known visible, so it stays static.
+  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : sessionTitle, header, body: <SessionPulseContext.Provider value={{ live: directory.live, visible: Platform.OS === "web" }}>{body}{layers}</SessionPulseContext.Provider>, footer, dismiss };
 }
 
 /** Board C1's Details for a switcher row: its full values, read-only. Kontor's own Details adds placement, plan and retirement. */

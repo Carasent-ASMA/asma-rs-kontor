@@ -58,7 +58,8 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput",
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: object) => { model.directoryArgs.push(args); return { state: model.directory, refresh: () => {} }; } }));
 
-import { createAvailability, popoverBodyHeight, StartSwitchPopover, StartSwitchSheet, switchList, switchRows } from "../client/start-switch-sheet";
+import { SessionPulseContext } from "../client/session-state-marker";
+import { createAvailability, popoverBodyHeight, StartSwitchPopover, StartSwitchSheet, switchList, switchRows, useStartSwitch } from "../client/start-switch-sheet";
 import { NewLsaForm } from "../client/new-lsa-form";
 import { DenseSessionRow } from "../client/dense-session-row";
 import { OrganizationRowView } from "../client/organization-row";
@@ -209,6 +210,59 @@ describe("Start or switch sheet", () => {
     expect(byTestId(row, "session-actions-agent-a")?.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "Actions for LSA • ASMA-1 • Route", "aria-haspopup": "menu" });
     press(byTestId(row, "session-row-body"));
     expect(s.onOpen).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "agent-a" }));
+  });
+
+  it("gates native row motion on measured visibility, and leaves web rows to the mark's own observer", () => {
+    model.platform = "ios";
+    const native = sheet();
+    native.render();
+    // Every row draws behind a measuring gate: until a row measures into the viewport it stays static,
+    // so offscreen marks never animate (D3) and an always-visible mutant cannot survive here.
+    const gates = native.tree.filter((node) => typeof node.props.testID === "string" && node.props.testID.includes("-gate"));
+    expect(gates.length).toBeGreaterThan(0);
+    for (const gate of gates) {
+      expect(gate.props.ref).toBeTypeOf("function");
+      expect(gate.props.onLayout).toBeTypeOf("function");
+      const provider = elements(gate).find((node) => node.type === SessionPulseContext.Provider || node.type === SessionPulseContext)!;
+      expect(provider.props.value).toMatchObject({ live: true, visible: false });
+    }
+    // The sheet's own scroll body carries the measurement wiring the gate evaluates on.
+    const list = byTestId(native.tree, "kontor-switch-list")!;
+    expect(list.props.onScroll).toBeTypeOf("function");
+    expect(list.props.onLayout).toBeTypeOf("function");
+    // The outer fallback provider keeps unmeasured descendants (source-picker rows, mode bodies) static on
+    // native: nothing animates before it is known visible.
+    const nativeFallback = elements(native.tree).find((node) => node.type === SessionPulseContext.Provider || node.type === SessionPulseContext)!;
+    expect(nativeFallback.props.value).toMatchObject({ live: true, visible: false });
+    // Web keeps each mark's own viewport observer: no gate wrappers, and the body provider stays visible.
+    model.platform = "web";
+    const web = sheet();
+    web.render();
+    expect(web.tree.filter((node) => typeof node.props.testID === "string" && node.props.testID.includes("-gate"))).toHaveLength(0);
+    const webProvider = elements(web.tree).find((node) => node.type === SessionPulseContext.Provider || node.type === SessionPulseContext)!;
+    expect(webProvider.props.value).toMatchObject({ live: true, visible: true });
+  });
+
+  it("keeps native popover rows conservatively static: the host owns that scroll and gives no signal", () => {
+    // F3/S4: on native the popover body is host-scrolled, so no row can be measured; every row inherits the
+    // conservative fallback (visible:false) and never animates — before and after the host scrolls. The
+    // hook runs exactly as StartSwitchPopover runs it, with popover:true.
+    model.platform = "ios";
+    recordVisit("host-a", "agent-a", Date.now() - 60_000);
+    const onOpen = vi.fn(), onOpenCreated = vi.fn(() => ({ ok: true } as const)), onShowView = vi.fn(), onClose = vi.fn();
+    const all = { compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
+      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen, onOpenCreated, onShowView, onClose, popover: true as const };
+    let popoverTree: Element[] = [];
+    const render = () => { model.cursor = 0; model.effect = 0; popoverTree = elements(useStartSwitch(all).body); return popoverTree; };
+    render();
+    expect(popoverTree.filter((node) => typeof node.props.testID === "string" && node.props.testID.includes("-gate"))).toHaveLength(0);
+    const fallback = elements(popoverTree).find((node) => node.type === SessionPulseContext.Provider || node.type === SessionPulseContext)!;
+    expect(fallback.props.value).toMatchObject({ live: true, visible: false });
+    // The web popover keeps the mark's own observer (visible fallback), unchanged.
+    model.platform = "web";
+    render();
+    const webFallback = elements(popoverTree).find((node) => node.type === SessionPulseContext.Provider || node.type === SessionPulseContext)!;
+    expect(webFallback.props.value).toMatchObject({ live: true, visible: true });
   });
 
   it("orders a row's menu as the board does, keeps unsupported operations listed with their reason, and runs none until one is chosen", async () => {

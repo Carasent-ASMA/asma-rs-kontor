@@ -3436,7 +3436,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <TextAction testID="sessions-provider-show-error" label="Show Error" accessibilityLabel="Show all error sessions" colors={colors} compact={compact} onPress={() => updateFilter({ status: "error" })} />
   </View> : null;
   const recentFooter = view.status === "recent" && !peek ? <RecentFooter recent={recent} known={availability.entries} candidates={candidates} shown={results.length}
-    colors={colors} tall={compact || COARSE_POINTER} onOpen={handleOpen} /> : null;
+    colors={colors} tall={compact || COARSE_POINTER} onOpen={handleOpen} live={state.live} /> : null;
   // Only a workspace list failure stays below the list; the routine read note is in Filters.
   const workspaceFooter = state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null
     : <Text testID="sessions-footer" style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}>{workspaceNote}.</Text>;

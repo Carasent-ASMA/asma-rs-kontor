@@ -55,6 +55,7 @@ import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolba
 import { SessionLayoutControl } from "../client/session-layout-control";
 import { SwitchRowItem } from "../client/start-switch-sheet";
 import { RecentFooter } from "../client/recent-visits";
+import { SessionPulseContext, SessionStateMarker } from "../client/session-state-marker";
 import { SessionsScreen } from "../client/sessions-screen";
 import type { DirectoryState } from "../client/session-directory";
 import { clearSessionViews, patchSessionView, readSessionView } from "../client/session-view-store";
@@ -145,6 +146,27 @@ describe("Recent in Sessions", () => {
     expect(listedIds()).toEqual(["s-5"]);
     expect(walk(byTestID("sessions-recent-saved")[0]).some((element) => element.type === SwitchRowItem)).toBe(false);
     expect(values.get("kontor.recent@1")).toBe(legacy);
+  });
+
+  it("draws a live running saved entry with the directory's live mark, like any live row", () => {
+    fake.state = ready({ entries: ENTRIES.map((entry) => entry.id === "s-0" ? sessionEntry("s-0", { title: "Session 0", status: "running" }) : entry) });
+    const legacy = JSON.stringify({ clearedAt: null, visits: [{ id: "s-0", at: 1 }] });
+    configureRecentStorage({ read: (key) => new Map([["kontor.recent@1", legacy]]).get(key), write: () => undefined });
+    mount();
+    const saved = byTestID("sessions-recent-saved")[0]!;
+    // The saved row sits under a provider that carries the directory's live state; the old muted Play read the default.
+    const savedProvider = walk(saved).find((element) => element.type === SessionPulseContext.Provider || element.type === SessionPulseContext);
+    expect(savedProvider).toBeDefined();
+    expect(savedProvider!.props.value).toMatchObject({ live: true });
+    const savedRowElement = walk(saved).find((element) => element.type === SwitchRowItem && (element.props.row as { entry: { id: string } }).entry.id === "s-0")!;
+    const savedRow = SwitchRowItem(savedRowElement.props as Parameters<typeof SwitchRowItem>[0]);
+    const runningSaved = walk(savedRow).find((element) => element.type === SessionStateMarker)!;
+    expect(runningSaved.props).toMatchObject({ state: "running", session: true });
+    // Control: an ordinary live running result row carries the same live provider.
+    const list = byTestID("sessions-list")[0]!;
+    const drawn = (list.props.renderItem as (input: { item: unknown }) => unknown)({ item: { kind: "result", entry: (fake.state as DirectoryState).entries.find((entry) => entry.id === "s-0") } });
+    const rowProvider = walk(drawn).find((element) => element.type === SessionPulseContext.Provider || element.type === SessionPulseContext);
+    expect(rowProvider!.props.value).toMatchObject({ live: true });
   });
 
   it("puts compact Search first in the row with Select and layout, and leaves it out of the quick filters", () => {
