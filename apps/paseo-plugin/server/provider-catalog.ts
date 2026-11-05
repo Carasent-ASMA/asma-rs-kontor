@@ -53,7 +53,9 @@ export type CatalogOptions = {
 };
 
 function overrideEntry(overrides: ProviderOverrides | null | undefined, id: string): Record<string, unknown> | null {
-  const entry = overrides && id in overrides ? overrides[id] : null;
+  // Only an entry the configuration itself declares is an override: a route id that happens to name an inherited
+  // Object.prototype member (`__proto__`) must not borrow that member as its `extends`/`env` record.
+  const entry = overrides && Object.hasOwn(overrides, id) ? overrides[id] : null;
   return typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry as Record<string, unknown> : null;
 }
 

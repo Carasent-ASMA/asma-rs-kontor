@@ -38,9 +38,14 @@ export function modelWords(model: string): string[] {
   return kept.length ? kept : all;
 }
 
+/** The table's own entry for a model word; an inherited Object.prototype name is not a family or an author. */
+function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 /** The vendor a family word names, if it names one: `glm` → Z.ai, `claude` → Anthropic. */
 export function modelFamily(part: string): readonly [Vendor, string] | undefined {
-  return FAMILY[part] ?? WORDS[part];
+  return ownEntry(FAMILY, part) ?? ownEntry(WORDS, part);
 }
 
 /**
@@ -50,7 +55,10 @@ export function modelFamily(part: string): readonly [Vendor, string] | undefined
 export function modelVendor(model: string | null): Vendor {
   if (!model) return "unknown";
   const id = model.toLocaleLowerCase(), segments = id.split("/");
-  if (segments[0] === "openrouter" && segments.length > 2) return AUTHORS[segments[1]!] ?? (segments[1] === "openrouter" ? "unknown" : modelVendor(segments.slice(2).join("/")));
+  if (segments[0] === "openrouter" && segments.length > 2) {
+    const author = ownEntry(AUTHORS, segments[1]!);
+    return author ?? (segments[1] === "openrouter" ? "unknown" : modelVendor(segments.slice(2).join("/")));
+  }
   // OpenCode's own ids name the provider first: `anthropic/sonnet-5` is Anthropic's model and `openai/…` is
   // OpenAI's, exactly as `openrouter/<author>/…` names the author.
   if (segments.length > 1 && (segments[0] === "openai" || segments[0] === "anthropic")) return segments[0];
@@ -60,7 +68,7 @@ export function modelVendor(model: string | null): Vendor {
   // OpenAI's speech families omit it too: `whisper-large-v3`, `tts-1`.
   if (/(^|\/)(whisper|tts)(-|$)/.test(id)) return "openai";
   for (const part of modelWords(id)) if (ANTHROPIC_SERIES.has(part)) return "anthropic";
-  for (const part of modelWords(id)) if (WORDS[part]) return WORDS[part]![0];
+  for (const part of modelWords(id)) { const word = ownEntry(WORDS, part); if (word) return word[0]; }
   for (const [name, [vendor]] of Object.entries(FAMILY)) if (id.includes(name)) return vendor;
   if (id.includes("z-ai") || id.includes("zhipu")) return "zai";
   if (id.includes("gemma")) return "google";

@@ -48,7 +48,9 @@ const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
 };
 
 export function normalizeOpenCodeProviderId(id: string): string {
-  return PROVIDER_ALIASES[id] ?? id;
+  // Only the alias map's own entries are aliases: an unknown id such as `constructor` or `__proto__` keeps its
+  // string unchanged, as native OpenCode does, instead of reading an inherited Object.prototype member.
+  return Object.hasOwn(PROVIDER_ALIASES, id) ? PROVIDER_ALIASES[id]! : id;
 }
 
 /**
