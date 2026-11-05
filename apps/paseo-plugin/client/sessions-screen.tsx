@@ -2671,6 +2671,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     state.status === "stale" ||
     state.status === "error" ||
     (state.status === "ready" && !state.live && state.staleReason !== null);
+  // The catalog fallback: a shared catalog answered, so the screen explains its grey rows calmly
+  // (R3) and treats its own reading as the current one while it lasts (D2-N1).
+  const catalogFallback = state.source === "catalog" && state.status === "ready" && !state.live && state.staleReason === null;
+  const catalogRunning = catalogFallback && state.entries.some((entry) => entry.status === "running");
   const navigationMissing = navigation === undefined;
 
   const focusProps = { disabled: !compact && toolbarCollapsed, onBlur: handleToolbarControlBlur, onFocus: handleToolbarControlFocus };
@@ -2727,10 +2731,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           {...noticeProps}
         />
       ) } : null,
-    // The catalog fallback (ready, not live, nothing stale) mutes running rows without any banner:
-    // D6 says the screen still explains the grey, calmly — the catalog IS answering, so this is not
-    // a warning. Same accent voice as the "Native · Catalog" pill.
-    !state.live && !showBanner && state.entries.some((entry) => entry.status === "running") ? { keys: [`catalog:${state.source}`], summary: "Sessions from the shared catalog", tone: "info", node: (
+    // R3: this notice belongs ONLY to the catalog fallback — source "catalog", status "ready",
+    // staleReason null, not live, with at least one running entry. A cold direct read reaches the
+    // same not-live shape while its first page arrives (status "loading", source "direct" or
+    // undefined); there the pill says "Native · Reading" and this sentence would be false. D6 says
+    // the screen still explains the grey where it is true, calmly — the catalog IS answering, so
+    // this is not a warning. Same accent voice as the "Native · Catalog" pill.
+    catalogRunning ? { keys: ["catalog"], summary: "Sessions from the shared catalog", tone: "info", node: (
         <Banner
           key="catalog"
           testID="sessions-source-banner"
@@ -2766,8 +2773,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     recovery.setHidden(keys.filter((key) => key.startsWith("archive:")));
   };
   // A notice missing while its source reads (first load, refresh, save, Refresh status) is unread, not absent; navigation is always read.
+  // While the screen sits on the catalog fallback that reading is the current one, so a hidden
+  // catalog notice stays hidden even when the running count drops and rises again; leaving the
+  // fallback completes the reading and forgets it, so a later fallback announces itself again (D2-N1).
   const noticeRead: Readonly<Record<string, boolean>> = {
     source: state.status !== "idle" && state.status !== "loading",
+    catalog: !catalogFallback,
     settings: organization?.state.status !== "loading",
     save: !organization?.state.saving,
     // The archive state still names the previous host for one render after a switch, so only this host's list counts,
@@ -3552,13 +3563,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           // The row menu owns favorites, Details and Archive, so the tree adds only its indent, guides and arrange handle.
           // R1: the badge's not-live condition is the same state.live the session rows' provider
           // below carries — NOT the banner (a catalog fallback has no banner and still mutes).
-          return <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" }}><OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
+          return <OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={!state.live} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
             onMove={(distance) => moveRow(item, distance)}>
             {pulseRow}
-          </OrganizationRowView></SessionPulseContext.Provider>;
+          </OrganizationRowView>;
         }}
         ListEmptyComponent={
           <View

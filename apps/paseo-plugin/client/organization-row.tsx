@@ -36,8 +36,9 @@ export function groupStateHelp(aggregate: OrganizationAggregate, contextual = fa
 
 /** One primary state and its share, at every depth and width; the row owns focus and full help. */
 export function StateBadge({ state, aggregate, colors, compact, stale }: { state: OrganizationState | null; aggregate: OrganizationAggregate; colors: Colors; compact: boolean; stale?: boolean }) {
-  // R1: the caller passes the same not-live condition its session rows gate on, so this label
-  // always matches the badge's muting.
+  // R1: the caller passes the same not-live condition its session rows gate on, so on the sessions
+  // screen this label matches the muting; the start-switch tree passes nothing and mutes through
+  // the surrounding context instead (drawing no label of its own).
   if (state === null) return <Text style={{ color: colors.foregroundMuted, fontSize: 9, opacity: 0.75 }}>No sessions</Text>;
   const count = leadingStates(aggregate, 1)[0]!.count;
   return <View testID="organization-state-counts" style={{ alignItems: "flex-end", flexShrink: 0 }}>
@@ -81,7 +82,7 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   arranging: boolean; selected: boolean; favorite: boolean;
   /** The sessions were not read live; a Role header calls its states last known. Callers pass their
    * not-live condition — on the sessions screen the same state.live its session rows gate on (R1);
-   * undefined defers to the surrounding SessionPulseContext liveness. */
+   * undefined defers to the surrounding SessionPulseContext liveness (start-switch mutes there). */
   stale?: boolean;
   /** Show in tree retains surrounding sessions outside the result filters. */
   contextual?: boolean;

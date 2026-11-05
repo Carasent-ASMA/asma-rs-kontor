@@ -88,7 +88,7 @@ export function NoticeAction({ icon, accessibilityLabel, help, colors, onPress, 
 
 /** Icon and count for the hidden tray; its name and deliberate help retain every notice summary. */
 export function NoticesButton({ notices, colors, onPress, ref }: { notices: readonly Notice[]; colors: Colors; compact: boolean; onPress: () => void; ref?: Ref<View> }) {
-  // The calmest current notice sets the tray's voice: danger first, then warning, then the catalog's info accent.
+  // The tray's voice is its most severe current notice: danger, then warning, then the catalog's info accent.
   const ink = notices.some((notice) => notice.tone === "danger") ? colors.statusDanger
     : notices.some((notice) => notice.tone === "warning") ? colors.statusWarning : colors.accent;
   const summary = notices.map((notice) => notice.summary).join("; ");

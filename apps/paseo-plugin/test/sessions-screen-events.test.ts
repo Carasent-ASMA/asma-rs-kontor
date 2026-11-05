@@ -322,6 +322,7 @@ import { SessionLayoutControl } from "../client/session-layout-control";
 import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { indentOf, StateBadge } from "../client/organization-row";
+import { NoticesButton } from "../client/notice-tray";
 import { SessionPulseContext, SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
 import { ComposerPulse } from "../client/composer-pulse";
 import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
@@ -3451,26 +3452,6 @@ describe("independent Layout, Group by and exact scope", () => {
     expect(String(banner.props.message)).toContain("Running sessions show grey until Kontor is live again.");
   });
 
-  it("projects the directory's live flag over the organization rows' badge gate, live and last known (LSA-R2-S1)", () => {
-    directory.state = {
-      ...emptyDirectoryState(),
-      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
-      source: "catalog", status: "ready", live: true, inventoryComplete: true, lastUpdatedAt: 1,
-    };
-    patchSessionView("host-a", { grouping: "hierarchy" });
-    renderScreen();
-    const orgProviderValue = () => {
-      const element = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: groupRows()[0] });
-      // The organization row's own wrapper — the badge gate — not the session row's inner provider.
-      expect(element.type).toBe(SessionPulseContext.Provider);
-      return (element.props.value as { live: boolean }).live;
-    };
-    expect(orgProviderValue()).toBe(true);
-    directory.state = { ...(directory.state as object), live: false, staleReason: "The Paseo host is disconnected. Showing the last inventory." };
-    renderScreen();
-    expect(orgProviderValue()).toBe(false);
-  });
-
   /** The badge subtree of one organization row, drawn all the way down to the mark: the row element,
    * then StateBadge, then SessionStateMarker, then SessionStatusIcon. Each level is invoked the way
    * the harness draws components; the marker reads the pulse context through the react mock. */
@@ -3483,7 +3464,25 @@ describe("independent Layout, Group by and exact scope", () => {
     return walk(leaf);
   }
 
-  it("mutes a catalog-ready Running-led badge exactly when its own rows mute: the context is the one gate (S1/R1)", () => {
+  /** One listed session row's mark subtree. The mark sits a fixed chain deep
+   * (DenseSessionRow → SessionStateMarker → SessionStatusIcon → RunningSessionMark), each invoked
+   * here so the walk reaches the ComposerPulse/Icon it renders; the marker reads the pulse context
+   * through the react mock. */
+  function rowMarksOf(id: string): ElementLike[] {
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === id)!;
+    const invoke = (node: ElementLike): ElementLike => (node.type as (props: never) => ElementLike)(node.props as never);
+    const tree = walk(drawItem(row));
+    const marker = tree.find((node) => node.type === SessionStateMarker);
+    if (!marker) return tree;
+    const icon = invoke(marker);
+    const iconTree = walk(invoke(icon));
+    const mark = iconTree.find((node) => (node.type as { name?: string }).name === "RunningSessionMark");
+    return mark ? [...tree, ...iconTree, ...walk(invoke(mark))] : [...tree, ...iconTree];
+  }
+
+  const hasGreySentence = () => walk(harness.current()).some((node) => typeof node.props.message === "string" && String(node.props.message).includes("stay grey while this list comes from the shared catalog"));
+
+  it("mutes a catalog-ready Running-led badge and its session rows until the list is live again (S1/R1)", () => {
     const catalogReady = {
       ...emptyDirectoryState(),
       entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
@@ -3492,17 +3491,26 @@ describe("independent Layout, Group by and exact scope", () => {
     directory.state = catalogReady;
     patchSessionView("host-a", { grouping: "hierarchy" });
     renderScreen();
-    // The catalog fallback has no banner (staleReason null) and staleReason is null, so the badge's
-    // not-live condition comes from the same state.live the rows read — the banner is not involved.
+    expandAll();
+    // The harness's pulse cell mirrors the value the screen's providers carry: not live here.
+    pulseContext.current = { live: false, visible: true };
+    // The catalog fallback has no banner (staleReason null), so the badge's not-live condition comes
+    // from the same state.live the rows read — the banner is not involved.
     const muted = orgBadgeOf(groupRows()[0] as GroupRow);
     expect(muted.some((node) => node.type === ComposerPulse)).toBe(false);
     expect(muted.find((node) => node.type === "Icon")!.props).toMatchObject({ color: colors.foregroundMuted });
-    // Live directory: the same badge rides the animated carrier again.
+    // The session rows under the group are muted with it (R1: they mute exactly together).
+    expect(rowMarksOf("busy").some((node) => node.type === ComposerPulse)).toBe(false);
+    // Live directory: the same badge and the same rows ride the animated carrier again.
     directory.state = { ...catalogReady, live: true };
     renderScreen();
+    expandAll();
+    pulseContext.current = { live: true, visible: true };
     const live = orgBadgeOf(groupRows()[0] as GroupRow);
     expect(live.some((node) => node.type === ComposerPulse)).toBe(true);
     expect(live.some((node) => node.type === "Icon")).toBe(false);
+    const liveRowMarks = rowMarksOf("busy");
+    expect(liveRowMarks.some((node) => node.type === ComposerPulse)).toBe(true);
   });
 
   it("explains the catalog fallback's grey in a calm notice, and says nothing on a live list (R2)", () => {
@@ -3521,6 +3529,105 @@ describe("independent Layout, Group by and exact scope", () => {
     // A live list carries no such notice.
     directory.state = { ...(directory.state as object), live: true };
     renderScreen();
-    expect(walk(harness.current()).some((node) => typeof node.props.message === "string" && String(node.props.message).includes("grey"))).toBe(false);
+    expect(hasGreySentence()).toBe(false);
+  });
+
+  it("says nothing on a cold direct read: the sentence belongs to the catalog fallback alone (D2-S1/R3)", () => {
+    const running = [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })];
+    const cold = {
+      ...emptyDirectoryState(),
+      entries: running,
+      source: "direct", status: "loading", live: false, staleReason: null, inventoryComplete: false, lastUpdatedAt: 1,
+    };
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    // The adapted cold load: the adapter's usable-direct branch (source "direct", status "loading").
+    directory.state = cold;
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+    // The raw local path has no directory prop at all: source undefined, same shape otherwise.
+    directory.state = { ...cold, source: undefined };
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+    // The catalog fallback still carries the sentence.
+    directory.state = { ...cold, source: "catalog", status: "ready", inventoryComplete: true };
+    renderScreen();
+    expect(hasGreySentence()).toBe(true);
+    // And a stale direct read is the banner's business, not the notice's.
+    directory.state = { ...cold, source: "direct", status: "stale", staleReason: "Host offline" };
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+  });
+
+  it("reports the catalog notice to the tray as info in the accent ink, and only with a running entry (D2-N2)", () => {
+    const catalogReady = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    directory.state = catalogReady;
+    // A saved scroll offset mounts the toolbar collapsed (slim row), which hides the tray trigger;
+    // this test needs the trigger after hiding, so the toolbar mounts expanded.
+    patchSessionView("host-a", { grouping: "hierarchy", scrollOffset: 0 });
+    renderScreen();
+    // Hide the tray first: the trigger button then carries the notices and the accent ink.
+    // NoticeTray is never drawn by the harness walk, so invoke it to reach its hide control.
+    const trayNode = walk(harness.current()).find((node) => (node.type as { name?: string }).name === "NoticeTray")!;
+    const trayTree = walk((trayNode.type as (props: never) => ElementLike)(trayNode.props as never));
+    const hide = trayTree.find((node) => node.props.accessibilityLabel === "Hide notices")!;
+    (hide.props.onPress as () => void)(); harness.flush();
+    // The hide's view write replaces the view (the toolbar preference is lost), so re-expand before
+    // reading the trigger.
+    patchSessionView("host-a", { toolbarOpen: true, scrollOffset: 0 });
+    renderScreen();
+    // The trigger element itself carries the notices; its own testID lives on its inner Pressable.
+    const button = walk(harness.current()).find((node) => (node.type as { name?: string }).name === "NoticesButton")!;
+    const notices = button.props.notices as Array<{ summary: string; tone: string }>;
+    expect(notices.some((notice) => notice.summary === "Sessions from the shared catalog" && notice.tone === "info")).toBe(true);
+    // An info-only tray draws its icon in the accent, not a warning.
+    const drawn = walk((button.type as (props: never) => ElementLike)(button.props as never));
+    expect(drawn.some((node) => node.props.color === colors.accent)).toBe(true);
+    expect(drawn.some((node) => node.props.color === colors.statusWarning)).toBe(false);
+    // Without a running entry the fallback says nothing at all.
+    directory.state = { ...catalogReady, entries: [sessionEntry("quiet", { title: "LSA • ASMA-2 • Route" })] };
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+    expect(walk(harness.current()).some((node) => (node.type as { name?: string }).name === "NoticesButton")).toBe(false);
+  });
+
+  it("keeps a hidden catalog notice hidden while the fallback lasts, and forgets it after leaving (D2-N1)", () => {
+    const catalogRunning = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    directory.state = catalogRunning;
+    // Expanded toolbar: the hidden tray's trigger must be assertable after the notice hides (D2-N1).
+    patchSessionView("host-a", { grouping: "hierarchy", scrollOffset: 0 });
+    renderScreen();
+    // NoticeTray is never drawn by the harness walk; invoke it to reach its hide control.
+    const trayNode = walk(harness.current()).find((node) => (node.type as { name?: string }).name === "NoticeTray")!;
+    const trayTree = walk((trayNode.type as (props: never) => ElementLike)(trayNode.props as never));
+    const hide = trayTree.find((node) => node.props.accessibilityLabel === "Hide notices")!;
+    (hide.props.onPress as () => void)(); harness.flush();
+    // The hide's view write replaces the view; keep the toolbar expanded for the trigger asserts.
+    patchSessionView("host-a", { toolbarOpen: true, scrollOffset: 0 });
+    // The persisted hidden key is stable: it names no source (R2-key).
+    expect(readSessionView("host-a").noticesHidden).toEqual(["catalog"]);
+    // The running count drops to 0: the notice stops showing — and must stay forgotten.
+    directory.state = { ...catalogRunning, entries: [sessionEntry("quiet", { title: "LSA • ASMA-2 • Route" })] };
+    harness.flush();
+    expect(hasGreySentence()).toBe(false);
+    // Running returns: still on the fallback, still hidden (R2-hide).
+    directory.state = catalogRunning;
+    harness.flush();
+    expect(hasGreySentence()).toBe(false);
+    expect(walk(harness.current()).some((node) => (node.type as { name?: string }).name === "NoticesButton")).toBe(true);
+    // Leaving the fallback completes the reading and forgets the hidden key.
+    directory.state = { ...catalogRunning, live: true };
+    harness.flush();
+    // Back on the fallback with running rows: the notice announces itself again.
+    directory.state = catalogRunning;
+    harness.flush();
+    expect(hasGreySentence()).toBe(true);
   });
 });
