@@ -12,10 +12,12 @@ import { resolveAsmaCommand } from "./asma-cli";
 import { readConfig } from "./config";
 import { canonicalLeadProblem } from "./session-canonical";
 import { readPinnedSummary, summaryStateRoot } from "./session-summaries";
+import { readProviderCatalog } from "./provider-catalog";
+import type { HostConfigDeps } from "./opencode-config";
 import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createChoiceProblem, createOutcomeSchema, createProviders, createRequestSchema,
-  deskIssueProblem, deskKind, deskName, executeCreate, featureValuesProblem, featureValuesSchema, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateFeatures, readCreateOptions, topicProblem,
+  deskIssueProblem, deskKind, deskName, executeCreate, featureValuesProblem, featureValuesSchema, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateFeatures, readCreateOptions, settingIdProblem, topicProblem,
   type CreateDesk, type CreateFeature, type CreateOptions, type CreateOutcome, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type FeatureValues, type JiraIssue, type JiraIssueClass, type LeadWorkspace,
 } from "../shared/session-create";
 
@@ -30,12 +32,15 @@ export type CreateClient = {
     create(options: PaseoWorkspaceCreateOptions): Promise<Pick<WorkspaceHandle, "id" | "refresh">>;
   };
   agents: { list(options?: PaseoAgentListOptions): Promise<PaseoAgentListResult>; ref(id: string): Pick<AgentHandle, "refresh" | "timeline"> };
-  providers: Pick<PaseoApi["providers"], "snapshot" | "listFeatures">;
+  /** `refresh` is optional: a host or SDK without it cannot re-read a harness's own model list, and that route is withheld. */
+  providers: Pick<PaseoApi["providers"], "snapshot" | "listFeatures"> & Partial<Pick<PaseoApi["providers"], "refresh">>;
   config: Pick<PaseoApi["config"], "get">;
 };
 
 /** How long a dispatched create may stay unanswered before its outcome is reported unknown. */
 export const CREATE_ANSWER_MS = 120_000;
+/** Why a configured route cannot be filtered when the daemon's own provider configuration cannot be read. */
+export const UNCONFIRMED_HARNESS = "The host's provider configuration could not be read, so this route's harness is unconfirmed.";
 const MAX_BYTES = 2 * 1024 * 1024;
 
 /** The operator-owned switch on the host, read on every request: `<PASEO_HOME or ~/.paseo>/plugin-config/kontor/create.json`. */
@@ -326,9 +331,15 @@ export function readbackDifferences(agent: Agent, request: CreateRecord["request
 export async function createFeatures(client: Pick<CreateClient, "providers">, cwd: string, choice: Pick<SeatCreateSpec, "provider" | "model" | "modeId" | "effort">): Promise<{ features: CreateFeature[]; problem: string | null }> {
   const result = await client.providers.listFeatures({ provider: `${choice.provider}/${choice.model}`, cwd, ...(choice.modeId ? { modeId: choice.modeId } : {}), ...(choice.effort ? { thinkingOptionId: choice.effort } : {}) });
   if (result.error) return { features: [], problem: result.error };
-  return { features: (result.features ?? []).map((feature): CreateFeature => feature.type === "toggle"
+  const features = (result.features ?? []).map((feature): CreateFeature => feature.type === "toggle"
     ? { type: "toggle", id: feature.id, label: feature.label, value: feature.value }
-    : { type: "select", id: feature.id, label: feature.label, value: feature.value, options: feature.options.map((option) => ({ id: option.id, label: option.label, isDefault: option.isDefault === true })) }), problem: null };
+    : { type: "select", id: feature.id, label: feature.label, value: feature.value, options: feature.options.map((option) => ({ id: option.id, label: option.label, isDefault: option.isDefault === true })) });
+  // A listed setting the host protocol cannot carry is refused here, before the picker can offer it for sending.
+  for (const feature of features) {
+    const idProblem = settingIdProblem(feature.id);
+    if (idProblem) return { features: [], problem: idProblem };
+  }
+  return { features, problem: null };
 }
 
 /** One live Jira search through asma-cli; a failure is distinct from an empty result. */
@@ -457,7 +468,9 @@ export function serial<T>(step: () => Promise<T>): Promise<T> {
  * Host-local durable intents: a request is written before its dispatch, and its outcome after. An unsettled
  * request blocks the next creation until a Check settles it; nothing is ever re-dispatched.
  */
-export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch, summaryRoot = summaryStateRoot()) {
+export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch, summaryRoot = summaryStateRoot(),
+  /** The OpenCode configuration host reads; a test injects them so it never reads the machine it runs on. */
+  hostConfig: HostConfigDeps = {}) {
   const path = (requestId: string) => join(root, `${requestId}.json`);
   async function readRecord(requestId: string): Promise<CreateRecord | null> {
     try { return recordSchema.parse(JSON.parse(await readFile(path(requestId), "utf8"))); }
@@ -548,7 +561,13 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const projectId = scope.projectId ?? (scope.workspaceId ? workspaces.find((entry) => entry.id === scope.workspaceId)?.projectId : undefined);
     const desks = deskProjects(workspaces), desk = (projectId ? desks.find((entry) => entry.projectId === projectId) : desks[0]) ?? null;
     const role = scope.role ?? CREATE_ROLES[0], start = scope.start ?? CREATE_STARTS[0];
-    const providers = desk?.cwd ? createProviders(await client.providers.snapshot({ cwd: desk.cwd })) : [];
+    // Every surface that shows a model list reads the catalogue through this one rule: the harness's own list,
+    // filtered by the harness's own configuration, with vendor exclusivity on top. Without the daemon's provider
+    // overrides a configured account's harness is unconfirmed, so it is withheld instead of read as a base harness.
+    const catalog = desk?.cwd ? await readProviderCatalog(client, desk.cwd, { fresh: scope.freshCatalog !== false, config: hostConfig,
+      overrides: config?.config.providers ?? null, overridesProblem: config ? null : UNCONFIRMED_HARNESS }) : null;
+    if (catalog) notes.push(...catalog.problems);
+    const providers = catalog ? createProviders(catalog) : [];
     const profile = config?.config.agentProfiles?.find((entry) => [entry.name, entry.id].some((value) => value.trim().toUpperCase() === role));
     let pending: CreateOutcome | null = null;
     try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], catalogProjectId: null, providers: [], profile: null, issues: [], jiraProblem: null, pending: null, notes }; }
@@ -585,7 +604,12 @@ export function createSessionCreateService(client: CreateClient, root: string, s
         }
         cwd = snapshot.workspaceDirectory;
       }
-      const choice = createChoiceProblem(createProviders(await client.providers.snapshot({ cwd })), spec);
+      const config = await client.config.get().catch(() => null);
+      const catalog = await readProviderCatalog(client, cwd, { fresh: true, config: hostConfig, overrides: config?.config.providers ?? null,
+        overridesProblem: config ? null : UNCONFIRMED_HARNESS });
+      const withheld = catalog.problemFor(spec.provider);
+      if (withheld) return { problem: withheld };
+      const choice = createChoiceProblem(createProviders(catalog), spec);
       if (choice) return { problem: choice };
       if (spec.featureValues && Object.keys(spec.featureValues).length) {
         const listed = await createFeatures(client, cwd, spec);

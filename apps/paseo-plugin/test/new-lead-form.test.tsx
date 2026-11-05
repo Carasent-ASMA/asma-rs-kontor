@@ -560,6 +560,36 @@ describe("Model & settings", () => {
     expect(onUse).toHaveBeenCalledExactlyOnceWith({ provider: "codex", model: "gpt-6-astra", effort: "xhigh", modeId: "auto", featureValues: {} });
   });
 
+  it("shows every route under a vendor chip, each keeping its own route and its own harness's rows", () => {
+    // The filtering itself is covered by provider-catalog.test.ts; this asserts the picker never merges two routes
+    // that legitimately offer one vendor: DeepSeek on its harness and on OpenCode, GLM on its agent and on OpenCode.
+    const deepseek = { ...OPENCODE, id: "deepseek-harness", label: "DeepSeek Harness", models: [{ id: "deepseek-flash", label: "DeepSeek Flash", efforts: [], defaultEffort: null }] };
+    const glm = { ...OPENCODE, id: "glm-acp-agent", label: "GLM Agent", models: [{ id: "glm-5.3", label: "GLM 5.3", efforts: [], defaultEffort: null }] };
+    const opencode = { ...OPENCODE, models: [
+      { id: "deepseek/deepseek-flash", label: "DeepSeek Flash", efforts: [], defaultEffort: null },
+      { id: "zai-coding-plan/glm-5.3", label: "GLM 5.3", efforts: [], defaultEffort: null }] };
+    const p = mount(ModelPicker, pickerProps({ providers: [deepseek, glm, opencode], value: null }));
+    const rows = () => p.tree.filter((node) => String(node.props.testID ?? "").startsWith("kontor-model-row-")).map((node) => node.props.testID);
+    expect(byTestId(p.tree, "kontor-model-vendor-deepseek")?.props.accessibilityLabel).toBe("DeepSeek, 2 models");
+    expect(byTestId(p.tree, "kontor-model-vendor-zai")?.props.accessibilityLabel).toBe("Z.AI, 2 models");
+    expect(rows()).toEqual(["kontor-model-row-deepseek-harness/deepseek-flash", "kontor-model-row-opencode/deepseek/deepseek-flash"]);
+    expect(text(p.tree)).toContain("DeepSeek Harness");
+    expect(text(p.tree)).toContain("OpenCode");
+    press(byTestId(p.tree, "kontor-model-vendor-zai")); p.render();
+    expect(rows()).toEqual(["kontor-model-row-glm-acp-agent/glm-5.3", "kontor-model-row-opencode/zai-coding-plan/glm-5.3"]);
+    expect(byTestId(p.tree, "kontor-model-row-opencode/zai-coding-plan/glm-5.3")?.props.accessibilityLabel).toBe("GLM 5.3, zai-coding-plan/glm-5.3, via OpenCode");
+    expect(byTestId(p.tree, "kontor-model-row-glm-acp-agent/glm-5.3")?.props.accessibilityLabel).toBe("GLM 5.3, glm-5.3, via GLM Agent");
+  });
+
+  it("states a route's problem where its models would be, and offers none of them", () => {
+    const broken = { ...OPENCODE, available: false, status: "error" as const, models: [],
+      note: "Provider error: opencode: OpenCode config /fixture/opencode.json is not valid JSONC. Its models are withheld rather than shown from an unstated list." };
+    const p = mount(ModelPicker, pickerProps({ providers: [CODEX, broken] }));
+    expect(byTestId(p.tree, "kontor-model-withheld-opencode")?.props.children).toContain("is not valid JSONC");
+    expect(p.tree.filter((node) => String(node.props.testID ?? "").startsWith("kontor-model-row-opencode/"))).toEqual([]);
+    expect(byTestId(p.tree, "kontor-model-vendor-deepseek")).toBeUndefined();
+  });
+
   it("labels the unknown-vendor tile Other under its mark and speaks the full name", () => {
     const p = mount(ModelPicker, pickerProps({ providers: [CLAUDE, CODEX, { ...OPENCODE, models: [...OPENCODE.models, { id: "nemo/mystery-1", label: "Mystery 1", efforts: [], defaultEffort: null }] }] }));
     const tile = byTestId(p.tree, "kontor-model-vendor-unknown")!;

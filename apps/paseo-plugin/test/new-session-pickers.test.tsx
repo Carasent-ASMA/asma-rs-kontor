@@ -168,7 +168,7 @@ describe("Jira picker", () => {
     expect(draw().props.rows.map((row: { id: string }) => row.id)).toEqual(["ASMA-999"]);
     first.resolve({ issues: [issue("ASMA-1", true)], jiraProblem: null }); await tick();
     expect(draw().props.rows.map((row: { id: string }) => row.id)).toEqual(["ASMA-999"]);
-    expect(hooks.read).toHaveBeenLastCalledWith({ role: "LSA", start: "from-jira", issueKey: "outside browse window", issueClass: "eligible" });
+    expect(hooks.read).toHaveBeenLastCalledWith({ role: "LSA", start: "from-jira", issueKey: "outside browse window", issueClass: "eligible", freshCatalog: false });
     expect(draw().props.selected).toBe("ASMA-1");
     hooks.read.mockRejectedValueOnce(new Error("network")); draw().props.onQuery("retry"); draw(); await vi.advanceTimersByTimeAsync(250);
     expect(draw().props.error).toContain("network");

@@ -6,7 +6,7 @@ import type { PaseoAgentListResult } from "@getpaseo/client";
 import type { KontorPluginConfig } from "./config";
 import { PASEO_DIRECT_ORCHESTRATION, hasKontorLabels, parent, seatBinding } from "./labels";
 import { observeRefusal, type RefusalAgent, type RefusalObservation } from "../shared/provider-block";
-import { CREATE_REQUEST_LABEL, featureValuesSchema, type FeatureValues } from "../shared/session-create";
+import { CREATE_REQUEST_LABEL, featureValuesSchema, settingIdProblem, type FeatureValues } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -272,12 +272,18 @@ export function takeoverPinnedMatches(reviewed: {
  * the result is validated against the create contract before it can be pinned.
  */
 export function sourceFeatureValues(agent: Pick<Agent, "features">): { values: FeatureValues | null; problem: string | null } {
-  const values: FeatureValues = {};
+  // Entries are collected first and built into own data properties, so a prototype-named setting survives the
+  // builder. An id the host protocol cannot carry is a named problem, never a silent omission.
+  const entries: [string, string | boolean][] = [];
   for (const feature of agent.features ?? []) {
-    if (feature.type === "toggle") values[feature.id] = feature.value;
-    else if (feature.value !== null) values[feature.id] = feature.value;
+    if (feature.type === "toggle") entries.push([feature.id, feature.value]);
+    else if (feature.value !== null) entries.push([feature.id, feature.value]);
   }
-  const parsed = featureValuesSchema.safeParse(values);
+  for (const [id] of entries) {
+    const idProblem = settingIdProblem(id);
+    if (idProblem) return { values: null, problem: idProblem };
+  }
+  const parsed = featureValuesSchema.safeParse(Object.fromEntries(entries));
   if (!parsed.success) return { values: null, problem: "This session's listed model settings do not match the host's create contract, so its configuration cannot be carried." };
   return { values: Object.keys(parsed.data).length ? parsed.data : null, problem: null };
 }

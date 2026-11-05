@@ -260,6 +260,36 @@ The screen is a React Native plugin screen. It does not replace Paseo's native
 sidebar, footer, tab strip, session room or composer, and it does not embed the
 workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 
+### Model lists follow each harness
+
+Every Kontor surface that shows a model list (the composer's model sheet, New
+session/New LSA and session operations) reads it through one server rule,
+`readProviderCatalog`, instead of Paseo's snapshot as-is:
+
+- **The harness's own list.** Codex is re-read through the daemon's provider
+  refresh before the list is served, so a daemon that has been up for days never
+  offers yesterday's Codex models. A host that cannot confirm that read offers no
+  Codex models rather than a stale list. Claude's list is Claude's own.
+- **The OpenCode configuration.** OpenCode's route keeps only the models its own
+  configuration opens for the desk's working directory: `enabled_providers`/
+  `disabled_providers`, then `provider.<id>.whitelist`/`blacklist`, loaded from
+  the system and user directories, `OPENCODE_CONFIG`, the project walk and
+  `OPENCODE_CONFIG_CONTENT` in OpenCode's order. A configuration that cannot be
+  read withholds the route; it never falls back to the whole catalogue. An
+  explicitly named source (`OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR`) that is
+  missing, malformed or of the wrong shape withholds the route too — a deliberate
+  fail-closed divergence from OpenCode's lenient missing-extra-file behaviour.
+- **Vendor exclusivity.** OpenAI's models are offered only through the Codex
+  harness and Anthropic's only through the Claude harness, decided from the
+  model's own id. No other vendor is exclusive: DeepSeek and GLM appear on their
+  own harnesses and on OpenCode, each route kept separate and each filtered by
+  its own rules.
+
+OpenCode 2.2.5 no longer filters its own `models`/`provider.list` output and
+treats the provider whitelist/blacklist as legacy settings, and Paseo's snapshot
+has no TTL; Kontor applies the rule at its own boundary and reports a withheld
+route in the form's notes and where its rows would be.
+
 ### Start or switch and Recent
 
 - **One sheet.** **Start or switch** in the Kontor context row (an icon button

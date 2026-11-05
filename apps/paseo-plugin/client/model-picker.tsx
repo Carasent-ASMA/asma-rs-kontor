@@ -40,8 +40,9 @@ export function useCreateFeatures(projectId: string | null, provider: string | n
   return key && state?.key === key ? state : null;
 }
 
-/** A listed setting's value for a lead: the operator's, else the setting's own. */
-export const featureValue = (feature: CreateFeature, values: FeatureValues) => values[feature.id] ?? featureDefault(feature);
+/** A listed setting's value for a lead: the operator's own, else the setting's own. */
+export const featureValue = (feature: CreateFeature, values: FeatureValues) =>
+  Object.hasOwn(values, feature.id) ? values[feature.id]! : featureDefault(feature);
 
 /** "Normal" for each select and "Plan off" for each toggle, as the lead will run. */
 export function featureLabels(features: readonly CreateFeature[], values: FeatureValues): { selects: string[]; toggles: string[] } {
@@ -123,6 +124,8 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
   const patch = (next: Partial<PickedModel>) => { if (pick) setPick({ ...pick, ...next }); };
   const tokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const available = providers.filter((entry) => entry.available).sort((a, b) => leads(a.id) - leads(b.id));
+  // A route whose own list could not be read lists nothing; it says so here rather than vanishing silently.
+  const withheld = providers.filter((entry) => !entry.available && entry.status === "error" && !entry.models.length && !!entry.note);
   const ordered = (entry: CreateProvider) => [...entry.models].sort((a, b) => leads(entry.id, a.id) - leads(entry.id, b.id));
   // Vendors in the list's order, so the opened choice's comes first, each with how many models the available routes offer.
   const vendors = new Map<Vendor, number>();
@@ -216,6 +219,7 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
     {/* The list has no scroller of its own: it shows whole rows, and more adds the next batch below them, so the
         settings after it stay in reach on the picker's one scroll. */}
     <View testID="kontor-model-list" style={{ gap: 4 }}>
+      {withheld.map((entry) => <Text key={entry.id} testID={`kontor-model-withheld-${entry.id}`} accessibilityLiveRegion="polite" style={muted}>{entry.note}</Text>)}
       <View accessibilityRole="radiogroup" accessibilityLabel="Model" style={{ gap: GROUP_GAP }}>
         {onAuto ? <Pressable testID="kontor-model-auto" accessibilityRole="radio" aria-checked={!pick} accessibilityState={{ checked: !pick }} accessibilityLabel="Auto, use each seat's chain"
           {...NO_PRESS_DELAY} {...(Platform.OS === "web" ? spaceActivates(() => setPick(null)) : {})} onPress={() => setPick(null)} style={({ pressed }: { pressed: boolean }) => ({ minHeight: rowHeight, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, borderRadius: 6, ...pressFeedback(colors, pressed, !pick) })}>

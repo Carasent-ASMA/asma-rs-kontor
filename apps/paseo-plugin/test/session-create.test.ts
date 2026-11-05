@@ -101,6 +101,7 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
   const list = vi.fn<CreateClient["agents"]["list"]>(async (options) => ({ requestId: "fixture", pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
     entries: [...agents.values()].filter((value) => Object.entries(options?.filter?.labels ?? {}).every(([key, label]) => value.labels?.[key] === label)).map((value) => ({ agent: value, project: PROJECT })) }));
   const snapshot = vi.fn<CreateClient["providers"]["snapshot"]>(async () => SNAPSHOT);
+  const refresh = vi.fn(async () => ({ requestId: "fixture", acknowledged: true }));
   const listFeatures = vi.fn<CreateClient["providers"]["listFeatures"]>(async () => FEATURES);
   const bootstrapByAgent = new Map<string, string>();
   type TimelineOpts = { limit?: number; direction?: "tail" | "head"; cursor?: string };
@@ -127,13 +128,15 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
         if (bootstrap) return { entries: [{ item: { type: "user_message", text: bootstrap } }] };
         return timeline(opts);
       } } }) },
-    providers: { snapshot, listFeatures },
+    providers: { snapshot, listFeatures, refresh },
     config: { get: vi.fn(async () => ({ requestId: "fixture", config: MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false }, agentProfiles: [
       { id: "profile-lsa", name: "lsa", provider: "claude", model: "opus", modeId: "default", thinkingOptionId: "max" },
       { id: "profile-tpm", name: "tpm", provider: "opencode", model: "big" }] }) })) },
   } as unknown as CreateClient;
-  const service = createSessionCreateService(client, stateRoot, switchFile, answerMs, jira, summaryRoot);
-  return { service, client, create, workspacesCreate, list, snapshot, listFeatures, agents, intents, stateRoot, summaryRoot, switchFile, timeline, jira, live,
+  // The OpenCode configuration is never read from the machine running the test: a synthetic host with no documents.
+  const host = { env: {}, home: join(root, "home"), system: false, stopAt: root };
+  const service = createSessionCreateService(client, stateRoot, switchFile, answerMs, jira, summaryRoot, host);
+  return { service, client, create, workspacesCreate, list, snapshot, listFeatures, refresh, host, agents, intents, stateRoot, summaryRoot, switchFile, timeline, jira, live,
     setReadback: (patch: Partial<Agent>) => { readbackPatch = patch; }, setOffline: (value: boolean) => { offline = value; } };
 }
 
@@ -272,7 +275,7 @@ describe("create switch", () => {
     const s = await setup(), root = dirname(s.switchFile), link = join(root, component);
     await mkdir(dirname(link), { recursive: true });
     await symlink(join(root, "missing-directory"), link);
-    const service = createSessionCreateService(s.client, s.stateRoot, join(root, "plugin-config", "kontor", "create.json"));
+    const service = createSessionCreateService(s.client, s.stateRoot, join(root, "plugin-config", "kontor", "create.json"), undefined, undefined, undefined, s.host);
     const workspaceRead = vi.spyOn(s.client.workspaces, "ref"), agentRead = vi.spyOn(s.client.agents, "ref");
     const options = await service.options();
     vi.clearAllMocks();
@@ -286,7 +289,7 @@ describe("create switch", () => {
 
   it("is available when normal configuration directories are absent", async () => {
     const s = await setup();
-    const service = createSessionCreateService(s.client, s.stateRoot, join(dirname(s.switchFile), "plugin-config", "kontor", "create.json"));
+    const service = createSessionCreateService(s.client, s.stateRoot, join(dirname(s.switchFile), "plugin-config", "kontor", "create.json"), undefined, undefined, undefined, s.host);
     expect(await service.options()).toMatchObject({ enabled: true, disabledReason: null });
     expect(s.create).not.toHaveBeenCalled();
     expect(await service.create(request())).toMatchObject({ state: "verified" });
@@ -319,6 +322,24 @@ describe("create options", () => {
     expect(gemini).toMatchObject({ available: false, persona: "unverified", note: "Provider error: not signed in." });
     expect(codex).toMatchObject({ available: false, persona: "supported", note: "Disabled on this host." });
     expect((await s.service.options({ role: "TPM" })).profile).toMatchObject({ name: "tpm", provider: "opencode", model: "big" });
+  });
+
+  it("names a route whose own configuration cannot be read, offers none of its models, and refuses a choice from it", async () => {
+    const s = await setup();
+    // The OpenCode route's configuration is unreadable: no model of it may be offered, and the form says why.
+    const host = { ...s.host, readFile: async (path: string) => {
+      if (path.endsWith("/opencode.json")) return `{"enabled_providers": "not-a-list"}`;
+      throw Object.assign(new Error("no such file"), { code: "ENOENT" });
+    } };
+    const service = createSessionCreateService(s.client, s.stateRoot, s.switchFile, undefined, undefined, undefined, host);
+    const options = await service.options();
+    expect(options.notes.join("\n")).toContain("enabled_providers");
+    const opencode = options.providers.find((provider) => provider.id === "opencode")!;
+    expect(opencode.models).toEqual([]);
+    expect(opencode).toMatchObject({ available: false, status: "error" });
+    // The catalogue itself refuses the route, before a model is looked up: the message names the route and its source.
+    expect(await service.create(request({ provider: "opencode", model: "big" }))).toMatchObject({ state: "refused", message: expect.stringMatching(/^opencode: .*withheld/) });
+    expect(s.create).not.toHaveBeenCalled();
   });
 
   it("lists only open epics on ADAM and only non-epic issues without an active parent on TICKETS", async () => {
@@ -357,7 +378,58 @@ describe("create options", () => {
   it("is available without the operator's switch, and notes an unreadable profile list", async () => {
     const s = await setup({ switchText: null });
     vi.mocked(s.client.config.get).mockRejectedValueOnce(new Error("config unavailable"));
-    expect(await s.service.options()).toMatchObject({ enabled: true, disabledReason: null, profile: null, notes: ["Agent profiles unavailable: config unavailable."] });
+    const options = await s.service.options();
+    expect(options).toMatchObject({ enabled: true, disabledReason: null, profile: null });
+    expect(options.notes[0]).toBe("Agent profiles unavailable: config unavailable.");
+    // Without the provider authority every configured route is withheld, even one whose model list is empty.
+    expect(options.notes).toEqual(["Agent profiles unavailable: config unavailable.", expect.stringContaining("gemini:")]);
+  });
+});
+
+describe("catalogue freshness at the create surfaces", () => {
+  const CODEX_READY = { ...SNAPSHOT, entries: [...SNAPSHOT.entries.filter((entry) => entry.provider !== "codex"), {
+    provider: "codex", label: "Codex", enabled: true, status: "ready" as const, defaultModeId: "auto",
+    models: [{ provider: "codex", id: "gpt", label: "GPT", isSelectable: true }],
+    modes: [{ id: "auto", label: "Auto" }],
+  }] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>;
+  const codexRequest = () => request({ provider: "codex", model: "gpt", effort: null, modeId: "auto" });
+
+  it("re-reads Codex for options() by default, and not when the caller reuses the list", async () => {
+    const s = await setup();
+    await s.service.options();
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex"] });
+    s.refresh.mockClear();
+    await s.service.options({ freshCatalog: false });
+    expect(s.refresh).not.toHaveBeenCalled();
+  });
+
+  it("re-reads a derived Codex account wherever options() sees one", async () => {
+    const s = await setup();
+    const account = { ...CODEX_READY.entries.find((entry) => entry.provider === "codex")!, provider: "codex-work", label: "Codex Work" };
+    s.snapshot.mockResolvedValue({ ...CODEX_READY, entries: [account] } as never);
+    vi.mocked(s.client.config.get).mockResolvedValueOnce({ requestId: "fixture", config: { providers: { "codex-work": { extends: "codex" } } } } as never);
+    await s.service.options();
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex-work"] });
+  });
+
+  it("re-reads Codex before a create, and refuses it when the fresh read cannot be confirmed", async () => {
+    const s = await setup();
+    s.snapshot.mockResolvedValue(CODEX_READY as never);
+    s.refresh.mockRejectedValueOnce(new Error("app-server did not start"));
+    const outcome = await s.service.create(codexRequest());
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex"] });
+    expect(outcome).toMatchObject({ state: "refused", message: expect.stringContaining("did not confirm a fresh read") });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(s.intents).toEqual([]);
+  });
+
+  it("dispatches a valid Codex create only after the fresh read", async () => {
+    const s = await setup();
+    s.snapshot.mockResolvedValue(CODEX_READY as never);
+    const outcome = await s.service.create(codexRequest());
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex"] });
+    expect(s.create).toHaveBeenCalledTimes(1);
+    expect(outcome.state).not.toBe("refused");
   });
 });
 

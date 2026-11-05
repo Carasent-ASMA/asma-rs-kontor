@@ -220,6 +220,8 @@ export const createScopeSchema = z.object({
   issueKey: z.string().max(200).optional(),
   /** The picker's selected Jira class, filtered before the 50-slot cap. */
   issueClass: z.enum(JIRA_ISSUE_CLASSES).optional(),
+  /** Whether a harness whose own list changes between sessions must be re-read; default true. A Jira search reuses the list. */
+  freshCatalog: z.boolean().optional(),
 }).strict();
 export type CreateScope = z.infer<typeof createScopeSchema>;
 
@@ -229,9 +231,40 @@ export const createFeatureSchema = z.union([
   z.object({ type: z.literal("select"), id, label: z.string(), value: z.string().nullable(), options: z.array(z.object({ id, label: z.string(), isDefault: z.boolean() }).strict()) }).strict(),
 ]);
 export type CreateFeature = z.infer<typeof createFeatureSchema>;
+/**
+ * Why a setting id cannot cross the host protocol, or null. The resolved SDK builds its `featureValues` record by
+ * assignment, which drops an own `__proto__` key; that id is refused at every boundary instead of being silently
+ * lost. Every other id is carried as an own data property. The contract test runs every admitted id through the
+ * resolved SDK schema, so a future dropped id fails a test here rather than disappearing.
+ */
+export function settingIdProblem(id: string): string | null {
+  return id === "__proto__" ? `Setting ${id} cannot cross the host protocol; its value would be dropped.` : null;
+}
+
 /** Only listed features with an offered value; the server checks them again and the readback confirms each one. */
-export const featureValuesSchema = z.record(id, z.union([z.string().min(1).max(200), z.boolean()]));
-export type FeatureValues = z.infer<typeof featureValuesSchema>;
+const featureValueSchema = z.union([z.string().min(1).max(200), z.boolean()]);
+/**
+ * A plain record of setting values, keyed by setting id. The shape check keeps the former record rejection: arrays,
+ * primitives, dates, maps, sets and boxed primitives are not records. It passes the raw object through, so the
+ * transform below still sees an own `__proto__` key and can refuse it.
+ */
+export type FeatureValues = Record<string, string | boolean>;
+const settingValuesRecord = z.custom<Record<string, unknown>>((value) =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+  && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null),
+  "Setting values must be a plain record.");
+export const featureValuesSchema: z.ZodType<FeatureValues, Record<string, unknown>> = settingValuesRecord.transform((input, ctx): FeatureValues => {
+  const entries: [string, string | boolean][] = [];
+  for (const key of Object.keys(input)) {
+    const idProblem = settingIdProblem(key);
+    if (idProblem) { ctx.addIssue({ code: "custom", message: idProblem }); continue; }
+    if (!id.safeParse(key).success) { ctx.addIssue({ code: "custom", message: `Setting id ${key} is not valid.` }); continue; }
+    const value = featureValueSchema.safeParse((input as Record<string, unknown>)[key]);
+    if (!value.success) { ctx.addIssue({ code: "custom", message: `Setting ${key} is not a string or boolean.` }); continue; }
+    entries.push([key, value.data]);
+  }
+  return Object.fromEntries(entries);
+});
 export const createFeaturesSchema = z.object({ features: z.array(createFeatureSchema), problem: z.string().nullable() }).strict();
 
 /** The value a feature takes when the request names none: its own current value. */
@@ -242,6 +275,8 @@ export function featureDefault(feature: CreateFeature): string | boolean | null 
 /** Why these values cannot be sent for these listed features, or null. */
 export function featureValuesProblem(features: readonly CreateFeature[], values: FeatureValues): string | null {
   for (const [key, value] of Object.entries(values)) {
+    const idProblem = settingIdProblem(key);
+    if (idProblem) return idProblem;
     const feature = features.find((entry) => entry.id === key);
     if (!feature) return `Setting ${key} is not offered for this model.`;
     if (feature.type === "toggle" ? typeof value !== "boolean" : typeof value !== "string" || !feature.options.some((option) => option.id === value)) return `${feature.label} ${String(value)} is not offered for this model.`;
@@ -258,12 +293,14 @@ export function settingLabel(known: readonly CreateFeature[], key: string, value
 
 /** The values these listed features offer, and the labels of those they do not, which a change of model drops. */
 export function keptFeatureValues(features: readonly CreateFeature[], values: FeatureValues, known: readonly CreateFeature[] = features): { kept: FeatureValues; dropped: string[] } {
-  const kept: FeatureValues = {}, dropped: string[] = [];
+  const kept: [string, string | boolean][] = [], dropped: string[] = [];
   for (const [key, value] of Object.entries(values)) {
-    if (!featureValuesProblem(features, { [key]: value })) kept[key] = value;
+    if (!featureValuesProblem(features, { [key]: value })) kept.push([key, value]);
     else dropped.push(settingLabel(known, key, value));
   }
-  return { kept, dropped };
+  // Ordinary owned setting ids are carried as own data properties; `__proto__` is refused by settingIdProblem
+  // with a named problem, so a refused value is named in `dropped` rather than silently swallowed.
+  return { kept: Object.fromEntries(kept), dropped };
 }
 
 /**
