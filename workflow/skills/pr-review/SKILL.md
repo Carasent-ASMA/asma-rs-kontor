@@ -381,7 +381,7 @@ change/revert a correction. Those decisions are preserved. A comment line
 
 **The desk's own seats only:** `start-seat`, `wake-seat`, `fix-pr`, `stage`,
 `post-review` and `lift-reviews` (the PR Adam runs it when the author asks).
-`review-level <ref> --head <sha> --level medium|complex --reason <evidence>`
+`review-level <ref> --head <sha> --level medium|complex --by <seat> --reason <evidence>`
 raises a PR's tier before dispatch; it never lowers the recorded floor or
 resets its review budget.
 For direct corrections, `fix-pr --body-file <receipt.json>` publishes to the
