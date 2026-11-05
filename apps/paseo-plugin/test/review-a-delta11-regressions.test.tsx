@@ -66,39 +66,38 @@ describe("D11-F2 setting ids keep their defaults and explicit values", () => {
     expect(featureLabels([select("constructor")], {})).toEqual({ selects: ["Normal"], toggles: [] });
   });
 
-  it("uses the harness true toggle default for __proto__", () => {
-    expect(featureValue(toggle("__proto__"), {})).toBe(true);
-    expect(featureLabels([toggle("__proto__")], {})).toEqual({ selects: [], toggles: ["Plan mode on"] });
+  it("uses the harness true toggle default for an owned constructor id", () => {
+    expect(featureValue(toggle("constructor"), {})).toBe(true);
+    expect(featureLabels([toggle("constructor")], {})).toEqual({ selects: [], toggles: ["Plan mode on"] });
   });
 
-  it("keeps an offered explicit __proto__ selection through keeping", () => {
+  it("refuses an offered explicit __proto__ selection with a named problem", () => {
     const features = [select("__proto__")], values = Object.fromEntries([["__proto__", "slow"]]) as FeatureValues;
-    expect(featureValuesProblem(features, values)).toBeNull();
+    expect(featureValuesProblem(features, values)).toContain("__proto__");
     const result = keptFeatureValues(features, values);
-    expect(Object.hasOwn(result.kept, "__proto__")).toBe(true);
-    expect(result.kept["__proto__"]).toBe("slow");
-    expect(result.dropped).toEqual([]);
+    expect(Object.hasOwn(result.kept, "__proto__")).toBe(false);
+    expect(result.dropped).toHaveLength(1);
   });
 
-  it("admits an offered own __proto__ value through the create request", () => {
-    const parsed = createRequestSchema.parse({
+  it("refuses an own __proto__ value at create admission", () => {
+    const read = createRequestSchema.safeParse({
       requestId: "00000000-0000-4000-8000-000000000000", role: "LSA", start: "ad-hoc",
       projectId: "synthetic-project", provider: "opencode", model: "house-model", effort: null, modeId: null,
       featureValues: Object.fromEntries([["__proto__", "slow"]]),
     });
-    expect(Object.hasOwn(parsed.featureValues!, "__proto__")).toBe(true);
-    expect(parsed.featureValues!["__proto__"]).toBe("slow");
-    expect(Object.hasOwn(featureValuesSchema.parse(Object.fromEntries([["__proto__", true]])), "__proto__")).toBe(true);
+    expect(read.success).toBe(false);
+    if (!read.success) expect(read.error.issues.map((issue) => issue.message).join(" ")).toContain("__proto__");
+    expect(featureValuesSchema.safeParse(Object.fromEntries([["__proto__", true]])).success).toBe(false);
   });
 
-  it("never reports a value as kept and missing at the same time", () => {
+  it("never reports a refused value as silently missing", () => {
     const features = [select("constructor"), select("__proto__")];
     const values = Object.fromEntries([["constructor", "normal"], ["__proto__", "slow"]]) as FeatureValues;
     const result = keptFeatureValues(features, values);
-    for (const key of Object.keys(values)) {
-      expect(Object.hasOwn(result.kept, key), key).toBe(true);
-      expect(result.kept[key], key).toBe(values[key]);
-    }
-    expect(result.dropped).toEqual([]);
+    expect(Object.hasOwn(result.kept, "constructor")).toBe(true);
+    expect(result.kept["constructor"]).toBe("normal");
+    expect(Object.hasOwn(result.kept, "__proto__")).toBe(false);
+    expect(result.dropped).toHaveLength(1);
+    expect(featureValuesProblem(features, values)).toContain("__proto__");
   });
 });

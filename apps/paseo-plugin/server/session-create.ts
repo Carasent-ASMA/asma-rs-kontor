@@ -17,7 +17,7 @@ import type { HostConfigDeps } from "./opencode-config";
 import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createChoiceProblem, createOutcomeSchema, createProviders, createRequestSchema,
-  deskIssueProblem, deskKind, deskName, executeCreate, featureValuesProblem, featureValuesSchema, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateFeatures, readCreateOptions, topicProblem,
+  deskIssueProblem, deskKind, deskName, executeCreate, featureValuesProblem, featureValuesSchema, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateFeatures, readCreateOptions, settingIdProblem, topicProblem,
   type CreateDesk, type CreateFeature, type CreateOptions, type CreateOutcome, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type FeatureValues, type JiraIssue, type JiraIssueClass, type LeadWorkspace,
 } from "../shared/session-create";
 
@@ -331,9 +331,15 @@ export function readbackDifferences(agent: Agent, request: CreateRecord["request
 export async function createFeatures(client: Pick<CreateClient, "providers">, cwd: string, choice: Pick<SeatCreateSpec, "provider" | "model" | "modeId" | "effort">): Promise<{ features: CreateFeature[]; problem: string | null }> {
   const result = await client.providers.listFeatures({ provider: `${choice.provider}/${choice.model}`, cwd, ...(choice.modeId ? { modeId: choice.modeId } : {}), ...(choice.effort ? { thinkingOptionId: choice.effort } : {}) });
   if (result.error) return { features: [], problem: result.error };
-  return { features: (result.features ?? []).map((feature): CreateFeature => feature.type === "toggle"
+  const features = (result.features ?? []).map((feature): CreateFeature => feature.type === "toggle"
     ? { type: "toggle", id: feature.id, label: feature.label, value: feature.value }
-    : { type: "select", id: feature.id, label: feature.label, value: feature.value, options: feature.options.map((option) => ({ id: option.id, label: option.label, isDefault: option.isDefault === true })) }), problem: null };
+    : { type: "select", id: feature.id, label: feature.label, value: feature.value, options: feature.options.map((option) => ({ id: option.id, label: option.label, isDefault: option.isDefault === true })) });
+  // A listed setting the host protocol cannot carry is refused here, before the picker can offer it for sending.
+  for (const feature of features) {
+    const idProblem = settingIdProblem(feature.id);
+    if (idProblem) return { features: [], problem: idProblem };
+  }
+  return { features, problem: null };
 }
 
 /** One live Jira search through asma-cli; a failure is distinct from an empty result. */
