@@ -30,7 +30,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps),
   useCallback: <T,>(callback: T) => callback }));
-vi.mock("react-native", () => ({ Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: model.windowHeight }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", Image: "Image" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: model.windowHeight }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", Image: "Image" }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useSettings: () => model.settings, getPaseoClient: () => ({}) }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: () => {} }));

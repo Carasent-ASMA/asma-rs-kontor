@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { jiraHistorySchema, type CanonicalGraph, type JiraHistory, type SourceRead } from "../shared/read-sources";
 const model = vi.hoisted(() => ({ evidence: false }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }), useState: () => [model.evidence, (value: boolean) => { model.evidence = value; }] }));
-vi.mock("react-native", () => ({ Text: "Text", View: "View", Pressable: "Pressable" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Text: "Text", View: "View", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ FlatList: "FlatList", ScrollView: "ScrollView", Icon: "Icon" }));
 import { GraphPage, captureDay, capturedJiraChildren, type BoardItem } from "../client/graph-page";
 import { PlanGraph } from "../client/plan-graph/graph";

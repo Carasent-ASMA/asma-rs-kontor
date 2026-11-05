@@ -7,7 +7,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])),
   useContext: () => undefined,
   useId: () => "help" }));
-vi.mock("react-native", () => ({ Platform: { OS: "web" }, View: "View", Text: "Text", Pressable: "Pressable", Image: "Image", ScrollView: "ScrollView",
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { OS: "web" }, View: "View", Text: "Text", Pressable: "Pressable", Image: "Image", ScrollView: "ScrollView",
   BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", copyText: async () => {},
   Modal: Object.assign(function Modal() { return null; }, { Content: function ModalContent() { return null; } }) }));

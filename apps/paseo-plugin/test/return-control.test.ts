@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { getPaseoClient } = vi.hoisted(() => ({ getPaseoClient: vi.fn() }));
 
 vi.mock("@getpaseo/plugin/client", () => ({ getPaseoClient }));
-vi.mock("react-native", () => ({ View: "View" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 // The popover body is drawn by the host; this suite checks only what the pill hands it.
 vi.mock("../client/start-switch-sheet", () => ({ StartSwitchPopover: function StartSwitchPopover() { return null; } }));

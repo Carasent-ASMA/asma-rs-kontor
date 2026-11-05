@@ -7,7 +7,7 @@ import type { SummaryRevision } from "../shared/session-navigator";
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
 const host = vi.hoisted(() => ({ rpc: {} as Record<string, ReturnType<typeof vi.fn>>, settings: null as unknown, readSource: null as unknown as Mock<(...args: unknown[]) => Promise<unknown>> }));
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])) }));
-vi.mock("react-native", () => ({ Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: 844 }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", Image: "Image" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: 844 }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", Image: "Image" }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => host.rpc[contract.name], useSettings: () => host.settings, getPaseoClient: () => ({}) }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: () => {} }));

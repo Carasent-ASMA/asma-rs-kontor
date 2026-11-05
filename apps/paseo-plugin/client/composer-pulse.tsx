@@ -1,6 +1,6 @@
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { AccessibilityInfo, Animated, AppState, Platform, type LayoutChangeEvent, type StyleProp, type ViewStyle, View } from "react-native";
+import { AccessibilityInfo, Animated, AppState, Easing, Platform, type LayoutChangeEvent, type StyleProp, type ViewStyle, View } from "react-native";
 import type { Colors } from "./page-controls";
 import { observePulseEnvironment } from "./composer-pulse-environment";
 import { composerRunningInk } from "./session-status-ink";
@@ -13,11 +13,14 @@ let progress: Animated.Value | undefined;
 let animation: Animated.CompositeAnimation | undefined;
 let users = 0;
 const pulseProgress = () => progress ??= new Animated.Value(0);
-/** The shared clock: linear 0 -> 1, looping, about 2.7 s per revolution. No easing key — D7 forbids an
- * eased or ping-pong clock; the pulse's cosine shape comes from the sampled interpolation instead.
- * This is the ONLY path to Animated.timing's options (F4): a test asserts exactly what the clock
- * receives, so re-adding easing anywhere below the exported pins fails. */
-export const pulseClockConfig = { toValue: 1, duration: 2700 };
+/** The shared clock: linear 0 -> 1, looping, about 2.7 s per revolution. The easing is set EXPLICITLY:
+ * Animated.timing WITHOUT an easing key falls back to ease-in-out (RN 0.81.5 TimingAnimation.js:75
+ * `config.easing ?? easeInOut()`; RNW 0.21.4 TimingAnimation.js:32 the same), so omitting the key would
+ * run the clock eased — D7 forbids an eased or ping-pong clock; the pulse's cosine shape comes from the
+ * sampled interpolation instead. This is the ONLY path to Animated.timing's options (F4): a test drives
+ * a loop over this config with fake timers and pins the linear progress curve, so any easing that
+ * departs from linear fails there. */
+export const pulseClockConfig = { toValue: 1, duration: 2700, easing: Easing.linear };
 export const pulseTimingOptions = () => ({ ...pulseClockConfig, useNativeDriver: Platform.OS !== "web", isInteraction: false });
 export function retainClock() {
   if (users++ === 0) {

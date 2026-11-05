@@ -1,7 +1,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("react-native", () => ({
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t },
   AccessibilityInfo: {
     addEventListener: () => ({ remove: () => undefined }),
     isReduceMotionEnabled: async () => false,

@@ -14,7 +14,7 @@ const model = vi.hoisted(() => ({
   rpc: vi.fn(), refetch: vi.fn(async () => ({})),
 }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useId: () => "source-help", useState: (initial: unknown) => [typeof initial === "function" ? initial() : initial, vi.fn()], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback, useEffect: () => {} }));
-vi.mock("react-native", () => ({ SafeAreaView: "SafeAreaView", KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable", Linking: { openURL: vi.fn() } }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, SafeAreaView: "SafeAreaView", KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable", Linking: { openURL: vi.fn() } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => [{ serverId: "source-host", label: "Host", status: model.status }], useRpc: () => model.rpc }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Modal: Object.assign(() => null, { Content: () => null }), TextInput: "TextInput", ScrollView: "ScrollView", FlatList: "FlatList", Icon: "Icon", useToast: () => ({ error: vi.fn() }) }));
 vi.mock("@tanstack/react-query", () => ({ useQuery: (options: typeof model.queryOptions) => { model.queryOptions = options; return { data: model.data, isError: model.error !== null, error: model.error, isFetching: false, refetch: model.refetch }; } }));

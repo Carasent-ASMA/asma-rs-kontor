@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement, ReactNode } from "react";
 const help = vi.hoisted(() => ({ show: vi.fn(), hide: vi.fn(), focus: vi.fn(), blur: vi.fn(), dismiss: vi.fn(), text: "" }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (fn: () => unknown) => fn() }));
-vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View", PanResponder: { create: () => ({ panHandlers: {} }) } }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Pressable: "Pressable", Text: "Text", View: "View", PanResponder: { create: () => ({ panHandlers: {} }) } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 vi.mock("../client/control-help", () => ({ useControlHelp: (text: string) => { help.text = text; return {
   bindings: { "aria-describedby": "scope-help", onHoverIn: help.show, onHoverOut: help.hide, onFocus: help.focus, onBlur: help.blur }, dismiss: help.dismiss,

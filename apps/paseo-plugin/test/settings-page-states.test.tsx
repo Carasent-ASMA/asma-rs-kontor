@@ -13,7 +13,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   const index = hooks.cursor++; if (!(index in hooks.values)) hooks.values[index] = initial;
   return [hooks.values[index] as T, (value: T) => { hooks.values[index] = value; }];
 } }));
-vi.mock("react-native", () => ({ ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
 import { Card, Copy } from "../client/page-controls";

@@ -50,7 +50,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useMemo: <T,>(factory: () => T) => factory(),
   useContext: () => undefined,
   useSyncExternalStore: <T,>(_subscribe: unknown, read: () => T) => read() }));
-vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text",
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text",
   Pressable: "Pressable", Image: "Image", PanResponder: { create: () => ({ panHandlers: {} }) }, BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts, useSettings: () => model.settings, getPaseoClient: () => ({}) }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast,
