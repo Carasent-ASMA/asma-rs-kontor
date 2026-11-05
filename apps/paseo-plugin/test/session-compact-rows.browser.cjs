@@ -109,6 +109,11 @@ async function pulseCheck(width, theme, longList = false) {
       const running = page.getByTestId(width < 768 ? 'sessions-quick-running' : 'sessions-filter-running');
       if (await running.count()) await running.click();
       else { await page.getByTestId('sessions-mobile-quick-chooser-trigger').click(); await page.getByTestId('sessions-choose-running').click(); }
+      // F1 ruling, live tree: a Running-led organization badge animates like any live row. The grouped
+      // layout groups the 200 running sessions, so the badge exists and must ride the shared carrier.
+      const treeBadges = page.getByTestId('organization-state-counts');
+      await expect(treeBadges.first()).toBeVisible({ timeout: 10000 });
+      assert.ok(await treeBadges.first().getByTestId('composer-running-pulse').count() > 0, 'a live Running-led organization badge animates (D6)');
       await page.getByTestId('sessions-layout-flat').click();
     }
     const tones = page.getByTestId('composer-running-tone');
@@ -127,7 +132,10 @@ async function pulseCheck(width, theme, longList = false) {
     const strokes = await glyph.locator('svg').evaluateAll(nodes => nodes.map(node => node.getAttribute('stroke')));
     assert.equal(strokes.length, 8, 'the eight pre-rendered gradient frames are mounted');
     assert.ok(strokes.every(value => value && value.startsWith('url(#kontor-rainbow-')), 'every frame paints the rainbow gradient');
-    assert.equal(await page.getByTestId('organization-state-counts').getByTestId('composer-running-pulse').count(), 0, 'aggregate badges stay static');
+    // F1 ruling: a LIVE Running-led organization badge animates like any live row; only a stale
+    // (Last known) badge is muted. The stale case is asserted after the offline transition below.
+    const badgeCount = await page.getByTestId('organization-state-counts').count();
+    report.cases.push({ probe: 'badge-count', badgeCount });
     if (!longList) {
       const idle = page.getByTestId('sessions-row-agt_model_report_2');
       assert.equal(await idle.getByTestId('composer-running-pulse').count(), 0, 'another session running never animates idle rows');
@@ -139,9 +147,12 @@ async function pulseCheck(width, theme, longList = false) {
       await list.evaluate(node => { node.scrollTop = node.scrollHeight / 2; });
       await page.waitForTimeout(600);
       const viewport = await list.boundingBox();
-      const activeBoxes = await tones.evaluateAll(nodes => nodes.map(node => { const r=node.getBoundingClientRect(); return {top:r.top,bottom:r.bottom}; }));
+      // F3: row checks scope to sessions-list — the Running filter control is an affordance whose own
+      // tone sits above the list and animates whenever visible (allowed by the ruling).
+      const listTones = page.getByTestId('sessions-list').getByTestId('composer-running-tone');
+      const activeBoxes = await listTones.evaluateAll(nodes => nodes.map(node => { const r=node.getBoundingClientRect(); return {top:r.top,bottom:r.bottom}; }));
       assert.ok(activeBoxes.length > 0 && activeBoxes.length <= Math.ceil(viewport.height / 44) + 2, 'active nodes bounded by viewport, not 200 running entries');
-      assert.ok(activeBoxes.every(box => box.bottom > viewport.y && box.top < viewport.y + viewport.height), 'offscreen work stopped');
+      assert.ok(activeBoxes.every(box => box.bottom > viewport.y && box.top < viewport.y + viewport.height), `offscreen work stopped: ${JSON.stringify({ viewport, activeBoxes })}`);
       await page.evaluate(() => { window.pulseFrames = []; }); await page.waitForTimeout(450);
       const frames = await page.evaluate(() => window.pulseFrames);
       const mean = frames.reduce((sum, frame) => sum + frame.callbacks, 0) / Math.max(1, frames.length);
@@ -169,14 +180,47 @@ async function pulseCheck(width, theme, longList = false) {
     }
     await page.screenshot({ path:path.join(output,name+'-running.png') });
     await page.emulateMedia({ reducedMotion:'reduce' });
-    await expect(tones).toHaveCount(0);
-    const resting = page.getByTestId('composer-running-pulse').first();
-    assert.equal(await resting.locator('svg[stroke^="url(#kontor-rainbow-"]').count(), 1, 'reduced motion keeps the static rainbow, never motion');
+    // D3-r2: Reduce Motion drops only the pulse — the tone stays mounted and the colour keeps flowing,
+    // while the carrier scale freezes at exactly 1. Row checks scope to sessions-list: the Running
+    // filter control is an affordance and animates whenever visible (the ruling).
+    const list = page.getByTestId('sessions-list');
+    await expect(list.getByTestId('composer-running-tone').first()).toBeVisible();
+    const reduceShot1 = await list.getByTestId('composer-running-pulse').first().screenshot();
+    await page.waitForTimeout(600);
+    const reduceShot2 = await list.getByTestId('composer-running-pulse').first().screenshot();
+    assert.ok(!reduceShot1.equals(reduceShot2), 'the colour flow keeps running under Reduce Motion');
+    const reduceDiagonals = [];
+    for (let sample = 0; sample < 6; sample++) {
+      const m = await list.getByTestId('composer-running-pulse').first().evaluate(node => getComputedStyle(node).transform);
+      const d = Number((m.match(/^matrix\(([-\d.]+),/)||[])[1]);
+      if (Number.isFinite(d)) reduceDiagonals.push(d);
+      await page.waitForTimeout(150);
+    }
+    assert.ok(reduceDiagonals.length > 0 && reduceDiagonals.every(d => d === 1), `reduced motion freezes the carrier at scale exactly 1: ${JSON.stringify(reduceDiagonals)}`);
+    await page.screenshot({ path:path.join(output,name+'-reduced-motion.png') });
     await page.emulateMedia({ reducedMotion:'no-preference' }); await expect(tones.first()).toBeVisible();
     await page.evaluate(async () => (await import('/src/host/runtime.ts')).setHostStatus('offline'));
-    await expect(tones).toHaveCount(0);
-    assert.equal(await page.getByTestId('composer-running-pulse').count(), 0, 'last-known running does not animate');
-    assert.equal(await page.locator('[data-testid="composer-running-pulse"]').count(), 0, 'no rainbow mark node remains');
+    // Last known: every session row drops to the muted ink — no tone, no pulse, scoped to sessions-list
+    // because the Running filter control keeps its rainbow (an affordance, allowed by the ruling).
+    const listPulses = page.getByTestId('sessions-list').getByTestId('composer-running-pulse');
+    await expect(listPulses).toHaveCount(0);
+    await expect(page.getByTestId('sessions-list').getByTestId('composer-running-tone')).toHaveCount(0);
+    // N11: the banner says why the rows went grey.
+    const banner = await page.getByTestId('sessions-source-banner').innerText();
+    assert.ok(banner.includes('Running sessions show grey until Kontor is live again.'), `the banner explains the grey: ${JSON.stringify(banner)}`);
+    // F1: stale Running-led organization badges mute with the rows — no pulse, zero rainbow paint,
+    // and the badge itself says Last known. The grouped long-list proves it on a Running-led badge.
+    assert.equal(await page.getByTestId('organization-state-counts').getByTestId('composer-running-pulse').count(), 0, 'stale aggregate badges never animate');
+    assert.equal(await page.getByTestId('organization-state-counts').locator('svg[stroke^="url(#kontor-rainbow-"]').count(), 0, 'stale aggregate badges paint no rainbow');
+    if (longList) {
+      await page.getByTestId('sessions-layout-grouped').click();
+      const staleBadges = page.getByTestId('organization-state-counts');
+      await expect(staleBadges.first()).toBeVisible({ timeout: 10000 });
+      assert.ok(await staleBadges.first().getByText('Last known').count() > 0, 'the stale Running-led badge says Last known');
+      assert.equal(await staleBadges.getByTestId('composer-running-pulse').count(), 0, 'stale aggregate badges never animate');
+      assert.equal(await staleBadges.locator('svg[stroke^="url(#kontor-rainbow-"]').count(), 0, 'stale aggregate badges paint no rainbow');
+      await page.screenshot({ path:path.join(output,name+'-stale-badge.png') });
+    }
     await page.screenshot({ path:path.join(output,name+'.png') });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors,[]);

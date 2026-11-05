@@ -3531,19 +3531,19 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const pulseRow = <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" || pulseRows.has(listRowKey(item)) }}>{row}</SessionPulseContext.Provider>;
           if (item.kind === "result") return pulseRow;
           const key = listRowKey(item);
-          if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
+          if (item.kind === "empty") return <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" }}><OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} /></SessionPulseContext.Provider>;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
           const plans = epic ? planSources?.[epic.toLocaleUpperCase()] ?? [] : [];
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           // The row menu owns favorites, Details and Archive, so the tree adds only its indent, guides and arrange handle.
-          return <OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
+          return <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" }}><OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
             onMove={(distance) => moveRow(item, distance)}>
             {pulseRow}
-          </OrganizationRowView>;
+          </OrganizationRowView></SessionPulseContext.Provider>;
         }}
         ListEmptyComponent={
           <View

@@ -106,7 +106,9 @@ describe("composer pulse accessibility and lifetime", () => {
     const fixture = environment();
     const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
-    expect(published).toEqual([]);
+    // N2/N3: the first publish is synchronous at subscribe — foreground from AppState.currentState,
+    // Reduce Motion still unknown and therefore reduced.
+    expect(published).toEqual([fg(true, true)]);
     fixture.resolveMotion(false);
     await Promise.resolve();
     fixture.state("inactive");
@@ -114,7 +116,7 @@ describe("composer pulse accessibility and lifetime", () => {
     fixture.state("active");
     fixture.motion(true);
     fixture.motion(false);
-    expect(published).toEqual([fg(true, false), fg(false, false), fg(true, false), fg(true, true), fg(true, false)]);
+    expect(published).toEqual([fg(true, true), fg(true, false), fg(false, false), fg(true, false), fg(true, true), fg(true, false)]);
     cleanup();
     expect([fixture.motions.size, fixture.states.size]).toEqual([0, 0]);
   });
@@ -123,10 +125,11 @@ describe("composer pulse accessibility and lifetime", () => {
     const fixture = environment();
     const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    expect(published).toEqual([fg(true, true)]); // the synchronous subscribe publish
     fixture.motion(true);
     fixture.resolveMotion(false);
     await Promise.resolve();
-    expect(published).toEqual([fg(true, true)]);
+    expect(published).toEqual([fg(true, true)]); // the live event beat the late read; nothing new
     fixture.motion(false);
     expect(published).toEqual([fg(true, true), fg(true, false)]);
     cleanup();
@@ -136,12 +139,13 @@ describe("composer pulse accessibility and lifetime", () => {
     const fixture = environment();
     const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    expect(published).toEqual([fg(true, true)]); // the synchronous subscribe publish
     cleanup();
     fixture.resolveMotion(false);
     await Promise.resolve();
     fixture.motion(false);
     fixture.state("active");
-    expect(published).toEqual([]);
+    expect(published).toEqual([fg(true, true)]);
     expect([fixture.motions.size, fixture.states.size]).toEqual([0, 0]);
   });
 
@@ -149,10 +153,13 @@ describe("composer pulse accessibility and lifetime", () => {
     const fixture = environment();
     const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    // N2: even a rejected read leaves the synchronous subscribe facts in place — foreground flow
+    // without the pulse; "motion disabled" now means the pulse stays off, not that the flow stops.
+    expect(published).toEqual([fg(true, true)]);
     fixture.rejectMotion(new Error("preference unavailable"));
     await Promise.resolve();
     await Promise.resolve();
-    expect(published).toEqual([]);
+    expect(published).toEqual([fg(true, true)]);
     expect(fixture.errors.map(error => String(error))).toEqual(["Error: preference unavailable"]);
     cleanup();
   });
@@ -161,11 +168,13 @@ describe("composer pulse accessibility and lifetime", () => {
     const fixture = environment(null);
     const published: { foreground: boolean; reducedMotion: boolean }[] = [];
     const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    // Unknown app state: the synchronous publish is foreground=false, Reduce Motion unknown-reduced.
+    expect(published).toEqual([fg(false, true)]);
     fixture.resolveMotion(false);
     await Promise.resolve();
-    expect(published).toEqual([fg(false, false)]);
+    expect(published).toEqual([fg(false, true), fg(false, false)]);
     fixture.state("active");
-    expect(published).toEqual([fg(false, false), fg(true, false)]);
+    expect(published).toEqual([fg(false, true), fg(false, false), fg(true, false)]);
     cleanup();
   });
 

@@ -60,8 +60,11 @@ describe("composer pulse environment facts", () => {
       onReducedMotion: (listener) => { motionListener = listener; return () => { motionListener = null; }; },
     });
     const stop = observePulseEnvironment(port, (state) => published.push(state));
+    // N2/N3: the first publish is synchronous at subscribe — foreground from AppState.currentState and
+    // Reduce Motion still unknown, therefore reduced.
+    expect(published).toEqual([{ foreground: true, reducedMotion: true }]);
     await Promise.resolve();
-    expect(published).toEqual([{ foreground: true, reducedMotion: true }]); // unknown until read; flow keeps running
+    expect(published).toEqual([{ foreground: true, reducedMotion: true }]); // the read confirms the same facts
     motionListener!(false);
     expect(published).toEqual([{ foreground: true, reducedMotion: true }, { foreground: true, reducedMotion: false }]);
     stop();
@@ -75,7 +78,7 @@ describe("composer pulse environment facts", () => {
     await Promise.resolve();
     await Promise.resolve();
     stateListener!("background");
-    expect(published).toEqual([{ foreground: true, reducedMotion: false }, { foreground: false, reducedMotion: false }]);
+    expect(published).toEqual([{ foreground: true, reducedMotion: true }, { foreground: true, reducedMotion: false }, { foreground: false, reducedMotion: false }]);
     stop();
   });
 });

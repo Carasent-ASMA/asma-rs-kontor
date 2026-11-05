@@ -194,6 +194,23 @@ describe("Start or switch sheet", () => {
     return { render, props: all, onOpen, onShowView, onClose, get tree() { return tree; } };
   }
   const choose = (s: ReturnType<typeof sheet>, testID: string) => { press(byTestId(s.tree, testID)); s.render(); };
+
+  it("projects the directory's live flag over its organization tree, so the badge gate has one root cause (LSA-R2-S1)", () => {
+    // Off the chronological default (Last visited): only the grouped states render the organization
+    // tree at all, so the test switches to Running to reach the tree's badge wrapper.
+    const entries = [
+      prompted("agent-a", Date.now() - 60_000, { status: "running", title: "LSA • ASMA-1 • Route" }),
+      prompted("agent-b", Date.now() - 120_000, { status: "running", title: "LSA • ASMA-2 • Route" }),
+    ];
+    for (const live of [false, true]) {
+      const s = sheet({ directory: directory(entries, live) });
+      choose(s, "kontor-switch-state-running");
+      const orgProviders = s.tree.filter((node) => node.type === SessionPulseContext.Provider
+        && elements(node.props.children as ReactNode).some((child) => child.type === OrganizationRowView));
+      expect(orgProviders.length).toBeGreaterThan(0);
+      for (const provider of orgProviders) expect((provider.props.value as { live: boolean }).live).toBe(live);
+    }
+  });
   const search = (s: ReturnType<typeof sheet>, value: string) => { (byTestId(s.tree, "kontor-switch-search")!.props.onChangeText as (value: string) => void)(value); s.render(); };
 
   it("is a labelled dialog with New lead, search and rows that open by exact ID beside their own actions", async () => {

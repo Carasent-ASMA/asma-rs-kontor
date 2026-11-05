@@ -35,7 +35,7 @@ export function groupStateHelp(aggregate: OrganizationAggregate, contextual = fa
 }
 
 /** One primary state and its share, at every depth and width; the row owns focus and full help. */
-export function StateBadge({ state, aggregate, colors, compact, stale = false }: { state: OrganizationState | null; aggregate: OrganizationAggregate; colors: Colors; compact: boolean; stale?: boolean }) {
+export function StateBadge({ state, aggregate, colors, compact, stale }: { state: OrganizationState | null; aggregate: OrganizationAggregate; colors: Colors; compact: boolean; stale?: boolean }) {
   if (state === null) return <Text style={{ color: colors.foregroundMuted, fontSize: 9, opacity: 0.75 }}>No sessions</Text>;
   const count = leadingStates(aggregate, 1)[0]!.count;
   return <View testID="organization-state-counts" style={{ alignItems: "flex-end", flexShrink: 0 }}>
@@ -69,7 +69,7 @@ export function groupDisplayLabel(group: OrganizationGroup): string {
   return group.kind === "workspace" && group.parentKey?.includes("/kind:") ? group.label.slice(group.label.indexOf("•") + 1).trim() : group.label;
 }
 
-export function OrganizationRowView({ row, colors, compact, children, details, lifecycleAction, disabled, arranging, selected, favorite, stale = false, contextual = false, actions, onFavorite, onToggle, onMove, onSelect }: {
+export function OrganizationRowView({ row, colors, compact, children, details, lifecycleAction, disabled, arranging, selected, favorite, stale, contextual = false, actions, onFavorite, onToggle, onMove, onSelect }: {
   row: OrganizationRow; colors: Colors; compact: boolean; children?: ReactNode;
   /** A session's own control beside its row button, never inside it. */
   details?: ReactNode;
@@ -77,7 +77,8 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   /** Saved-preference writes are unavailable; disclosure still works. */
   disabled: boolean;
   arranging: boolean; selected: boolean; favorite: boolean;
-  /** The sessions were not read live; a Role header calls its states last known. */
+  /** The sessions were not read live; a Role header calls its states last known. Undefined defers to
+   * the surrounding SessionPulseContext liveness, so both badge trees gate from one root cause. */
   stale?: boolean;
   /** Show in tree retains surrounding sessions outside the result filters. */
   contextual?: boolean;

@@ -128,7 +128,8 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
           await page.screenshot({path:path.join(output,'390-light-motion.png')});
           await page.emulateMedia({reducedMotion:'reduce'});await tone.waitFor();
           // D3-r2: the tone stays mounted under Reduce Motion — only the pulse stops, the flow keeps cycling.
-          assert.equal(await pulse.evaluate(node=>getComputedStyle(node).transform),'matrix(1, 0, 0, 1, 0, 0)');
+          // N1: poll the carrier style instead of reading it once (the un-pulsed style lands on the next frame).
+          await page.waitForFunction(()=>{const el=document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-pulse"]');return el&&getComputedStyle(el).transform==='matrix(1, 0, 0, 1, 0, 0)';},undefined,{timeout:5000});
           await page.waitForFunction(()=>Number(document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-frame-0"]')?.style.opacity)<0.05,undefined,{timeout:5000});
           await page.emulateMedia({reducedMotion:'no-preference'});await tone.waitFor();
           await page.evaluate(()=>window.fixture.emit('a',{status:'idle'}));await waitForATitle(page,'Synthetic a · Idle');await pulse.waitFor({state:'detached'});

@@ -387,14 +387,16 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     {archive.notice ? <Text testID="kontor-switch-archive-result" accessibilityRole={archive.notice.error ? "alert" : undefined} role={archive.notice.error ? undefined : "status"} accessibilityLiveRegion="polite" style={{ ...muted, color: archive.notice.error ? colors.statusWarning : colors.foreground }}>{archive.notice.message}</Text> : null}
     {archive.notice?.review ? <Action small label="Open Sessions to review archive" colors={colors} onPress={() => onShowView({ status: "all", query: "", membership: "sessions" })} /> : null}
     {status === "recent" ? <DeviceNote colors={colors} help={COVERAGE} /> : null}
-    {tree ? tree.map((item) => {
+    {tree ? <SessionPulseContext.Provider value={{ live: directory.live, visible: true }}>
+      {tree.map((item) => {
       if (item.kind === "empty") return null;
       const key = item.kind === "group" ? item.group.key : `${item.parentKey}:${item.entry.id}`;
       return <OrganizationRowView key={key} row={item} colors={colors} compact={compact} disabled={false} arranging={false} selected={false} favorite={false}
         onToggle={() => { cancelDelayedOpen(); if (item.kind === "group") setExpanded((current) => ({ ...current, [item.group.key]: !item.expanded })); }} onMove={() => undefined} onSelect={() => undefined}>
         {item.kind === "session" ? row(item.entry, `session-row-${item.entry.id}`) : null}
       </OrganizationRowView>;
-    }) : rows.map((entry) => row(entry))}
+    })}
+    </SessionPulseContext.Provider> : rows.map((entry) => row(entry))}
     {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
     <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 32 }}>

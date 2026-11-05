@@ -123,6 +123,62 @@ describe("rainbow running mark", () => {
     expect(rainbowThemeKey(light)).toBe("light");
   });
 
+  it("crossfades forward around the whole loop, wrap included, without leaking residues (F2/D7)", () => {
+    const K = RAINBOW_FRAMES;
+    const windows = Array.from({ length: K }, (_, frame) => rainbowFrameInterpolation(frame, K));
+    // The gradient of frame f sits at 20 + (360/K) * f degrees, the shipped rotation step.
+    const angleOf = (frame: number) => 20 + (360 / K) * frame;
+    const stepsPerRevolution = 64;
+    const STEPS = stepsPerRevolution * K;
+    let previousPhase: number | null = null;
+    let unwrapped = 0;
+    for (let step = 0; step <= STEPS; step++) {
+      const t = (step % STEPS) / STEPS;
+      const alphas = windows.map((window) => opacityAt(window, t));
+      // (a) full coverage at every instant, wrap included.
+      let stack = 0;
+      for (const alpha of alphas) stack = alpha + (1 - alpha) * stack;
+      expect(stack, `coverage at t=${t}`).toBeGreaterThanOrEqual(0.999999);
+      // What each frame actually contributes to the visible paint: composited from the top down, a
+      // layer's contribution is its alpha times everything still translucent above it. Frame 0 is the
+      // permanent base layer — invisible beneath an opaque frame for most of the loop — so only the
+      // VISIBLE contributions can expose a wrap leak.
+      const visible: number[] = new Array(K).fill(0);
+      let transmittance = 1;
+      for (let frame = K - 1; frame >= 0; frame--) {
+        visible[frame] = alphas[frame]! * transmittance;
+        transmittance *= 1 - alphas[frame]!;
+      }
+      // (b) visible weight sits only on the handoff pair {floor(K*t), +1 mod K}: a middle frame vanishes
+      // right after its successor is opaque, so no old frame lingers into the wrap segment.
+      const base = Math.min(K - 1, Math.floor(t * K + 1e-9));
+      const pair = new Set([base, (base + 1) % K]);
+      for (let frame = 1; frame < K; frame++) {
+        if (!pair.has(frame)) expect(visible[frame]!, `frame ${frame} visible weight at t=${t}`).toBeLessThanOrEqual(1e-3);
+      }
+      // (c) the visible gradient phase advances monotonically FORWARD: unwrap each sampled mean against
+      // the previous one along the shortest arc and require it never to step back.
+      let x = 0, y = 0;
+      for (let frame = 0; frame < K; frame++) {
+        const radians = (angleOf(frame) * Math.PI) / 180;
+        x += visible[frame]! * Math.cos(radians);
+        y += visible[frame]! * Math.sin(radians);
+      }
+      const phase = Math.atan2(y, x);
+      if (previousPhase !== null) {
+        let delta = (phase - previousPhase) * (180 / Math.PI);
+        while (delta > 180) delta -= 360;
+        while (delta < -180) delta += 360;
+        expect(delta, `phase step at t=${t} (${delta.toFixed(3)} deg)`).toBeGreaterThanOrEqual(-1e-6);
+        unwrapped += delta;
+      }
+      previousPhase = phase;
+    }
+    // One revolution advances the visible phase by exactly one full turn.
+    expect(unwrapped, `total phase advance ${unwrapped.toFixed(2)} deg`).toBeGreaterThanOrEqual(359.5);
+    expect(unwrapped, `total phase advance ${unwrapped.toFixed(2)} deg`).toBeLessThanOrEqual(360.5);
+  });
+
   it("composites the K frames at full coverage so the rendered stroke never thins", () => {
     const windows = Array.from({ length: RAINBOW_FRAMES }, (_, frame) => rainbowFrameInterpolation(frame, RAINBOW_FRAMES));
     for (let step = 0; step <= 2400; step++) {
@@ -199,7 +255,11 @@ describe("rainbow running mark", () => {
       for (const window of windows) {
         for (let index = 1; index < window.inputRange.length; index++)
           expect(window.inputRange[index]!).toBeGreaterThan(window.inputRange[index - 1]!);
-        expect(window.inputRange[window.inputRange.length - 1]).toBe(1);
+        // Frame 0 and the topmost frame must span the whole clock; a middle frame clamps to its instant
+        // drop right after its successor is opaque (F2), and extrapolate: "clamp" holds it at 0 to t=1.
+        const spansWholeClock = window === windows[0] || window === windows[frames - 1];
+        if (spansWholeClock) expect(window.inputRange[window.inputRange.length - 1]).toBe(1);
+        else expect(window.inputRange[window.inputRange.length - 1]!).toBeLessThan(1);
       }
       expect(windows[0]!.inputRange[0]).toBe(0);
       for (let step = 0; step <= 120; step++) {

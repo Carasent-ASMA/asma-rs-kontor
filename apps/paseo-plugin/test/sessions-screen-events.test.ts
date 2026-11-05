@@ -312,7 +312,7 @@ import { SessionLayoutControl } from "../client/session-layout-control";
 import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { indentOf, StateBadge } from "../client/organization-row";
-import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { SessionPulseContext, SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
 import { ComposerPulse } from "../client/composer-pulse";
 import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
 import type { StatusFilter } from "../client/session-view";
@@ -391,9 +391,17 @@ function drawDense(element: ElementLike): ElementLike {
   return harness.draw(`dense:${props.entry.id}`, () => DenseSessionRow(props)) as unknown as ElementLike;
 }
 
-/** What the list's own renderer draws for one item; a session row's insides are drawn by walk. */
+/** D6 wraps organization rows (and their child session row) in the pulse-context provider; tests that
+ * reach into the drawn row element unwrap that wrapper first. */
+function unwrapPulseProvider(element: ElementLike): ElementLike {
+  return element.type === SessionPulseContext.Provider ? element.props.children as ElementLike : element;
+}
+
+/** What the list's own renderer draws for one item; a session row's insides are drawn by walk.
+ * D6 wraps organization rows (and their child session row) in the pulse-context provider, so tests
+ * that reach into the row element unwrap that wrapper first. */
 function drawItem(item: unknown): ElementLike {
-  return (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item });
+  return unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item }));
 }
 
 /** A listed session's row, tree session or flat result, by native ID. */
@@ -520,7 +528,7 @@ function sessionRowIds(): string[] {
 function toggle(kind: string) {
   const row = groupRows().find((candidate) => candidate.group.kind === kind)!;
   const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-  (renderItem({ item: row }).props.onToggle as () => void)();
+  (unwrapPulseProvider(renderItem({ item: row })).props.onToggle as () => void)();
   harness.flush();
 }
 
@@ -760,7 +768,7 @@ describe("SessionsScreen toolbar events", () => {
       theme: { colors } as PluginTheme, params: {}, workspaces: [{ id: "w-empty", name: "Empty desk", projectKey: null, projectName: null }],
     } as PluginScreenProps));
     const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-    const rendered = (row: GroupRow) => { const view = renderItem({ item: row }) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const rendered = (row: GroupRow) => { const view = unwrapPulseProvider(renderItem({ item: row })) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     const counts = (tree: ElementLike) => walk(tree).filter((element) => (element.props.style as { fontVariant?: string[] } | undefined)?.fontVariant?.includes("tabular-nums")).map(textOf);
     const empty = groupRows().find((row) => row.group.unitTotal === 0)!;
     expect(walk(rendered(empty)).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === null)).toBe(true);
@@ -1228,7 +1236,7 @@ describe("SessionsScreen toolbar events", () => {
     const status = filter === "state" ? "idle" : "all";
     patchSessionView("host-a", { layout: "grouped", query, status, streams: ["alpha"], legendOpen: true });
     renderScreen(undefined, compact);
-    const renderItem = (item: ListRow) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: ListRow }) => ElementLike)({ item });
+    const renderItem = (item: ListRow) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: ListRow }) => ElementLike)({ item }));
     const header = (row: GroupRow) => {
       const element = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
       return walk(element.type(element.props)).find((node) => node.props.accessibilityRole === "button")!.props;
@@ -1283,7 +1291,7 @@ describe("SessionsScreen toolbar events", () => {
     renderScreen({ state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
     setStateFilter("idle");
     // The current render's row renderer, since rows read the peek from its closure.
-    const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
+    const renderItem = (info: { item: unknown }) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info));
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
     expect(findByTestID(renderItem({ item: result }), "session-row-body").props.accessibilityLabel).toContain("Workstream Other work, epic ASMA-1, workspace Workspace");
     perform(renderItem({ item: result }), "show-in-tree");
@@ -1551,8 +1559,8 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), entries };
     patchSessionView("host-a", { query: "", grouping: "role", status: "all" });
     renderScreen(organization, compact);
-    const renderItem = (row: unknown) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row });
-    const drawn = (row: unknown) => { const view = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const renderItem = (row: unknown) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }));
+    const drawn = (row: unknown) => { const view = unwrapPulseProvider(renderItem(row)) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     return { renderItem, drawn };
   }
 
@@ -2179,7 +2187,7 @@ describe("SessionsScreen toolbar events", () => {
         theme: { colors } as PluginTheme, params: {}, planSources, onEpicTab } as Parameters<typeof SessionsScreen>[0]));
       const list = findByTestID(harness.current(), "sessions-list");
       const renderItem = list.props.renderItem as (info: { item: unknown }) => ElementLike;
-      return groupRows().filter((row) => row.group.kind === "epic").map((row) => renderItem({ item: { ...row, expanded: true } }));
+      return groupRows().filter((row) => row.group.kind === "epic").map((row) => unwrapPulseProvider(renderItem({ item: { ...row, expanded: true } })));
     };
     expect(render().map((row) => row.props.actions)).toEqual([undefined, undefined]);
     const [seven, eight] = render({ "ASMA-7": ["plan-a"], "ASMA-8": ["plan-b", "plan-c"] });
@@ -2322,7 +2330,7 @@ describe("SessionsScreen mobile filter page", () => {
     patchSessionView("host-a", { status: "all", streams: null });
     harness.reset(); renderScreen(organization);
     const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-    const drawn = (row: unknown) => { const view = renderItem({ item: row }) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const drawn = (row: unknown) => { const view = unwrapPulseProvider(renderItem({ item: row })) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     const group = groupRows()[0]!;
     const opened = (expanded: boolean) => walk(drawn({ ...group, expanded })).find((element) => element.props.accessibilityRole === "button")!.props["aria-expanded"];
     expect([opened(true), opened(false)]).toEqual([true, false]);
@@ -2383,7 +2391,7 @@ describe("SessionsScreen mobile filter page", () => {
     directory.state = { ...(directory.state as object), entries };
     patchSessionView("host-a", { grouping: "hierarchy" });
     renderCompact();
-    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike & { type: (props: unknown) => ElementLike };
+    const renderItem = (info: { item: unknown }) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info)) as ElementLike & { type: (props: unknown) => ElementLike };
     // The title's room: page padding 12 + 12, the depth-4 indent, the state icon and the actions menu at 40 each, and the body's padding 4 and border 1 + 1.
     const room = viewport - 24 - indentOf(4, true) - 2 * 40 - 4 - 2;
     // What the title's lines show at 7.41 px a character, the measured 78d mean at 14 px, above the row's 13 px; a model, not a render. Lines break at spaces only.
@@ -3414,5 +3422,41 @@ describe("independent Layout, Group by and exact scope", () => {
     (scopeControl("epic").props.onChange as (key: string) => void)("unknown"); harness.flush();
     expect(readSessionView("host-a").epic).toEqual({ kind: "unknown" });
     expect(sessionRowIds().sort()).toEqual(["desk-asw", "desk-csw", "desk-plan", "desk-unlabelled", "twin"]);
+  });
+
+  it("says why the rows went grey: the banner carries the grey sentence (M8)", () => {
+    directory.state = {
+      ...(directory.state as object),
+      entries: [sessionEntry("catalog", { status: "running" })],
+      source: "catalog",
+      status: "stale",
+      live: false,
+      staleReason: "The Paseo host is disconnected. Showing the last inventory.",
+      inventoryComplete: true,
+      lastUpdatedAt: 0,
+    };
+    renderScreen();
+    const banner = findByTestID(harness.current(), "sessions-source-banner");
+    expect(String(banner.props.message)).toContain("Running sessions show grey until Kontor is live again.");
+  });
+
+  it("projects the directory's live flag over the organization rows' badge gate, live and last known (LSA-R2-S1)", () => {
+    directory.state = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: true, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    renderScreen();
+    const orgProviderValue = () => {
+      const element = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: groupRows()[0] });
+      // The organization row's own wrapper — the badge gate — not the session row's inner provider.
+      expect(element.type).toBe(SessionPulseContext.Provider);
+      return (element.props.value as { live: boolean }).live;
+    };
+    expect(orgProviderValue()).toBe(true);
+    directory.state = { ...(directory.state as object), live: false, staleReason: "The Paseo host is disconnected. Showing the last inventory." };
+    renderScreen();
+    expect(orgProviderValue()).toBe(false);
   });
 });

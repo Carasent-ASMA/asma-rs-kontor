@@ -14,14 +14,14 @@ let animation: Animated.CompositeAnimation | undefined;
 let users = 0;
 const pulseProgress = () => progress ??= new Animated.Value(0);
 /** The shared clock: linear 0 -> 1, looping, about 2.7 s per revolution. No easing key — D7 forbids an
- * eased or ping-pong clock; the pulse's cosine shape comes from the sampled interpolation instead. */
+ * eased or ping-pong clock; the pulse's cosine shape comes from the sampled interpolation instead.
+ * This is the ONLY path to Animated.timing's options (F4): a test asserts exactly what the clock
+ * receives, so re-adding easing anywhere below the exported pins fails. */
 export const pulseClockConfig = { toValue: 1, duration: 2700 };
-function retainClock() {
+export const pulseTimingOptions = () => ({ ...pulseClockConfig, useNativeDriver: Platform.OS !== "web", isInteraction: false });
+export function retainClock() {
   if (users++ === 0) {
-    animation = Animated.loop(Animated.timing(pulseProgress(), {
-      ...pulseClockConfig,
-      useNativeDriver: Platform.OS !== "web", isInteraction: false,
-    }));
+    animation = Animated.loop(Animated.timing(pulseProgress(), pulseTimingOptions()));
     animation.start();
   }
   let released = false;
@@ -58,6 +58,10 @@ function subscribeMotion(listener: () => void) {
 export const pulseMotion = (snapshot: string): { active: boolean; pulsing: boolean } =>
   ({ active: snapshot.startsWith("1"), pulsing: snapshot === "10" });
 const motionSnapshot = () => `${flowEnabled ? 1 : 0}${reducedMotion ? 1 : 0}`;
+/** The useSyncExternalStore contract, exported for the wiring tests (F4/F5): what a subscriber hears
+ * and what the snapshot reads — including BEFORE the first subscribe, where unknown motion stays off. */
+export const subscribePulseMotion = subscribeMotion;
+export const pulseMotionSnapshot = () => motionSnapshot();
 const noMotion = () => "00";
 const noSubscription = () => () => {};
 

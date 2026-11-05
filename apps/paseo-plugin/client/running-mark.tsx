@@ -71,9 +71,12 @@ export function rainbowMarkSvg(shape: RunningMarkShape, colors: Colors, frame: n
  * Compositing windows for one frame on the shared clock, so the visible stroke is ALWAYS a full-coverage
  * opaque blend of two frames (WCAG 1.4.11): during a handoff the outgoing frame stays opaque beneath and
  * only the incoming topmost layer fades in — two half-transparent layers would drop coverage to 0.75 and
- * thin the light-theme stroke below 3:1. Frames render bottom-to-top in index order; the wrap handoff
- * (K-1 → 0) therefore fades the TOPMOST frame out over the always-opaque frame 0 beneath it. Every drop
- * happens beneath an already-opaque layer, where it is invisible.
+ * thin the light-theme stroke below 3:1. Frames render bottom-to-top in index order, so frame 0 is the
+ * permanent base layer: it fades out beneath the opaque middle frames and is fully opaque again by the
+ * time the wrap handoff (K-1 → 0) fades the topmost frame out over it. Every middle frame DISAPPEARS
+ * immediately after its successor is opaque — a window that instead ramped down only at t=1 would leave
+ * its residue visible in the wrap segment, washing the colour out and stepping the phase backwards
+ * (review-b F2); no other drop ever happens where it could be seen.
  */
 export function rainbowFrameInterpolation(frame: number, frames: number): { inputRange: number[]; outputRange: number[]; extrapolate: "clamp" } {
   const at = (step: number) => Number((step / frames).toFixed(6));
@@ -83,7 +86,7 @@ export function rainbowFrameInterpolation(frame: number, frames: number): { inpu
   if (frames < 3) return { inputRange: [0, 1], outputRange: [1, 1], extrapolate: "clamp" };
   if (frame === 0) return { inputRange: [0, at(1), after(1), at(frames - 1), 1], outputRange: [1, 1, 0, 1, 1], extrapolate: "clamp" };
   if (frame === frames - 1) return { inputRange: [at(frame - 1), at(frame), 1], outputRange: [0, 1, 0], extrapolate: "clamp" };
-  return { inputRange: [at(frame - 1), at(frame), after(frame + 1), 1], outputRange: [0, 1, 1, 0], extrapolate: "clamp" };
+  return { inputRange: [at(frame - 1), at(frame), after(frame + 1), after(frame + 1) + 1e-4], outputRange: [0, 1, 1, 0], extrapolate: "clamp" };
 }
 
 /** The resting rainbow for controls, legends and reduced motion: one static frame, no clock. */

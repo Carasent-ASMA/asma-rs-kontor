@@ -102,9 +102,10 @@ fs.writeFileSync(path.join(fixture, 'main.tsx'), `import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { View, Text } from 'react-native';
 import { ComposerPulse } from ${JSON.stringify(path.join(plugin, 'client/composer-pulse.tsx'))};
-import { RAINBOW_FRAMES } from ${JSON.stringify(path.join(plugin, 'client/running-mark.tsx'))};
+import { RAINBOW_FRAMES, rainbowFrameInterpolation, rainbowMarkSvg } from ${JSON.stringify(path.join(plugin, 'client/running-mark.tsx'))};
 import { SessionPulseContext, SessionStatusIcon, runningMarkNode } from ${JSON.stringify(path.join(plugin, 'client/session-state-marker.tsx'))};
 const dark = ${JSON.stringify(dark)};
+const light = { surface0:'#ffffff', surface1:'#fafafa', surface2:'#f4f4f5', border:'#e4e4e7', foreground:'#1a1a1e', foregroundMuted:'#71717a', accent:'#20744A', accentForeground:'#ffffff', statusSuccess:'#3e704a', statusWarning:'#7b5d39', statusDanger:'#9d433b' };
 const label = (text) => <Text style={{color: dark.foreground, fontSize: 13, fontFamily: 'monospace'}}>{text}</Text>;
 // Live session row: the real row glyph path (SessionPulseContext -> RunningSessionMark -> runningMarkNode).
 const liveRow = (
@@ -138,7 +139,24 @@ function App() {
   </div>;
 }
 createRoot(document.getElementById('root')).render(<App />);
-(window).gate = { frames: RAINBOW_FRAMES };
+// F2: the shipped compositing read, exposed for the wrap-segment analysis over the real frame markup.
+const opacityAt = (config, value) => {
+  if (value <= config.inputRange[0]) return config.outputRange[0];
+  for (let index = 1; index < config.inputRange.length; index++) {
+    if (value <= config.inputRange[index]) {
+      const span = config.inputRange[index] - config.inputRange[index - 1];
+      const share = span === 0 ? 1 : (value - config.inputRange[index - 1]) / span;
+      return config.outputRange[index - 1] + share * (config.outputRange[index] - config.outputRange[index - 1]);
+    }
+  }
+  return config.outputRange[config.outputRange.length - 1];
+};
+(window).gate = {
+  frames: RAINBOW_FRAMES,
+  alphaAt: (frame, t) => opacityAt(rainbowFrameInterpolation(frame, RAINBOW_FRAMES), t),
+  markup: (theme, frame) => rainbowMarkSvg('play', theme === 'light' ? light : dark, frame),
+  surface: (theme) => (theme === 'light' ? light.surface0 : dark.surface0),
+};
 document.title = 'gate-ready';
 `);
 
@@ -293,6 +311,67 @@ const matrixScale = (transform) => {
       assert.equal(chroma.chromaticPixels, 0, `the last-known row stays muted grey (${passName}): ${chroma.chromaticPixels} chromatic pixels`);
       pass.lastKnown = { toneCount: lastKnownTones, rainbow: lastKnownRainbow, chromaticPixels: chroma.chromaticPixels, file: path.join('frames', passName, 'last-known-marker.png') };
       await page.screenshot({ path: path.join(output, `pass-${passName}-page.png`), fullPage: true });
+      if (passName === 'reduce-on') {
+        // F2: the wrap segment t ∈ [7/8, 1] composited from the real shipped paint, against a
+        // mid-segment reference: mean chroma of the painted stroke and the dominant phase per step.
+        pass.wrap = await page.evaluate(async ({ themes }) => {
+          const gate = (window).gate;
+          const K = gate.frames;
+          const angleOf = (frame) => 20 + (360 / K) * frame;
+          const size = 64;
+          const loadImage = (src) => new Promise((done, fail) => { const image = new Image(); image.onload = () => done(image); image.onerror = fail; image.src = src; });
+          const analyse = async (theme, tValues) => {
+            const out = [];
+            for (const t of tValues) {
+              const canvas = document.createElement('canvas');
+              canvas.width = size; canvas.height = size;
+              const ctx = canvas.getContext('2d', { willReadFrequently: true });
+              ctx.fillStyle = gate.surface(theme); ctx.fillRect(0, 0, size, size);
+              const layers = [];
+              for (let frame = 0; frame < K; frame++) {
+                const alpha = gate.alphaAt(frame, t);
+                if (alpha <= 0) continue;
+                layers.push({ alpha, image: await loadImage('data:image/svg+xml;utf8,' + encodeURIComponent(gate.markup(theme, frame))) });
+              }
+              layers.forEach(({ alpha, image }) => { ctx.globalAlpha = alpha; ctx.drawImage(image, 0, 0, size, size); });
+              ctx.globalAlpha = 1;
+              const data = ctx.getImageData(0, 0, size, size).data;
+              let chromaSum = 0, painted = 0, x = 0, y = 0, weight = 0;
+              for (let index = 0; index < data.length; index += 4) {
+                if (data[index + 3] <= 16) continue;
+                const r = data[index], g = data[index + 1], b = data[index + 2];
+                chromaSum += Math.max(r, g, b) - Math.min(r, g, b); painted++;
+              }
+              for (let frame = 0; frame < K; frame++) {
+                const alpha = gate.alphaAt(frame, t);
+                const radians = (angleOf(frame) * Math.PI) / 180;
+                x += alpha * Math.cos(radians); y += alpha * Math.sin(radians); weight += alpha;
+              }
+              const phase = Math.atan2(y / weight, x / weight) * (180 / Math.PI);
+              out.push({ t, chroma: Math.round((chromaSum / Math.max(1, painted)) * 100) / 100, phase: Math.round(((phase + 360) % 360) * 100) / 100 });
+            }
+            return out;
+          };
+          const mid = [0.3125, 0.375, 0.4375];
+          const wrap = Array.from({ length: 9 }, (_, index) => 0.875 + index / 64);
+          const result = {};
+          for (const theme of themes) result[theme] = { mid: await analyse(theme, mid), wrap: await analyse(theme, wrap) };
+          return result;
+        }, { themes: ['dark', 'light'] });
+        // The wrap segment must not wash out: its mean chroma stays within the mid-segment's band,
+        // and the dominant phase advances forward across the wrap samples.
+        for (const [theme, entry] of Object.entries(pass.wrap)) {
+          const midChroma = entry.mid.reduce((sum, sample) => sum + sample.chroma, 0) / entry.mid.length;
+          const wrapMin = Math.min(...entry.wrap.map(sample => sample.chroma));
+          assert.ok(wrapMin >= midChroma * 0.75, `wrap chroma keeps mid-segment level on ${theme}: wrap min ${wrapMin} vs mid ${Math.round(midChroma * 100) / 100}`);
+          const phases = entry.wrap.map(sample => sample.phase);
+          for (let index = 1; index < phases.length; index++) {
+            const step = (phases[index] - phases[index - 1] + 360) % 360;
+            assert.ok(step <= 45.01, `wrap phase advances forward on ${theme} at sample ${index}: step ${Math.round(step * 100) / 100}`);
+          }
+        }
+        fs.writeFileSync(path.join(output, 'wrap-analysis.json'), JSON.stringify(pass.wrap, null, 2) + '\n');
+      }
       if (tail) await tail(page, pass);
       report.passes[passName] = pass;
       report.cases.push({ name: passName, status: 'PASS' });

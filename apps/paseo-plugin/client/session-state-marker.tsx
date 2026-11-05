@@ -12,10 +12,16 @@ import { sessionStatusInk } from "./session-status-ink";
  * The exact quick-filter icon for a state. The row already
  * names its status; this adds no focus target or repeated screen-reader speech.
  * Labeled status filters teach the same shapes, without another permanent legend.
- * Running animates on the shared carrier (D6) — except a stale badge (Last known), which keeps
- * runningMarkNode's muted ink, because the rainbow never claims live.
+ * D6 + the TPM ruling: a LIVE organization badge led by Running animates on the shared carrier like
+ * any live row; a NOT-LIVE one keeps runningMarkNode's muted ink — the rainbow never claims live.
+ * Filter controls always animate: they call SessionStatusIcon directly and never gate on liveness.
  */
 export const SessionPulseContext = createContext({ live: false, visible: false });
+
+/** The badge's running mark goes muted whenever the data is not live: an explicit stale flag wins
+ * (the banner's own condition), otherwise the surrounding SessionPulseContext liveness decides.
+ * Outside any provider the default is not-live, so a forgotten tree can never animate stale data. */
+export const badgeStale = (stale: boolean | undefined, live: boolean | undefined): boolean => stale ?? live === false;
 
 export function SessionStatusIcon({ status, colors, size = 16, session = false, stale = false }: { status: StatusFilter; colors: Colors; size?: number; session?: boolean; stale?: boolean }) {
   return <View testID="session-state-marker" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden
@@ -30,8 +36,9 @@ export function SessionStatusIcon({ status, colors, size = 16, session = false, 
   </View>;
 }
 
-export function SessionStateMarker({ state, colors, size, session = false, stale = false }: { state: OrganizationState; colors: Colors; size?: number; session?: boolean; stale?: boolean }) {
-  return <SessionStatusIcon status={state === "failed" ? "error" : state} colors={colors} size={size} session={session} stale={stale} />;
+export function SessionStateMarker({ state, colors, size, session = false, stale }: { state: OrganizationState; colors: Colors; size?: number; session?: boolean; stale?: boolean }) {
+  const scope = useContext(SessionPulseContext);
+  return <SessionStatusIcon status={state === "failed" ? "error" : state} colors={colors} size={size} session={session} stale={badgeStale(stale, scope.live)} />;
 }
 
 /** Live runs the shared pulse; last known keeps today's muted ink — the rainbow never claims live. */
