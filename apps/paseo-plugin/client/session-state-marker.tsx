@@ -18,9 +18,11 @@ import { sessionStatusInk } from "./session-status-ink";
  */
 export const SessionPulseContext = createContext({ live: false, visible: false });
 
-/** The badge's running mark goes muted whenever the data is not live: an explicit stale flag wins
- * (the banner's own condition), otherwise the surrounding SessionPulseContext liveness decides.
- * Outside any provider the default is not-live, so a forgotten tree can never animate stale data. */
+/** The badge's running mark goes muted whenever the data is not live: an explicit stale flag wins —
+ * callers pass their own not-live condition (the sessions screen passes !state.live, R1; start-switch
+ * passes nothing and mutes through the surrounding SessionPulseContext liveness) — otherwise that
+ * context decides. Outside any provider the default is not-live, so a forgotten tree can never
+ * animate stale data. */
 export const badgeStale = (stale: boolean | undefined, live: boolean | undefined): boolean => stale ?? live === false;
 
 export function SessionStatusIcon({ status, colors, size = 16, session = false, stale = false }: { status: StatusFilter; colors: Colors; size?: number; session?: boolean; stale?: boolean }) {

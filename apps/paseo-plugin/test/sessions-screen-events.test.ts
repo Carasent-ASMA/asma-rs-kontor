@@ -3482,7 +3482,32 @@ describe("independent Layout, Group by and exact scope", () => {
 
   const hasGreySentence = () => walk(harness.current()).some((node) => typeof node.props.message === "string" && String(node.props.message).includes("stay grey while this list comes from the shared catalog"));
 
-  it("mutes a catalog-ready Running-led badge and its session rows until the list is live again (S1/R1)", () => {
+  /** The badge and row wiring, asserted as ELEMENT CONTRACTS (form chosen per the brief: the react
+   * mock routes pulse contexts by value shape to the harness cell, so no behavioural assertion can
+   * read a provider value through context — but the Provider's `value` prop is in the element tree
+   * the harness walks). The drawn-mark asserts in the test prove what those wires render once the
+   * context routes; the real-renderer guards for the whole test are R14
+   * session-compact-rows.browser.cjs :116 (a live Running-led organization badge animates) and
+   * :206 (offline mutes every session row and every aggregate badge). */
+  function wiringContract(): { stale: boolean | undefined; markerStale: boolean | undefined; rowProviderLive: boolean | undefined } {
+    const org = drawItem(groupRows()[0] as GroupRow) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike; props: { stale?: boolean } };
+    const rowTree = org.type(org.props);
+    const badge = walk(rowTree).find((node) => node.type === StateBadge)!;
+    const badgeTree = walk((badge.type as (props: never) => ElementLike)(badge.props as never));
+    const marker = badgeTree.find((node) => node.type === SessionStateMarker)!;
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === "busy")!;
+    const drawn = drawItem(row);
+    const provider = [drawn, ...walk(drawn)].find((node) => node.type === SessionPulseContext.Provider);
+    return {
+      stale: org.props.stale,
+      // The marker's own stale prop — what the row actually forwards (a mutant that forces it
+      // undefined/false here falls back to the context default and fails this contract).
+      markerStale: (marker.props as { stale?: boolean }).stale,
+      rowProviderLive: (provider?.props as { value?: { live?: boolean } } | undefined)?.value?.live,
+    };
+  }
+
+  it("mutes a catalog-ready Running-led badge and its session rows until the list is live again (S1/R1: the drawn marks, the wiring as element contracts — org row stale === !state.live, row provider live === state.live — and R14 :116/:206 as the real-renderer guards)", () => {
     const catalogReady = {
       ...emptyDirectoryState(),
       entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
@@ -3501,8 +3526,15 @@ describe("independent Layout, Group by and exact scope", () => {
     expect(muted.find((node) => node.type === "Icon")!.props).toMatchObject({ color: colors.foregroundMuted });
     // The session rows under the group are muted with it (R1: they mute exactly together).
     expect(rowMarksOf("busy").some((node) => node.type === ComposerPulse)).toBe(false);
-    // Live directory: the same badge and the same rows ride the animated carrier again.
-    directory.state = { ...catalogReady, live: true };
+    // The wiring itself, as element contracts: the badge gets stale === !state.live at the row AND
+    // at the marker it forwards to (a badge that drops the prop and falls back to the context
+    // default fails here — G-ctx-default), and the row provider carries live === state.live
+    // (a forced-live provider fails here — ROWS-live).
+    expect(wiringContract()).toEqual({ stale: true, markerStale: true, rowProviderLive: false });
+    // Live list, modeled as the adapter produces it: a direct answer (source "direct", ready,
+    // complete, no stale reason). The adapter never emits source "catalog" with live:true
+    // (shared-inventory.ts catalogDirectory hardcodes live: false on the catalog branch).
+    directory.state = { ...catalogReady, source: "direct", live: true };
     renderScreen();
     expandAll();
     pulseContext.current = { live: true, visible: true };
@@ -3511,6 +3543,7 @@ describe("independent Layout, Group by and exact scope", () => {
     expect(live.some((node) => node.type === "Icon")).toBe(false);
     const liveRowMarks = rowMarksOf("busy");
     expect(liveRowMarks.some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(wiringContract()).toEqual({ stale: false, markerStale: false, rowProviderLive: true });
   });
 
   it("explains the catalog fallback's grey in a calm notice, and says nothing on a live list (R2)", () => {
@@ -3526,8 +3559,10 @@ describe("independent Layout, Group by and exact scope", () => {
     expect(notice.props.tone).toBe("info");
     // The stale/error sentence belongs to the banner path only.
     expect(String(notice.props.message)).not.toContain("until Kontor is live again");
-    // A live list carries no such notice.
-    directory.state = { ...(directory.state as object), live: true };
+    // A live list carries no such notice. Modeled as the adapter produces it: a direct answer
+    // (source "direct", ready, live) — the adapter never emits source "catalog" with live:true
+    // (shared-inventory.ts catalogDirectory hardcodes live: false on the catalog branch).
+    directory.state = { ...(directory.state as object), source: "direct", live: true };
     renderScreen();
     expect(hasGreySentence()).toBe(false);
   });
@@ -3575,10 +3610,6 @@ describe("independent Layout, Group by and exact scope", () => {
     const trayTree = walk((trayNode.type as (props: never) => ElementLike)(trayNode.props as never));
     const hide = trayTree.find((node) => node.props.accessibilityLabel === "Hide notices")!;
     (hide.props.onPress as () => void)(); harness.flush();
-    // The hide's view write replaces the view (the toolbar preference is lost), so re-expand before
-    // reading the trigger.
-    patchSessionView("host-a", { toolbarOpen: true, scrollOffset: 0 });
-    renderScreen();
     // The trigger element itself carries the notices; its own testID lives on its inner Pressable.
     const button = walk(harness.current()).find((node) => (node.type as { name?: string }).name === "NoticesButton")!;
     const notices = button.props.notices as Array<{ summary: string; tone: string }>;
@@ -3601,7 +3632,8 @@ describe("independent Layout, Group by and exact scope", () => {
       source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
     };
     directory.state = catalogRunning;
-    // Expanded toolbar: the hidden tray's trigger must be assertable after the notice hides (D2-N1).
+    // The saved offset stays 0 so the toolbar mounts expanded (initialToolbarVisibility reads the
+    // saved scrollOffset), keeping the hidden tray's trigger assertable after the hide (D2-N1).
     patchSessionView("host-a", { grouping: "hierarchy", scrollOffset: 0 });
     renderScreen();
     // NoticeTray is never drawn by the harness walk; invoke it to reach its hide control.
@@ -3609,8 +3641,6 @@ describe("independent Layout, Group by and exact scope", () => {
     const trayTree = walk((trayNode.type as (props: never) => ElementLike)(trayNode.props as never));
     const hide = trayTree.find((node) => node.props.accessibilityLabel === "Hide notices")!;
     (hide.props.onPress as () => void)(); harness.flush();
-    // The hide's view write replaces the view; keep the toolbar expanded for the trigger asserts.
-    patchSessionView("host-a", { toolbarOpen: true, scrollOffset: 0 });
     // The persisted hidden key is stable: it names no source (R2-key).
     expect(readSessionView("host-a").noticesHidden).toEqual(["catalog"]);
     // The running count drops to 0: the notice stops showing — and must stay forgotten.
@@ -3622,8 +3652,10 @@ describe("independent Layout, Group by and exact scope", () => {
     harness.flush();
     expect(hasGreySentence()).toBe(false);
     expect(walk(harness.current()).some((node) => (node.type as { name?: string }).name === "NoticesButton")).toBe(true);
-    // Leaving the fallback completes the reading and forgets the hidden key.
-    directory.state = { ...catalogRunning, live: true };
+    // Leaving the fallback completes the reading and forgets the hidden key. The live list is
+    // modeled as the adapter produces it (source "direct", ready, live; the adapter never emits
+    // source "catalog" with live:true — shared-inventory.ts catalogDirectory).
+    directory.state = { ...catalogRunning, source: "direct", live: true };
     harness.flush();
     // Back on the fallback with running rows: the notice announces itself again.
     directory.state = catalogRunning;
