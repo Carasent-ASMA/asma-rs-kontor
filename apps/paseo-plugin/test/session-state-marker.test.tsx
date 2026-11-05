@@ -1,7 +1,15 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("react-native", () => ({ View: "View", Text: "Text" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
+// SessionStateMarker reads the pulse context through useContext; outside a renderer the stub hands back
+// the value each test sets, and with no value set it reads the module's own createContext default —
+// exactly what an unprovided subtree sees (N5/D1-A1).
+const pulseContext = vi.hoisted(() => ({ current: null as null | { live: boolean; visible: boolean } }));
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react")>();
+  return { ...actual, useContext: (ctx: { _currentValue: { live: boolean; visible: boolean } }) => pulseContext.current ?? ctx._currentValue };
+});
 import { SessionStateMarker, SessionStatusIcon, runningMarkNode } from "../client/session-state-marker";
 import { ComposerPulse } from "../client/composer-pulse";
 import { RunningRainbowMark } from "../client/running-mark";
@@ -31,7 +39,7 @@ function elements(node: ReactNode): Element[] {
 function drawing(state: OrganizationState, colors = dark) {
   const adapted = SessionStateMarker({ state, colors });
   const root = SessionStatusIcon(adapted.props);
-  const symbol = elements(root).find(node => node.type === "Icon" || node.type === RunningRainbowMark)!;
+  const symbol = elements(root).find(node => node.type === "Icon" || node.type === ComposerPulse)!;
   return { root, symbol, color: symbol.props.color as string | undefined };
 }
 function luminance(hex: string): number {
@@ -45,26 +53,38 @@ function contrast(a: string, b: string): number {
 }
 
 describe("compact session status markers", () => {
-  it("opts only an actual running-session marker into motion, never a filter, legend or another state", () => {
-    const marker = SessionStatusIcon({ status: "running", colors: dark, session: true });
+  beforeEach(() => { pulseContext.current = { live: true, visible: true }; });
+
+  it("keeps an orphan badge muted: outside any provider the context default is not-live (N5/D1-A1)", () => {
+    // No provider anywhere above this badge — the module's own default decides, and it must say
+    // "not live": a forgotten tree can never animate stale data.
+    pulseContext.current = null;
+    const orphan = SessionStatusIcon(SessionStateMarker({ state: "running", colors: dark }).props);
+    expect(elements(orphan).some((node) => node.type === ComposerPulse)).toBe(false);
+    const ink = elements(orphan).find((node) => node.type === "Icon")!;
+    expect(ink.props).toMatchObject({ name: QUICK_FILTER_ICONS.running, color: dark.foregroundMuted });
+  });
+
+  it("animates every running mark on the shared carrier: rows, filters and legends alike (D6)", () => {    const marker = SessionStatusIcon({ status: "running", colors: dark, session: true });
     expect(elements(marker).some((node) => node.type === "Icon")).toBe(false);
     for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
-      const staticMark = SessionStatusIcon({ status, colors: dark });
+      const runningMark = SessionStatusIcon({ status, colors: dark });
       if (status === "running") {
-        expect(elements(staticMark).some((node) => node.type === RunningRainbowMark)).toBe(true);
-        expect(elements(staticMark).some((node) => node.type === ComposerPulse)).toBe(false);
+        // D6 withdraws the static-control rule: the running filter/legend animates on the shared carrier.
+        expect(elements(runningMark).some((node) => node.type === ComposerPulse)).toBe(true);
+        expect(elements(runningMark).some((node) => node.type === RunningRainbowMark)).toBe(false);
         expect(elements(SessionStatusIcon({ status, colors: dark, session: true })).some((node) => node.type === "Icon")).toBe(false);
       } else {
-        expect(elements(staticMark).some((node) => node.type === "Icon")).toBe(true);
+        expect(elements(runningMark).some((node) => node.type === "Icon")).toBe(true);
         expect(elements(SessionStatusIcon({ status, colors: dark, session: true })).some((node) => node.type === "Icon")).toBe(true);
       }
     }
   });
 
-  it("paints the running filter and legend with the static rainbow of the same shape, in every theme", () => {
+  it("hands the running filter and legend to the shared pulse carrier with the Play shape, in every theme", () => {
     for (const colors of [dark, light]) {
-      const mark = elements(SessionStatusIcon({ status: "running", colors })).find(node => node.type === RunningRainbowMark)!;
-      expect(mark.props).toEqual({ colors, size: 16, shape: "play" });
+      const mark = elements(SessionStatusIcon({ status: "running", colors })).find(node => node.type === ComposerPulse)!;
+      expect(mark.props).toEqual({ colors, size: 16, name: "Play" });
     }
   });
 
@@ -85,6 +105,36 @@ describe("compact session status markers", () => {
     expect(hidden.props).toEqual({ name: QUICK_FILTER_ICONS.running, colors: dark, size: 22, enabled: false });
   });
 
+  it("keeps a stale group's running badge muted: Last known never animates (LSA-R2-S1)", () => {
+    pulseContext.current = { live: false, visible: true };
+    const stale = SessionStatusIcon({ status: "running", colors: dark, stale: true });
+    expect(elements(stale).some((node) => node.type === ComposerPulse)).toBe(false);
+    expect(elements(stale).some((node) => node.type === RunningRainbowMark)).toBe(false);
+    const muted = elements(stale).find((node) => node.type === "Icon")!;
+    expect(muted.props).toMatchObject({ name: QUICK_FILTER_ICONS.running, color: dark.foregroundMuted });
+    // The muted branch is runningMarkNode's, not a duplicate.
+    expect(muted.props).toMatchObject(runningMarkNode({ live: false, visible: true }, dark, 16).props);
+    // Context liveness alone drives the gate: a not-live tree mutes the badge with no stale prop.
+    const notLive = SessionStatusIcon(SessionStateMarker({ state: "running", colors: dark }).props);
+    expect(elements(notLive).some((node) => node.type === ComposerPulse)).toBe(false);
+    expect(elements(notLive).find((node) => node.type === "Icon")!.props).toMatchObject({ name: QUICK_FILTER_ICONS.running, color: dark.foregroundMuted });
+  });
+
+  it("keeps non-stale group running badges on the animated carrier (control for LSA-R2-S1)", () => {
+    const fresh = SessionStatusIcon({ status: "running", colors: dark });
+    expect(elements(fresh).some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(elements(fresh).some((node) => node.type === "Icon")).toBe(false);
+    // A live tree animates the badge through the same context gate (D6 lists organization rows).
+    const liveBadge = SessionStatusIcon(SessionStateMarker({ state: "running", colors: dark }).props);
+    expect(elements(liveBadge).some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(elements(liveBadge).some((node) => node.type === "Icon")).toBe(false);
+    // An explicit stale flag wins even over a live context: the banner's own condition.
+    const overridden = SessionStatusIcon(SessionStateMarker({ state: "running", colors: dark, stale: true }).props);
+    expect(elements(overridden).some((node) => node.type === ComposerPulse)).toBe(false);
+    // Filter affordances keep the pulse regardless of any directory staleness.
+    expect(elements(SessionStatusIcon({ status: "running", colors: dark, stale: false })).some((node) => node.type === ComposerPulse)).toBe(true);
+  });
+
   it("uses the agreed session icons and keeps history and filter choices distinct", () => {
     expect(QUICK_FILTER_ICONS).toEqual({
       recent: "Clock", activity: "Activity", current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
@@ -96,12 +146,12 @@ describe("compact session status markers", () => {
     const monochrome = { ...dark, accent: dark.foregroundMuted, statusSuccess: dark.foregroundMuted, statusWarning: dark.foregroundMuted, statusDanger: dark.foregroundMuted };
     const drawings = states.map(state => drawing(state, monochrome));
     // Running carries the rainbow Play instead of a named glyph; its shape still separates it from all six inks.
-    const identities = drawings.map(value => value.symbol.type === RunningRainbowMark ? "rainbow-play" : value.symbol.props.name);
+    const identities = drawings.map(value => value.symbol.type === ComposerPulse ? "rainbow-play" : value.symbol.props.name);
     expect(new Set(identities).size).toBe(7);
     expect(identities).toEqual(states.map(state => state === "running" ? "rainbow-play" : QUICK_FILTER_ICONS[state === "failed" ? "error" : state]));
     for (const { root, symbol } of drawings) {
       expect(root.props.style).toMatchObject({ width: 16, height: 18, flexShrink: 0 });
-      if (symbol.type !== RunningRainbowMark) expect(symbol.props.children).toBeUndefined();
+      if (symbol.type !== ComposerPulse) expect(symbol.props.children).toBeUndefined();
     }
   });
 

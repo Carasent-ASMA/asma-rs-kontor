@@ -75,14 +75,22 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
       try{
         await page.goto(server.resolvedUrls.local[0]);const a=page.getByTestId('pill-a'),b=page.getByTestId('pill-b');
         await page.getByRole('button',{name:'Synthetic a · Idle',exact:true}).waitFor();
+        // D3-r2: Reduce Motion keeps the colour flow, so a tone mounts before the transitions run —
+        // pill a is Idle here, so this readiness wait is legitimately page-scoped (pill b is Running).
+        await page.getByTestId('composer-running-tone').first().waitFor({timeout:15000});
         const baseline=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));
         await page.getByRole('textbox',{name:'Chat draft'}).fill('Preserve this draft');
         // Live running paints the rainbow; every other state keeps its ink on the Kontor building.
         const transitions=[['running','Running','rainbow',{}],['running','Needs input','rgb(192, 150, 100)',{pendingPermissions:[{id:'permission-a',provider:'codex',name:'Read',kind:'tool'}]}],['error','Error','rgb(216, 132, 123)',{}],['idle','Attention','rgb(108, 177, 123)',{requiresAttention:true,attentionReason:'finished'}],['idle','Idle','rgb(161, 165, 164)',{}],['initializing','Starting','rgb(161, 165, 164)',{}],['closed','Closed','rgb(161, 165, 164)',{}]];
         const measurements=[];
         for(const [status,label,ink,extra]of transitions){await page.evaluate(({status,extra})=>window.fixture.emit('a',{status,...extra}),{status,extra});await waitForATitle(page,'Synthetic a · '+label);
+          // D3-r2: the tone rides the shared environment, which re-reads the OS facts asynchronously after
+          // every unmount; wait for the remount before counting the eight frames.
+          // S3: scoped to pill a like every pill-a count below; pill b may hold a tone of its own here.
+          if(ink==='rainbow')await a.getByTestId('composer-running-tone').waitFor({timeout:5000});
           const marks=await a.locator('[data-icon]').evaluateAll(nodes=>nodes.map(node=>node.dataset.icon));
-          if(ink==='rainbow'){assert.deepEqual(marks,['kontor-rainbow']);assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-dark-"]').count(),1);}
+          if(ink==='rainbow'){
+            assert.deepEqual(marks,['kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow','kontor-rainbow']);assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-dark-"]').count(),8);}
           else{assert.deepEqual(marks,['Building2']);assert.equal(await a.locator('[data-icon]').evaluate(node=>getComputedStyle(node).color),ink);}
           assert.equal(await b.getAttribute('aria-label'),'Synthetic b · Running');
           await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));measurements.push({label,ms:await page.evaluate(()=>window.fixture.paints.at(-1)?.eventToPaintOpportunityMs)});
@@ -117,11 +125,14 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
           assert.ok(scaleMax<=1.125,`breathing scale stays <=1.12 over a loop, got ${scaleMax}`);
           await page.screenshot({path:path.join(output,'390-dark-motion.png')});
           await page.evaluate(()=>window.fixture.light());
-          assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-light-"]').count(),6,'light theme re-paints every frame with light stops');
+          assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-light-"]').count(),8,'light theme re-paints every frame with light stops');
           assert.equal(await a.locator('[data-icon="kontor-rainbow"] svg[stroke^="url(#kontor-rainbow-dark-"]').count(),0);
           await page.screenshot({path:path.join(output,'390-light-motion.png')});
-          await page.emulateMedia({reducedMotion:'reduce'});await tone.waitFor({state:'detached'});
-          assert.equal(await pulse.evaluate(node=>getComputedStyle(node).transform),'matrix(1, 0, 0, 1, 0, 0)');
+          await page.emulateMedia({reducedMotion:'reduce'});await tone.waitFor();
+          // D3-r2: the tone stays mounted under Reduce Motion — only the pulse stops, the flow keeps cycling.
+          // N1: poll the carrier style instead of reading it once (the un-pulsed style lands on the next frame).
+          await page.waitForFunction(()=>{const el=document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-pulse"]');return el&&getComputedStyle(el).transform==='matrix(1, 0, 0, 1, 0, 0)';},undefined,{timeout:5000});
+          await page.waitForFunction(()=>Number(document.querySelector('[data-testid="pill-a"] [data-testid="composer-running-frame-0"]')?.style.opacity)<0.05,undefined,{timeout:5000});
           await page.emulateMedia({reducedMotion:'no-preference'});await tone.waitFor();
           await page.evaluate(()=>window.fixture.emit('a',{status:'idle'}));await waitForATitle(page,'Synthetic a · Idle');await pulse.waitFor({state:'detached'});
           await page.evaluate(()=>window.fixture.emit('a',{status:'running'}));await waitForATitle(page,'Synthetic a · Running');await tone.waitFor();

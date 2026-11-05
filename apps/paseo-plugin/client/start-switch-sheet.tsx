@@ -14,7 +14,7 @@ import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
 import { StateToolbar } from "./mobile-quick-toolbar";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS } from "./mobile-quick-filter-options";
-import { RunningRainbowMark } from "./running-mark";
+import { ComposerPulse } from "./composer-pulse";
 import { useRowVisibility, type MeasurableView } from "./row-visibility";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { OrganizationRowView } from "./organization-row";
@@ -153,7 +153,7 @@ function MorePanel({ colors, status, counts, onStatus, onArchived }: {
   const item = (key: string, label: string, icon: string, help: string, selected: boolean, onPress: () => void, count?: string, iconColor?: string, iconNode?: ReactNode) => <MoreItem key={key} testID={`kontor-switch-more-${key}`}
     label={label} icon={icon} iconNode={iconNode} iconColor={iconColor} help={help} selected={selected} count={count} colors={colors} onPress={onPress} />;
   const state = (filter: StatusFilter, iconColor?: string) => item(filter, quickFilterLabel(filter), QUICK_FILTER_ICONS[filter], stateHelp(filter, counts[filter]), status === filter, () => onStatus(filter), counts[filter]?.text, iconColor,
-    filter === "running" ? <RunningRainbowMark colors={colors} size={16} shape="play" /> : undefined);
+    filter === "running" ? <ComposerPulse colors={colors} size={16} name="Play" /> : undefined);
   const group = { flexDirection: "row", flexWrap: "wrap", gap: 4 } as const;
   return <View testID="kontor-switch-more-panel" style={{ gap: 8 }}>
     <View role="group" accessibilityLabel="All states" style={group}>{QUICK_STATUS_FILTERS.map((filter) => state(filter, sessionStatusInk(filter, colors)))}</View>

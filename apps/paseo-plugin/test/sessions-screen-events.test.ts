@@ -24,6 +24,9 @@ type HookQueueItem = {
 
 const accessibility = vi.hoisted(() => ({ screenReader: false }));
 const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void } }));
+/** The drawn components read the pulse liveness through this cell; tests set it per case and the
+ * beforeEach default is live, the normal screen state. */
+const pulseContext = vi.hoisted(() => ({ current: null as null | { live: boolean; visible: boolean } }));
 const { harness, directory } = vi.hoisted(() => {
   let slots: HookSlot[] = [];
   /** Each drawn child's own hook slots, kept across draws as React keeps a mounted instance's state. */
@@ -217,7 +220,14 @@ const { harness, directory } = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
-    ...actual, useContext: () => controlHelp.current,
+    ...actual,
+    // The pulse context routes to its per-test cell (default: the module's own default); everything
+    // else keeps the controlHelp knob the older tests drive.
+    useContext: (ctx: { _currentValue?: unknown }) => {
+      const fallback = (ctx as { _currentValue?: unknown })._currentValue;
+      if (fallback !== null && typeof fallback === "object" && "live" in (fallback as object)) return pulseContext.current ?? fallback;
+      return controlHelp.current ?? fallback;
+    },
     memo: (component: unknown) => component,
     useCallback: harness.useCallback,
     useEffect: harness.useEffect,
@@ -312,8 +322,9 @@ import { SessionLayoutControl } from "../client/session-layout-control";
 import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { indentOf, StateBadge } from "../client/organization-row";
-import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
-import { RunningRainbowMark } from "../client/running-mark";
+import { NoticesButton } from "../client/notice-tray";
+import { SessionPulseContext, SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { ComposerPulse } from "../client/composer-pulse";
 import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
 import type { StatusFilter } from "../client/session-view";
 import { SessionDetailSection } from "../client/session-detail-section";
@@ -391,9 +402,17 @@ function drawDense(element: ElementLike): ElementLike {
   return harness.draw(`dense:${props.entry.id}`, () => DenseSessionRow(props)) as unknown as ElementLike;
 }
 
-/** What the list's own renderer draws for one item; a session row's insides are drawn by walk. */
+/** D6 wraps organization rows (and their child session row) in the pulse-context provider; tests that
+ * reach into the drawn row element unwrap that wrapper first. */
+function unwrapPulseProvider(element: ElementLike): ElementLike {
+  return element.type === SessionPulseContext.Provider ? element.props.children as ElementLike : element;
+}
+
+/** What the list's own renderer draws for one item; a session row's insides are drawn by walk.
+ * D6 wraps organization rows (and their child session row) in the pulse-context provider, so tests
+ * that reach into the row element unwrap that wrapper first. */
 function drawItem(item: unknown): ElementLike {
-  return (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item });
+  return unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item }));
 }
 
 /** A listed session's row, tree session or flat result, by native ID. */
@@ -520,7 +539,7 @@ function sessionRowIds(): string[] {
 function toggle(kind: string) {
   const row = groupRows().find((candidate) => candidate.group.kind === kind)!;
   const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-  (renderItem({ item: row }).props.onToggle as () => void)();
+  (unwrapPulseProvider(renderItem({ item: row })).props.onToggle as () => void)();
   harness.flush();
 }
 
@@ -559,6 +578,7 @@ describe("SessionsScreen toolbar events", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
+    pulseContext.current = { live: true, visible: true };
     clearSessionViews({ work: "all", status: "current" });
     harness.reset();
     directory.inputs = [];
@@ -665,7 +685,8 @@ describe("SessionsScreen toolbar events", () => {
         const marker = walk(chip).find(element => element.type === SessionStatusIcon)!;
         const drawn = walk(SessionStatusIcon(marker.props as Parameters<typeof SessionStatusIcon>[0]));
         if (status === "running") {
-          expect(drawn.find(element => element.type === RunningRainbowMark)!.props).toMatchObject({ colors, size: 16, shape: "play" });
+          // D6: the running chip animates on the shared carrier instead of a static rainbow.
+          expect(drawn.find(element => element.type === ComposerPulse)!.props).toMatchObject({ colors, size: 16, name: "Play" });
         } else {
           expect(drawn.find(element => element.type === "Icon")!.props.name).toBe(QUICK_FILTER_ICONS[status]);
         }
@@ -759,7 +780,7 @@ describe("SessionsScreen toolbar events", () => {
       theme: { colors } as PluginTheme, params: {}, workspaces: [{ id: "w-empty", name: "Empty desk", projectKey: null, projectName: null }],
     } as PluginScreenProps));
     const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-    const rendered = (row: GroupRow) => { const view = renderItem({ item: row }) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const rendered = (row: GroupRow) => { const view = unwrapPulseProvider(renderItem({ item: row })) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     const counts = (tree: ElementLike) => walk(tree).filter((element) => (element.props.style as { fontVariant?: string[] } | undefined)?.fontVariant?.includes("tabular-nums")).map(textOf);
     const empty = groupRows().find((row) => row.group.unitTotal === 0)!;
     expect(walk(rendered(empty)).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === null)).toBe(true);
@@ -1227,7 +1248,7 @@ describe("SessionsScreen toolbar events", () => {
     const status = filter === "state" ? "idle" : "all";
     patchSessionView("host-a", { layout: "grouped", query, status, streams: ["alpha"], legendOpen: true });
     renderScreen(undefined, compact);
-    const renderItem = (item: ListRow) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: ListRow }) => ElementLike)({ item });
+    const renderItem = (item: ListRow) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: ListRow }) => ElementLike)({ item }));
     const header = (row: GroupRow) => {
       const element = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
       return walk(element.type(element.props)).find((node) => node.props.accessibilityRole === "button")!.props;
@@ -1282,7 +1303,7 @@ describe("SessionsScreen toolbar events", () => {
     renderScreen({ state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
     setStateFilter("idle");
     // The current render's row renderer, since rows read the peek from its closure.
-    const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
+    const renderItem = (info: { item: unknown }) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info));
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
     expect(findByTestID(renderItem({ item: result }), "session-row-body").props.accessibilityLabel).toContain("Workstream Other work, epic ASMA-1, workspace Workspace");
     perform(renderItem({ item: result }), "show-in-tree");
@@ -1550,8 +1571,8 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), entries };
     patchSessionView("host-a", { query: "", grouping: "role", status: "all" });
     renderScreen(organization, compact);
-    const renderItem = (row: unknown) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row });
-    const drawn = (row: unknown) => { const view = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const renderItem = (row: unknown) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }));
+    const drawn = (row: unknown) => { const view = unwrapPulseProvider(renderItem(row)) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     return { renderItem, drawn };
   }
 
@@ -2178,7 +2199,7 @@ describe("SessionsScreen toolbar events", () => {
         theme: { colors } as PluginTheme, params: {}, planSources, onEpicTab } as Parameters<typeof SessionsScreen>[0]));
       const list = findByTestID(harness.current(), "sessions-list");
       const renderItem = list.props.renderItem as (info: { item: unknown }) => ElementLike;
-      return groupRows().filter((row) => row.group.kind === "epic").map((row) => renderItem({ item: { ...row, expanded: true } }));
+      return groupRows().filter((row) => row.group.kind === "epic").map((row) => unwrapPulseProvider(renderItem({ item: { ...row, expanded: true } })));
     };
     expect(render().map((row) => row.props.actions)).toEqual([undefined, undefined]);
     const [seven, eight] = render({ "ASMA-7": ["plan-a"], "ASMA-8": ["plan-b", "plan-c"] });
@@ -2321,7 +2342,7 @@ describe("SessionsScreen mobile filter page", () => {
     patchSessionView("host-a", { status: "all", streams: null });
     harness.reset(); renderScreen(organization);
     const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-    const drawn = (row: unknown) => { const view = renderItem({ item: row }) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const drawn = (row: unknown) => { const view = unwrapPulseProvider(renderItem({ item: row })) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     const group = groupRows()[0]!;
     const opened = (expanded: boolean) => walk(drawn({ ...group, expanded })).find((element) => element.props.accessibilityRole === "button")!.props["aria-expanded"];
     expect([opened(true), opened(false)]).toEqual([true, false]);
@@ -2382,7 +2403,7 @@ describe("SessionsScreen mobile filter page", () => {
     directory.state = { ...(directory.state as object), entries };
     patchSessionView("host-a", { grouping: "hierarchy" });
     renderCompact();
-    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike & { type: (props: unknown) => ElementLike };
+    const renderItem = (info: { item: unknown }) => unwrapPulseProvider((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info)) as ElementLike & { type: (props: unknown) => ElementLike };
     // The title's room: page padding 12 + 12, the depth-4 indent, the state icon and the actions menu at 40 each, and the body's padding 4 and border 1 + 1.
     const room = viewport - 24 - indentOf(4, true) - 2 * 40 - 4 - 2;
     // What the title's lines show at 7.41 px a character, the measured 78d mean at 14 px, above the row's 13 px; a model, not a render. Lines break at spaces only.
@@ -3413,5 +3434,232 @@ describe("independent Layout, Group by and exact scope", () => {
     (scopeControl("epic").props.onChange as (key: string) => void)("unknown"); harness.flush();
     expect(readSessionView("host-a").epic).toEqual({ kind: "unknown" });
     expect(sessionRowIds().sort()).toEqual(["desk-asw", "desk-csw", "desk-plan", "desk-unlabelled", "twin"]);
+  });
+
+  it("says why the rows went grey: the banner carries the grey sentence (M8)", () => {
+    directory.state = {
+      ...(directory.state as object),
+      entries: [sessionEntry("catalog", { status: "running" })],
+      source: "catalog",
+      status: "stale",
+      live: false,
+      staleReason: "The Paseo host is disconnected. Showing the last inventory.",
+      inventoryComplete: true,
+      lastUpdatedAt: 0,
+    };
+    renderScreen();
+    const banner = findByTestID(harness.current(), "sessions-source-banner");
+    expect(String(banner.props.message)).toContain("Running sessions show grey until Kontor is live again.");
+  });
+
+  /** The badge subtree of one organization row, drawn all the way down to the mark: the row element,
+   * then StateBadge, then SessionStateMarker, then SessionStatusIcon. Each level is invoked the way
+   * the harness draws components; the marker reads the pulse context through the react mock. */
+  function orgBadgeOf(row: GroupRow): ElementLike[] {
+    const view = drawItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+    const rowTree = view.type(view.props);
+    const badge = walk(rowTree).find((node) => node.type === StateBadge)!;
+    const marker = walk((badge.type as (props: never) => ElementLike)(badge.props as never)).find((node) => node.type === SessionStateMarker)!;
+    const leaf = SessionStatusIcon(SessionStateMarker(marker.props as never).props as never);
+    return walk(leaf);
+  }
+
+  /** One listed session row's mark subtree. The mark sits a fixed chain deep
+   * (DenseSessionRow → SessionStateMarker → SessionStatusIcon → RunningSessionMark), each invoked
+   * here so the walk reaches the ComposerPulse/Icon it renders; the marker reads the pulse context
+   * through the react mock. */
+  function rowMarksOf(id: string): ElementLike[] {
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === id)!;
+    const invoke = (node: ElementLike): ElementLike => (node.type as (props: never) => ElementLike)(node.props as never);
+    const tree = walk(drawItem(row));
+    const marker = tree.find((node) => node.type === SessionStateMarker);
+    if (!marker) return tree;
+    const icon = invoke(marker);
+    const iconTree = walk(invoke(icon));
+    const mark = iconTree.find((node) => (node.type as { name?: string }).name === "RunningSessionMark");
+    return mark ? [...tree, ...iconTree, ...walk(invoke(mark))] : [...tree, ...iconTree];
+  }
+
+  const hasGreySentence = () => walk(harness.current()).some((node) => typeof node.props.message === "string" && String(node.props.message).includes("stay grey while this list comes from the shared catalog"));
+
+  /** The badge and row wiring, asserted as ELEMENT CONTRACTS (form chosen per the brief: the react
+   * mock routes pulse contexts by value shape to the harness cell, so no behavioural assertion can
+   * read a provider value through context — but the Provider's `value` prop is in the element tree
+   * the harness walks). The drawn-mark asserts in the test prove what those wires render once the
+   * context routes; the real-renderer guards for the whole test are R14
+   * session-compact-rows.browser.cjs :116 (a live Running-led organization badge animates) and
+   * :206 (offline mutes every session row and every aggregate badge). */
+  function wiringContract(): { stale: boolean | undefined; markerStale: boolean | undefined; rowProviderLive: boolean | undefined } {
+    const org = drawItem(groupRows()[0] as GroupRow) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike; props: { stale?: boolean } };
+    const rowTree = org.type(org.props);
+    const badge = walk(rowTree).find((node) => node.type === StateBadge)!;
+    const badgeTree = walk((badge.type as (props: never) => ElementLike)(badge.props as never));
+    const marker = badgeTree.find((node) => node.type === SessionStateMarker)!;
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === "busy")!;
+    const drawn = drawItem(row);
+    const provider = [drawn, ...walk(drawn)].find((node) => node.type === SessionPulseContext.Provider);
+    return {
+      stale: org.props.stale,
+      // The marker's own stale prop — what the row actually forwards: forcing it undefined falls
+      // back to the context default (muted on a live list); forcing false animates. Either fails this contract.
+      markerStale: (marker.props as { stale?: boolean }).stale,
+      rowProviderLive: (provider?.props as { value?: { live?: boolean } } | undefined)?.value?.live,
+    };
+  }
+
+  it("mutes a catalog-ready Running-led badge and its session rows until the list is live again (S1/R1: the drawn marks, the wiring as element contracts — org row stale === !state.live, row provider live === state.live — and R14 :116/:206 as the real-renderer guards)", () => {
+    const catalogReady = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    directory.state = catalogReady;
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    renderScreen();
+    expandAll();
+    // The harness's pulse cell mirrors the value the screen's providers carry: not live here.
+    pulseContext.current = { live: false, visible: true };
+    // The catalog fallback has no banner (staleReason null), so the badge's not-live condition comes
+    // from the same state.live the rows read — the banner is not involved.
+    const muted = orgBadgeOf(groupRows()[0] as GroupRow);
+    expect(muted.some((node) => node.type === ComposerPulse)).toBe(false);
+    expect(muted.find((node) => node.type === "Icon")!.props).toMatchObject({ color: colors.foregroundMuted });
+    // The session rows under the group are muted with it (R1: they mute exactly together).
+    expect(rowMarksOf("busy").some((node) => node.type === ComposerPulse)).toBe(false);
+    // The wiring itself, as element contracts: the badge gets stale === !state.live at the row AND
+    // at the marker it forwards to (a badge that drops the prop and falls back to the context
+    // default fails here — G-ctx-default), and the row provider carries live === state.live
+    // (a forced-live provider fails here — ROWS-live).
+    expect(wiringContract()).toEqual({ stale: true, markerStale: true, rowProviderLive: false });
+    // Live list, modeled as the adapter produces it: a direct answer (source "direct", ready,
+    // complete, no stale reason). The adapter never emits source "catalog" with live:true
+    // (shared-inventory.ts catalogDirectory hardcodes live: false on the catalog branch).
+    directory.state = { ...catalogReady, source: "direct", live: true };
+    renderScreen();
+    expandAll();
+    pulseContext.current = { live: true, visible: true };
+    const live = orgBadgeOf(groupRows()[0] as GroupRow);
+    expect(live.some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(live.some((node) => node.type === "Icon")).toBe(false);
+    const liveRowMarks = rowMarksOf("busy");
+    expect(liveRowMarks.some((node) => node.type === ComposerPulse)).toBe(true);
+    expect(wiringContract()).toEqual({ stale: false, markerStale: false, rowProviderLive: true });
+  });
+
+  it("explains the catalog fallback's grey in a calm notice, and says nothing on a live list (R2)", () => {
+    directory.state = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    renderScreen();
+    const notice = walk(harness.current()).find((node) => typeof node.props.message === "string" && (node.props.message as string).includes("stay grey while this list comes from the shared catalog"))!;
+    expect(notice.props.message).toBe("Running sessions stay grey while this list comes from the shared catalog. They move again when the live list returns.");
+    expect(notice.props.tone).toBe("info");
+    // The stale/error sentence belongs to the banner path only.
+    expect(String(notice.props.message)).not.toContain("until Kontor is live again");
+    // A live list carries no such notice. Modeled as the adapter produces it: a direct answer
+    // (source "direct", ready, live) — the adapter never emits source "catalog" with live:true
+    // (shared-inventory.ts catalogDirectory hardcodes live: false on the catalog branch).
+    directory.state = { ...(directory.state as object), source: "direct", live: true };
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+  });
+
+  it("says nothing on a cold direct read: the sentence belongs to the catalog fallback alone (D2-S1/R3)", () => {
+    const running = [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })];
+    const cold = {
+      ...emptyDirectoryState(),
+      entries: running,
+      source: "direct", status: "loading", live: false, staleReason: null, inventoryComplete: false, lastUpdatedAt: 1,
+    };
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    // The adapted cold load: the adapter's usable-direct branch (source "direct", status "loading").
+    directory.state = cold;
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+    // The raw local path has no directory prop at all: source undefined, same shape otherwise.
+    directory.state = { ...cold, source: undefined };
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+    // The catalog fallback still carries the sentence.
+    directory.state = { ...cold, source: "catalog", status: "ready", inventoryComplete: true };
+    renderScreen();
+    expect(hasGreySentence()).toBe(true);
+    // And a stale direct read is the banner's business, not the notice's.
+    directory.state = { ...cold, source: "direct", status: "stale", staleReason: "Host offline" };
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+  });
+
+  it("reports the catalog notice to the tray as info in the accent ink, and only with a running entry (D2-N2)", () => {
+    const catalogReady = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    directory.state = catalogReady;
+    // A saved scroll offset mounts the toolbar collapsed (slim row), which hides the tray trigger;
+    // this test needs the trigger after hiding, so the toolbar mounts expanded.
+    patchSessionView("host-a", { grouping: "hierarchy", scrollOffset: 0 });
+    renderScreen();
+    // Hide the tray first: the trigger button then carries the notices and the accent ink.
+    // NoticeTray is never drawn by the harness walk, so invoke it to reach its hide control.
+    const trayNode = walk(harness.current()).find((node) => (node.type as { name?: string }).name === "NoticeTray")!;
+    const trayTree = walk((trayNode.type as (props: never) => ElementLike)(trayNode.props as never));
+    const hide = trayTree.find((node) => node.props.accessibilityLabel === "Hide notices")!;
+    (hide.props.onPress as () => void)(); harness.flush();
+    // The trigger element itself carries the notices; its own testID lives on its inner Pressable.
+    const button = walk(harness.current()).find((node) => (node.type as { name?: string }).name === "NoticesButton")!;
+    const notices = button.props.notices as Array<{ summary: string; tone: string }>;
+    expect(notices.some((notice) => notice.summary === "Sessions from the shared catalog" && notice.tone === "info")).toBe(true);
+    // An info-only tray draws its icon in the accent, not a warning.
+    const drawn = walk((button.type as (props: never) => ElementLike)(button.props as never));
+    expect(drawn.some((node) => node.props.color === colors.accent)).toBe(true);
+    expect(drawn.some((node) => node.props.color === colors.statusWarning)).toBe(false);
+    // Without a running entry the fallback says nothing at all.
+    directory.state = { ...catalogReady, entries: [sessionEntry("quiet", { title: "LSA • ASMA-2 • Route" })] };
+    renderScreen();
+    expect(hasGreySentence()).toBe(false);
+    expect(walk(harness.current()).some((node) => (node.type as { name?: string }).name === "NoticesButton")).toBe(false);
+  });
+
+  it("keeps a hidden catalog notice hidden while the fallback lasts, and forgets it after leaving (D2-N1)", () => {
+    const catalogRunning = {
+      ...emptyDirectoryState(),
+      entries: [sessionEntry("busy", { status: "running", title: "LSA • ASMA-1 • Route" })],
+      source: "catalog", status: "ready", live: false, staleReason: null, inventoryComplete: true, lastUpdatedAt: 1,
+    };
+    directory.state = catalogRunning;
+    // The saved offset stays 0 so the toolbar mounts expanded (initialToolbarVisibility reads the
+    // saved scrollOffset), keeping the hidden tray's trigger assertable after the hide (D2-N1).
+    patchSessionView("host-a", { grouping: "hierarchy", scrollOffset: 0 });
+    renderScreen();
+    // NoticeTray is never drawn by the harness walk; invoke it to reach its hide control.
+    const trayNode = walk(harness.current()).find((node) => (node.type as { name?: string }).name === "NoticeTray")!;
+    const trayTree = walk((trayNode.type as (props: never) => ElementLike)(trayNode.props as never));
+    const hide = trayTree.find((node) => node.props.accessibilityLabel === "Hide notices")!;
+    (hide.props.onPress as () => void)(); harness.flush();
+    // The persisted hidden key is stable: it names no source (R2-key).
+    expect(readSessionView("host-a").noticesHidden).toEqual(["catalog"]);
+    // The running count drops to 0: the notice stops showing — and must stay forgotten.
+    directory.state = { ...catalogRunning, entries: [sessionEntry("quiet", { title: "LSA • ASMA-2 • Route" })] };
+    harness.flush();
+    expect(hasGreySentence()).toBe(false);
+    // Running returns: still on the fallback, still hidden (R2-hide).
+    directory.state = catalogRunning;
+    harness.flush();
+    expect(hasGreySentence()).toBe(false);
+    expect(walk(harness.current()).some((node) => (node.type as { name?: string }).name === "NoticesButton")).toBe(true);
+    // Leaving the fallback completes the reading and forgets the hidden key. The live list is
+    // modeled as the adapter produces it (source "direct", ready, live; the adapter never emits
+    // source "catalog" with live:true — shared-inventory.ts catalogDirectory).
+    directory.state = { ...catalogRunning, source: "direct", live: true };
+    harness.flush();
+    // Back on the fallback with running rows: the notice announces itself again.
+    directory.state = catalogRunning;
+    harness.flush();
+    expect(hasGreySentence()).toBe(true);
   });
 });

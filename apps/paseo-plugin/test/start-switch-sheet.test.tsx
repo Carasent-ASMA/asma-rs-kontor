@@ -194,6 +194,67 @@ describe("Start or switch sheet", () => {
     return { render, props: all, onOpen, onShowView, onClose, get tree() { return tree; } };
   }
   const choose = (s: ReturnType<typeof sheet>, testID: string) => { press(byTestId(s.tree, testID)); s.render(); };
+
+  /** Walk with the effective pulse context: every provider overrides the scope for its subtree. */
+  function scoped(value: ReactNode, scope: { live: boolean; visible: boolean }): Array<{ node: Element; scope: { live: boolean; visible: boolean } }> {
+    if (Array.isArray(value)) return value.flatMap((node) => scoped(node, scope));
+    if (!isValidElement<Record<string, unknown>>(value)) return [];
+    const node = value;
+    if (node.type === SessionPulseContext.Provider) {
+      const next = { ...scope, ...(node.props.value as { live: boolean; visible: boolean }) };
+      return [{ node, scope: next }, ...scoped(node.props.children as ReactNode, next)];
+    }
+    const type = node.type as string | ((props: object) => ReactNode);
+    if (typeof type === "function" && DRAWN.includes(type.name)) {
+      if (!drawn.has(node)) drawn.set(node, model.scoped(`${type.name}:${node.key ?? ""}`, () => type(node.props)));
+      return [{ node, scope }, ...scoped(drawn.get(node), scope)];
+    }
+    return [{ node, scope }, ...scoped(node.props.children as ReactNode, scope), ...scoped(node.props.header as ReactNode, scope)];
+  }
+
+  it("keeps native popover tree rows conservatively static: nested marks read visible false from the body fallback (S2/D3)", () => {
+    // iOS popover + grouped tree: the host-scrolls rule says those rows are NEVER known visible.
+    // The organization rows themselves must not change that — their badges read only live (N9).
+    // The scoped walk runs on the RAW hook output: the elements() flattener turns the tree into a
+    // flat sibling list, which would erase the provider chain this test exists to check.
+    model.platform = "ios";
+    const all = { compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
+      directory: complete(RUNNING), canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(() => ({ ok: true } as const)), onShowView: vi.fn(), onClose: vi.fn(), popover: true as const };
+    const render = () => { model.cursor = 0; model.effect = 0; return useStartSwitch(all); };
+    let out = render();
+    press(byTestId(scoped([out.header, out.body], { live: false, visible: false }).map((entry) => entry.node), "kontor-switch-state-running"));
+    out = render();
+    const nested = scoped([out.header, out.body], { live: false, visible: false }).filter((entry) => (entry.node.type as { name?: string }).name === "DenseSessionRow");
+    expect(nested.length).toBeGreaterThan(0);
+    for (const entry of nested) expect(entry.scope).toEqual({ live: true, visible: false });
+    // Web: the same grouped tree animates — the body fallback is known visible there.
+    model.platform = "web";
+    const webAll = { ...all, popover: undefined };
+    const renderWeb = () => { model.cursor = 0; model.effect = 0; return useStartSwitch(webAll); };
+    out = renderWeb();
+    press(byTestId(scoped([out.header, out.body], { live: false, visible: false }).map((entry) => entry.node), "kontor-switch-state-running"));
+    out = renderWeb();
+    const webRows = scoped([out.header, out.body], { live: false, visible: false }).filter((entry) => (entry.node.type as { name?: string }).name === "DenseSessionRow");
+    expect(webRows.length).toBeGreaterThan(0);
+    for (const entry of webRows) expect(entry.scope).toEqual({ live: true, visible: true });
+  });
+
+  it("projects the directory's live flag over its organization tree, so the badge gate has one root cause (LSA-R2-S1)", () => {
+    // Off the chronological default (Last visited): only the grouped states render the organization
+    // tree at all, so the test switches to Running to reach the tree's badge wrapper.
+    const entries = [
+      prompted("agent-a", Date.now() - 60_000, { status: "running", title: "LSA • ASMA-1 • Route" }),
+      prompted("agent-b", Date.now() - 120_000, { status: "running", title: "LSA • ASMA-2 • Route" }),
+    ];
+    for (const live of [false, true]) {
+      const s = sheet({ directory: directory(entries, live) });
+      choose(s, "kontor-switch-state-running");
+      const orgProviders = s.tree.filter((node) => node.type === SessionPulseContext.Provider
+        && elements(node.props.children as ReactNode).some((child) => child.type === OrganizationRowView));
+      expect(orgProviders.length).toBeGreaterThan(0);
+      for (const provider of orgProviders) expect((provider.props.value as { live: boolean }).live).toBe(live);
+    }
+  });
   const search = (s: ReturnType<typeof sheet>, value: string) => { (byTestId(s.tree, "kontor-switch-search")!.props.onChangeText as (value: string) => void)(value); s.render(); };
 
   it("is a labelled dialog with New lead, search and rows that open by exact ID beside their own actions", async () => {

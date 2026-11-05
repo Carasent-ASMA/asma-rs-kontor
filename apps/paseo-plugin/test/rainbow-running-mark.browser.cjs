@@ -512,11 +512,68 @@ const report = { scope: 'Web-only evidence on the pinned renderer with the real 
     }
     await page.screenshot({ path: path.join(output, 'flow-lab-and-overlays.png'), fullPage: true });
     await page.waitForTimeout(3000); // the recording keeps at least one full cycle
+    // D3-r2: Reduce Motion drops ONLY the scale pulse — the colour flow keeps running on the mounted tone.
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await live.first().waitFor({ state: 'detached', timeout: 5000 });
+    await page.waitForFunction(() => {
+      const carrier = document.querySelector('[data-testid="composer-running-pulse"]');
+      return carrier && getComputedStyle(carrier).transform === 'matrix(1, 0, 0, 1, 0, 0)';
+    }, undefined, { timeout: 5000 });
+    const reduceCarrier = page.locator('[data-testid="composer-running-pulse"]').first();
+    const reduceSamples = new Set();
+    for (let index = 0; index < 4; index++) { reduceSamples.add(await reduceCarrier.evaluate(node => getComputedStyle(node).transform)); await page.waitForTimeout(160); }
+    assert.ok([...reduceSamples].every(value => value === 'matrix(1, 0, 0, 1, 0, 0)'), 'reduced motion freezes the carrier scale at exactly 1');
+    assert.equal(await live.count(), 8, 'the live tones stay mounted under reduced motion');
+    const pixelsOf = (page, shot) => page.evaluate(({ src }) => new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true }); ctx.drawImage(image, 0, 0);
+        resolve(Array.from(ctx.getImageData(0, 0, image.width, image.height).data));
+      };
+      image.src = 'data:image/png;base64,' + src;
+    }), { src: shot.toString('base64') });
+    const liveBox = await page.locator('[data-testid="live-dark-22"]').boundingBox();
+    const clipOf = (box, pad) => ({ x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: box.width + pad * 2, height: box.height + pad * 2 });
+    const reduceStrip = await page.screenshot({ path: path.join(output, 'reduce-flow-shot-1.png'), clip: clipOf(liveBox, 2) });
+    const reduceStrip2 = await page.screenshot({ path: path.join(output, 'reduce-flow-shot-2.png'), clip: clipOf(liveBox, 2) });
+    const reduceStrip3 = await page.screenshot({ path: path.join(output, 'reduce-flow-shot-3.png'), clip: clipOf(liveBox, 2) });
+    const fullShots = [];
+    for (let index = 0; index < 2; index++) { await page.waitForTimeout(500); fullShots.push(await page.screenshot({ path: path.join(output, `reduce-flow-full-${index + 1}.png`) })); }
+    const diffInPage = (a, b) => page.evaluate(({ first, second }) => new Promise((resolve) => {
+      const load = (src) => new Promise((res, rej) => { const image = new Image(); image.onload = () => res(image); image.onerror = rej; image.src = 'data:image/png;base64,' + src; });
+      Promise.all([load(first), load(second)]).then(([ia, ib]) => {
+        const w = Math.max(ia.width, ib.width), h = Math.max(ia.height, ib.height);
+        const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(ia, 0, 0); const da = ctx.getImageData(0, 0, w, h).data;
+        ctx.clearRect(0, 0, w, h); ctx.drawImage(ib, 0, 0); const db = ctx.getImageData(0, 0, w, h).data;
+        let changed = 0, painted = 0;
+        for (let index = 0; index < da.length; index += 4) {
+          if (Math.max(da[index + 3], db[index + 3]) > 16) painted++;
+          if (Math.abs(da[index] - db[index]) > 8 || Math.abs(da[index + 1] - db[index + 1]) > 8 || Math.abs(da[index + 2] - db[index + 2]) > 8) changed++;
+        }
+        resolve({ w, h, painted, changed });
+      });
+    }), { first: a.toString('base64'), second: b.toString('base64') });
+    const [pairA, pairB, pairC] = [await diffInPage(reduceStrip, reduceStrip2), await diffInPage(reduceStrip2, reduceStrip3), await diffInPage(reduceStrip, reduceStrip3)];
+    const fullPair = await diffInPage(fullShots[0], fullShots[1]);
+    let reduceChanged = Math.max(pairA.changed, pairB.changed, pairC.changed, fullPair.changed);
+    const reduceTrace = [];
+    if (reduceChanged === 0) {
+      // A fixed cadence can alias with the 337.5ms frame period; jittered spacing cannot.
+      const jitterShots = [];
+      for (let index = 0; index < 5; index++) { await page.waitForTimeout(150 + Math.floor(Math.random() * 350)); jitterShots.push(await page.screenshot({ clip: clipOf(liveBox, 2) })); }
+      for (let index = 1; index < jitterShots.length; index++) reduceChanged = Math.max(reduceChanged, (await diffInPage(jitterShots[index - 1], jitterShots[index])).changed);
+    }
+    const reduceOpacityTrace = [];
+    for (let index = 0; index < 4; index++) {
+      reduceOpacityTrace.push(await page.evaluate(() => [0, 3, 6].map(frame => document.querySelector(`[data-testid="live-dark-22"] [data-testid="composer-running-frame-${frame}"]`)?.style.opacity)));
+      await page.waitForTimeout(300);
+    }
+    assert.ok(reduceChanged > 0, `reduced motion keeps the colour flowing (${JSON.stringify({ pairA, pairB, pairC, fullPair, opacities: reduceOpacityTrace })})`);
     const resting = await page.locator('[data-kontor-svg] svg[stroke^="url(#kontor-rainbow-"]').count();
-    assert.ok(resting >= 8, `reduced motion keeps the static rainbow (${resting} marks)`);
-    report.reducedMotion = { toneStacks: 0, staticRainbows: resting };
+    assert.ok(resting >= 8, `the static marks stay painted (${resting} marks)`);
+    report.reducedMotion = { toneStacks: 8, staticRainbows: resting, carrierScale: 'exactly 1', flowMovedPixels: reduceChanged };
     await page.screenshot({ path: path.join(output, 'reduced-motion-static-rainbow.png'), fullPage: true });
     report.errors = errors;
     assert.deepEqual(errors, []);

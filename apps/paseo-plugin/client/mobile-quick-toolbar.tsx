@@ -6,7 +6,7 @@ import { useActionHelp, useControlHelp } from "./control-help";
 import { focusControl } from "./mobile-filters";
 import { type Colors } from "./page-controls";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS, visibleQuickFilters } from "./mobile-quick-filter-options";
-import { RunningRainbowMark } from "./running-mark";
+import { ComposerPulse } from "./composer-pulse";
 import type { SessionStateCount } from "./session-state-counts";
 import { MORE_STATUS_FILTERS, QUICK_STATUS_FILTERS, type StatusFilter } from "./session-view";
 
@@ -82,9 +82,9 @@ export function CompactSearch({ colors, query, searchInputRef, onQuery }: Search
 type Utility = Omit<Parameters<typeof QuickToolbarButton>[0], "colors" | "target">;
 const GAP = 4;
 
-/** The running shortcut keeps its Play shape in the static rainbow; other states keep their ink. */
+/** The running shortcut keeps its Play shape and animates the shared rainbow whenever visible (D6). */
 const stateGlyph = (choice: StatusFilter, colors: Colors, size = 18) => choice === "running"
-  ? <RunningRainbowMark colors={colors} size={size} shape="play" />
+  ? <ComposerPulse colors={colors} size={size} name="Play" />
   : undefined;
 
 /**

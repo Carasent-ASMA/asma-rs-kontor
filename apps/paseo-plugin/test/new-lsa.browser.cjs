@@ -108,7 +108,7 @@ async function run(name, test) {
 }
 (async () => {
   const vite = await import(consoleDeps.resolve('vite'));
-  server = await vite.createServer({ root: fixture, configFile: false, define: { __DEV__: 'false', 'process.env.NODE_ENV': '"development"' },
+  server = await vite.createServer({ root: fixture, configFile: false, define: { global: 'globalThis', __DEV__: 'false', 'process.env.NODE_ENV': '"development"' },
     server: { host: '127.0.0.1', port: 0, fs: { allow: [fixture, plugin, native.split(path.sep + '.pnpm' + path.sep)[0]] } },
     resolve: { alias: [
       { find: /^react$/, replacement: react }, { find: /^react\/(.*)$/, replacement: react + '/$1' },

@@ -1460,7 +1460,7 @@ function Banner({
   actionLabel?: string;
   colors: ThemeColors;
   disabled?: boolean;
-  tone: "warning" | "danger";
+  tone: "info" | "warning" | "danger";
   onAction?: () => void;
   onBlur?: () => void;
   onFocus?: () => void;
@@ -1471,7 +1471,7 @@ function Banner({
       testID={testID}
       style={{
         backgroundColor: colors.surface1,
-        borderColor: tone === "danger" ? colors.statusDanger : colors.statusWarning,
+        borderColor: tone === "danger" ? colors.statusDanger : tone === "info" ? colors.accent : colors.statusWarning,
         borderWidth: 1,
         borderRadius: 8,
         padding: 10,
@@ -2671,6 +2671,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     state.status === "stale" ||
     state.status === "error" ||
     (state.status === "ready" && !state.live && state.staleReason !== null);
+  // The catalog fallback: a shared catalog answered, so the screen explains its grey rows calmly
+  // (R3) and treats its own reading as the current one while it lasts (D2-N1).
+  const catalogFallback = state.source === "catalog" && state.status === "ready" && !state.live && state.staleReason === null;
+  const catalogRunning = catalogFallback && state.entries.some((entry) => entry.status === "running");
   const navigationMissing = navigation === undefined;
 
   const focusProps = { disabled: !compact && toolbarCollapsed, onBlur: handleToolbarControlBlur, onFocus: handleToolbarControlFocus };
@@ -2719,10 +2723,26 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           testID="sessions-source-banner"
           message={`${staleMessage} ${
             state.inventoryComplete ? "Last complete read" : "Inventory read attempt"
-          }: ${updatedLabel(state.lastUpdatedAt)}.`}
+          }: ${updatedLabel(state.lastUpdatedAt)}. Running sessions show grey until Kontor is live again.`}
           tone={state.status === "error" ? "danger" : "warning"}
           actionLabel="Retry"
           onAction={retry}
+          colors={colors}
+          {...noticeProps}
+        />
+      ) } : null,
+    // R3: this notice belongs ONLY to the catalog fallback — source "catalog", status "ready",
+    // staleReason null, not live, with at least one running entry. A cold direct read reaches the
+    // same not-live shape while its first page arrives (status "loading", source "direct" or
+    // undefined); there the pill says "Native · Reading" and this sentence would be false. D6 says
+    // the screen still explains the grey where it is true, calmly — the catalog IS answering, so
+    // this is not a warning. Same accent voice as the "Native · Catalog" pill.
+    catalogRunning ? { keys: ["catalog"], summary: "Sessions from the shared catalog", tone: "info", node: (
+        <Banner
+          key="catalog"
+          testID="sessions-source-banner"
+          message="Running sessions stay grey while this list comes from the shared catalog. They move again when the live list returns."
+          tone="info"
           colors={colors}
           {...noticeProps}
         />
@@ -2753,8 +2773,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     recovery.setHidden(keys.filter((key) => key.startsWith("archive:")));
   };
   // A notice missing while its source reads (first load, refresh, save, Refresh status) is unread, not absent; navigation is always read.
+  // While the screen sits on the catalog fallback that reading is the current one, so a hidden
+  // catalog notice stays hidden even when the running count drops and rises again; leaving the
+  // fallback completes the reading and forgets it, so a later fallback announces itself again (D2-N1).
   const noticeRead: Readonly<Record<string, boolean>> = {
     source: state.status !== "idle" && state.status !== "loading",
+    catalog: !catalogFallback,
     settings: organization?.state.status !== "loading",
     save: !organization?.state.saving,
     // The archive state still names the previous host for one render after a switch, so only this host's list counts,
@@ -3537,8 +3561,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           // The row menu owns favorites, Details and Archive, so the tree adds only its indent, guides and arrange handle.
+          // R1: the badge's not-live condition is the same state.live the session rows' provider
+          // below carries — NOT the banner (a catalog fallback has no banner and still mutes).
           return <OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
-            favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
+            favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={!state.live} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
             onMove={(distance) => moveRow(item, distance)}>
