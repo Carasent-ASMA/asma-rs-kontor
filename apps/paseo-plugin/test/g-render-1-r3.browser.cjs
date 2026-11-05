@@ -128,13 +128,25 @@ const report = {
   passes: {},
 };
 
-// position in frames (0..K): the expectation value of the frame index under the crossfade —
-// top frame + its blend into the successor. With exactly one or two non-zero opacities this
-// equals sum(frameIndex * alpha) over the painted frames (the alphas sum to 1 by construction).
+// position in frames (0..K), per the brief: top frame + crossfade. Mid-loop the successor fades in
+// over one full frame period while its predecessor sits at plateau, so position = top - 1 + alpha
+// tracks the clock linearly. At the wrap handoff (progress >= at(K-1)) the TOP frame itself fades
+// OUT over the saturated base layer (running-mark.tsx: frame K-1's outputRange is [0, 1, 0] and
+// frame 0 returns to 1), so there the mirror term is the true position: (K-1) + (1 - alpha_top).
+// Detected without history: the top frame is K-1, the base layer is saturated (alpha_0 ~= 1), and
+// the K-2 plateau has already vanished. Raw reads only — the deltas decide the gate.
 const readPosition = (frames) => {
-  const painted = frames.map((f, index) => ({ index, alpha: f.opacity ?? 0 })).filter((f) => f.alpha > 0.001);
+  const K = frames.length;
+  const alphaOf = (i) => (frames[i] && frames[i].opacity !== null && frames[i].opacity !== undefined) ? frames[i].opacity : 0;
+  const painted = frames.map((f, index) => ({ index, alpha: f.opacity ?? 0 })).filter((f) => f.alpha > 0.0005);
   if (!painted.length) return null;
-  return painted.reduce((sum, f) => sum + f.index * f.alpha, 0) / painted.reduce((sum, f) => sum + f.alpha, 0);
+  const top = painted.reduce((max, f) => (f.index > max.index ? f : max), painted[0]);
+  const baseSaturated = alphaOf(0) > 0.999;
+  const prevPlateauGone = !painted.some((f) => f.index === K - 2 && f.alpha > 0.999);
+  if (top.index === K - 1 && baseSaturated && prevPlateauGone) {
+    return (K - 1) + (1 - Math.min(1, Math.max(0, top.alpha)));
+  }
+  return top.index - 1 + Math.min(1, Math.max(0, top.alpha));
 };
 
 (async () => {
@@ -177,6 +189,8 @@ const readPosition = (frames) => {
         if (index + 1 < SAMPLES) await page.waitForTimeout(GAP_MS);
       }
       const spanMs = samples[samples.length - 1].at - samples[0].at;
+      // Durable before any assertion: failed runs keep their raw samples (D3-N6 practice).
+      fs.writeFileSync(path.join(output, 'samples-reduce-on.json'), JSON.stringify(samples, null, 1));
       for (const sample of samples) assert.notEqual(sample.position, null, 'every sample paints at least one frame');
       assert.ok(spanMs >= LOOP_MS, `the samples span at least one wrap (${spanMs} ms >= ${LOOP_MS} ms)`);
       const deltas = [];
