@@ -271,4 +271,16 @@ describe("AUD-F3 malformed provider-use policies fail closed", () => {
     expect(ids(read)).toEqual(["other/allowed"]);
     expect(read.problemFor("opencode")).toBeNull();
   });
+
+  it("AUD-F3 keeps OpenCode's policy-group order: policies after experimental.policies", () => {
+    const path = "/synthetic/policy-order.fixture";
+    const allow = { action: "provider.use", resource: "deepseek", effect: "allow" };
+    const laterAllow = opencodeSelection([{ path, info: { experimental: { policies: [denied] }, policies: [allow] } }]);
+    if ("problem" in laterAllow) throw new Error(laterAllow.problem);
+    expect(opencodeModelVisible("deepseek/hidden", laterAllow.selection)).toBe(true);
+
+    const laterDeny = opencodeSelection([{ path, info: { experimental: { policies: [allow] }, policies: [denied] } }]);
+    if ("problem" in laterDeny) throw new Error(laterDeny.problem);
+    expect(opencodeModelVisible("deepseek/hidden", laterDeny.selection)).toBe(false);
+  });
 });

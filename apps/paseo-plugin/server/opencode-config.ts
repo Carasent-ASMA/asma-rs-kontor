@@ -326,7 +326,9 @@ function policyRules(group: unknown, where: string): { rules: Rule[] } | { probl
 
 /**
  * One document's `provider.use` rules, in the order OpenCode builds them: `enabled_providers` (a wildcard deny,
- * then one allow per named provider), `disabled_providers`, then explicit policies.
+ * then one allow per named provider), `disabled_providers`, then `experimental.policies`, then `policies`.
+ * OpenCode 2.2.5's config merge builds that array as `n.policies=[...s,...f,...y]` (function `Yx`), so the
+ * top-level `policies` group has the final say. @see https://github.com/anomalyco/opencode (opencode-v2 2.2.5).
  */
 function documentRules(info: Record<string, unknown>, path: string): { rules: Rule[]; problem: string } | { rules: Rule[] } {
   const rules: Rule[] = [];
