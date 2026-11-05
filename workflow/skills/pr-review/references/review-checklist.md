@@ -10,7 +10,11 @@ The desk checks human judgment only. Tools already check the rest.
    facts and match its Area column.
 3. The tracker text and the whole diff, not only the changed hunk.
 
-If an answer is "I cannot tell", say so and ask. "Unsure" is not a pass.
+Initial review covers the whole diff and affected callers/contracts. For an
+eligible delta, review the correction, affected behavior and all unresolved
+findings; reuse only valid initial evidence. A changed head/base, criteria or
+policy invalidates the evidence it affects. Missing evidence stays pending.
+Record all real findings; do not restart review for cosmetic preferences.
 
 ## The 11 human-judgment checks
 
@@ -38,16 +42,22 @@ If an answer is "I cannot tell", say so and ask. "Unsure" is not a pass.
    configuration, performance, logging and retries.
 10. **Effects outside the diff.** Callers, other repositories, shared libraries,
     documentation, feature flags and downstream consumers.
-11. **Done means.** Does the head meet the tracker ticket's Done means or
-    acceptance criteria? A pull request that says it completes the ticket must
-    meet all of them; one that delivers part of a ticket must meet the part its
-    description names and break nothing else. A ticket without usable criteria
-    uses its summary and description as the goal. Answer `unchecked` only when
-    nothing usable is there. A keyless release pull request uses its own
-    description as the goal. Without a `yes` for this head nothing merges.
+11. **Done means.** Decide PR acceptance against its declared whole/partial
+    scope, separately from task/epic completion. Map every in-scope criterion
+    to exact-head/base proof and the criteria revision. Report
+    `pr_acceptance.verdict: yes` only when that scope is proven; otherwise
+    `no`, with missing/failed evidence explicit. A ticket without formal
+    criteria uses its usable summary/description; a keyless release uses its
+    own description. No usable goal means pending, never an invented criterion.
+    Partial delivery names what remains. A merged PR or green build never
+    substitutes for required QA/AUD, deployed acceptance or a P10 completion
+    committee. Only the existing acceptance owner may establish full ticket Done.
 
 ## Tools check this, not you
 
 Do not write findings about: format, lint, types, import order, spelling,
-commit format, CI result or coverage numbers. If a tool reports a failure, say
-that one fact; do not review it line by line.
+commit format, CI result or coverage numbers. Report relevant tool failures
+as unresolved gate evidence; do not duplicate them as cosmetic findings.
+Select tests for changed/added behavior and concretely affected callers/contracts
+under repository policy, not automatic full suites. Preserve applicable scoped
+build/type/dependency/security and independent QA obligations.

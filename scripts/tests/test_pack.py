@@ -159,11 +159,7 @@ class PackCase(unittest.TestCase):
         docs.mkdir()
         for name in PUBLIC_DOCS:
             shutil.copy(REPO_ROOT / "docs" / name, docs / name)
-        (docs / "decisions").mkdir()
-        shutil.copy(
-            REPO_ROOT / "docs" / "decisions" / "README.md",
-            docs / "decisions" / "README.md",
-        )
+        shutil.copytree(REPO_ROOT / "docs" / "decisions", docs / "decisions")
 
     def router(self, project: Path, extra: list[tuple[str, str]] | None = None) -> None:
         rows = [
@@ -173,6 +169,9 @@ class PackCase(unittest.TestCase):
             ("Decisions", "decisions/README.md"),
             *(extra or []),
         ]
+        rows += [(path.stem, str(path.relative_to(REPO_ROOT / "docs")))
+                 for path in sorted((REPO_ROOT / "docs" / "decisions").glob("*.md"))
+                 if path.name != "README.md"]
         lines = [
             "# Project documentation index",
             "",

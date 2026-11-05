@@ -137,8 +137,17 @@ properties:
    contrasting vendors where the project requires it.
 2. **Read-only findings.** Review seats inspect and report; they do not edit the
    change or write scheduler truth.
-3. **Sealed findings.** Reviewers record findings before seeing each other's,
-   and the judge aggregates by a declared rule after both are complete.
+3. **Sealed findings.** Where a profile requires multiple reviewers, they record
+   findings before seeing each other's; its judge aggregates by the declared
+   rule after every required independent result is available.
+
+PR merge acceptance follows the [PR-review profile](https://github.com/Carasent-ASMA/asma-rs-kontor/blob/master/workflow/skills/pr-review/SKILL.md):
+Simple/Medium use one independent reviewer; Complex uses two reviewers and a
+JUDGE with distinct vendors, plus risk specialists. The reviewing side owns
+corrections through SWE commits to the original PR branch and independent delta
+verification. A qualified PR may merge automatically within existing grants.
+This changes no task/epic gates, completion committees, rejection counters or
+closeout requirements. PR acceptance is not a task or epic completion verdict.
 
 A QA rejection is **rework** against the same fix owner and the same rejected
 criterion. An epic-level completion rejection is **remediation**: the LSA

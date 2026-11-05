@@ -58,6 +58,12 @@ compliant independent verdict plus complete closeout evidence completes one.
 | **P13** | **Capability honesty** | A runtime, adapter or seat declares only what it can prove, and unsupported operations refuse typed and without side effects rather than degrading silently. Trust grades bound what Kontor may conclude. Documentation and code say "unsupported" or "unconfigured" for an unfinished capability instead of implying it exists — including in this document set. |
 | **P14** | **Delivery does not end at merge** | Support, operations, incident response, drift and regression checking, dependency maintenance, compliance and retirement are work types the workflow is expected to describe and run — not a separate product and not out of scope. Delivered value that nobody can operate is not delivered. |
 
+PR merge acceptance and completion are different decisions. The proportional
+PR-review profile in [Workflow §3.5](WORKFLOW.md#35-review-and-gates) may accept
+a PR with one independent reviewer. It never replaces a required task gate or
+P10 completion committee, supplies missing authority, or declares a task/epic
+Done from a merge alone. P10 remains unchanged.
+
 ## Applying the principles
 
 - A proposal that improves speed while weakening P2, P5, P9, P10 or P11 is

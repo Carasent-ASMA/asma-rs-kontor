@@ -7,17 +7,16 @@ labels, required evidence, attribution and posting mechanics.
 
 ## The desk note
 
-The desk posts under a human forge account, so every review starts with this
-one line:
+Every review identifies the desk and the configured merge behavior:
 
-> This review was written by the AI review desk. A human still makes the merge decision.
+> This review was written by the AI review desk. A qualified PR may merge automatically under the configured policy.
 
 ## Labels
 
 | Label | Meaning | Blocks the pull request? |
 | --- | --- | --- |
 | `blocking` | A real defect or risk that must be fixed before merge. | Yes |
-| `should fix` | A real problem the author should fix; a human may accept it. | No |
+| `should fix` | A confirmed actionable problem owned by the reviewing side. | Yes, until resolved |
 | `question` | A real doubt, but you cannot show a failing case. Ask, do not claim. | No |
 | `pre-existing` | A problem that already exists on the base branch. | No, never |
 | `nit` | A small style or taste point. Off by default; use only when asked. | No |
@@ -27,7 +26,7 @@ one line:
 Each finding has four parts:
 
 ```text
-`file:line` — label: one-sentence problem.
+`<finding-id>` · `file:line` — label: one-sentence problem.
 Why it fails: a concrete input, state or sequence that breaks.
 Suggestion: a concrete fix, not "consider refactoring".
 Proof: what you read or ran to be sure.
@@ -35,32 +34,32 @@ Proof: what you read or ran to be sure.
 
 Rules:
 
-- Give about five findings in full, blockers first. List every additional
-  unresolved blocker briefly with its evidence link. Keep other findings in the
-  linked record; never drop a blocker to meet a length target.
+- Record every real finding, blockers first, with a stable PR-local ID and
+  evidence and a persisted stable `root_cause`. There is no quota. A concise
+  display may link complete records; presentation limits never remove findings or their dispositions.
 - No proof, no finding. If you cannot show a concrete failing case, make it a
   `question`.
-- Do not repeat a point the forge's automated review already made on the pull
-  request.
+- Verify existing findings and link/reuse their IDs instead of posting
+  duplicates. Do not omit an issue because another reviewer found it.
 - One point per finding. Do not bundle.
 - Point at the exact new line (`file:line`), not a range when one line is enough.
 - Follow the shared communication skill's plain-language and requested-language
   rules.
 
-## The fix PR and suggested changes
+## Corrections and suggested changes
 
-The desk keeps one active fix PR per pull request for the `blocking` and
-`should fix` findings that have a concrete fix; a later round adds its fixes to
-that same fix PR. The review links that fix PR, and a finding the fix PR covers
-gets no `suggestion` block. Questions never get a fix; they stay review
-comments.
+The reviewing side dispatches SWE to correct confirmed findings on the ORIGINAL
+PR branch, followed by independent verification. Link correction commits and
+evidence, never a new nested fix PR. A pushed fix is not yet a verified fix.
+Keep every ID with its final outcome and reason: `verified` (with current
+`fixed_sha`), `rejected`, `duplicate` (with `duplicate_of` naming the surviving
+stable ID), `pre-existing` or `deferred`.
+Confirmed actionable findings cannot be deferred into a passing PR.
 
-A local fix that is not in a fix PR — the pull request comes from a fork, where
-the desk cannot open one, the desk refused the round because the author decides
-on the active fix first, or the SWE could not fix the finding — is a forge
-suggested change: a `suggestion` block on the exact `file:line` of the finding.
-The author applies it with one click; the applier is the committer, and the desk
-is credited as co-author.
+When direct correction is unsupported or opted out, a safe prepared patch may
+be posted as a suggestion on its exact line. Preserve the unresolved finding;
+a suggestion is not an applied or verified fix. Never resubmit an author-rejected,
+changed or reverted correction automatically. Questions remain comments.
 
 ```suggestion
 <the replacement lines for that file:line>
@@ -78,9 +77,10 @@ operation:
 - never `Approve`.
 
 The body is the desk note, then one "Still needed?" note with its reasons when
-the facts say `still_needed: flagged`, then the link to the round's fix PR when
-there is one, then the JUDGE-kept findings, `blocking` first. Questions and
-`pre-existing` findings never block.
+the facts say `still_needed: flagged`, then correction/evidence links and all
+finding dispositions, unresolved actionable findings first. Questions and
+unchanged pre-existing issues do not block by themselves. If the change worsens
+or newly exposes an existing defect, review that effect as an in-scope finding.
 
 ## The scheduled follow-up comments
 
@@ -93,15 +93,15 @@ are plain English for a non-native reader, end with the hidden mark
 - **draft:** the check failed; the comment names each failed check and says to
   fix them and set the pull request ready again.
 - **branch:** the branch is outside the project grammar
-  (`{{ project.branch.pattern }}`); the comment says the desk does not merge it
-  and a human merges it after the branch and title are fixed.
+  (`{{ project.branch.pattern }}`); the comment names the required branch/title
+  correction and says nothing has merged.
 - **untested:** no test area covers the change, or a prepared dependency
-  checkout is missing; the comment says a human must check and merge the pull
-  request.
+  checkout is missing; the comment names the missing evidence and leaves
+  acceptance pending.
 - **not-granted-pass / not-granted-fail:** the repository is not granted, or the
   pull request is outside its scope; the desk only tells the author it is ready
   to merge, or names each failed check.
-- **criteria:** the JUDGE answered `unchecked` for the Done means; the comment
-  asks once for acceptance criteria.
+- **criteria:** the deciding record lacks usable PR-acceptance criteria; ask
+  once for the missing criteria, without claiming the ticket is Done.
 
 A seat never posts these comments; the watchdog does.
