@@ -3500,8 +3500,8 @@ describe("independent Layout, Group by and exact scope", () => {
     const provider = [drawn, ...walk(drawn)].find((node) => node.type === SessionPulseContext.Provider);
     return {
       stale: org.props.stale,
-      // The marker's own stale prop — what the row actually forwards (a mutant that forces it
-      // undefined/false here falls back to the context default and fails this contract).
+      // The marker's own stale prop — what the row actually forwards: forcing it undefined falls
+      // back to the context default (muted on a live list); forcing false animates. Either fails this contract.
       markerStale: (marker.props as { stale?: boolean }).stale,
       rowProviderLive: (provider?.props as { value?: { live?: boolean } } | undefined)?.value?.live,
     };
