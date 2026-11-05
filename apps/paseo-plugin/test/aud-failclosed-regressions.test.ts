@@ -19,6 +19,11 @@ const client = { providers: { snapshot: async () => ({ entries: [{
   provider: "opencode", label: "OpenCode", enabled: true, status: "ready", modes: [],
   models: models.map((id) => ({ id, label: id, isSelectable: true })),
 } as ProviderSnapshotEntry] }) } };
+const azureClient = { providers: { snapshot: async () => ({ entries: [{
+  provider: "opencode", label: "OpenCode", enabled: true, status: "ready", modes: [],
+  models: ["azure-cognitive-services/deepseek-permitted", "azure-cognitive-services/deepseek-extra"]
+    .map((id) => ({ id, label: id, isSelectable: true })),
+} as ProviderSnapshotEntry] }) } };
 const host = (root: string): HostConfigDeps => ({ home: join(root, "home"), env: {}, system: false, stopAt: root });
 const ids = (catalog: Awaited<ReturnType<typeof readProviderCatalog>>) => catalog.entries.flatMap((entry) => (entry.models ?? []).map((model) => model.id));
 const invalidContainers = [
@@ -143,6 +148,7 @@ describe("audit fail-closed regressions", () => {
       { provider: { house: {} }, providers: { house: { whitelist: "wrong-shape" } } },
       { provider: { "azure-cognitive-services": { whitelist: "wrong-shape" } }, providers: { azure: {} } },
       { provider: { azure: { whitelist: "wrong-shape" } }, providers: { "azure-cognitive-services": {} } },
+      { provider: { azure: { whitelist: ["one"] }, "azure-cognitive-services": { whitelist: "wrong-shape" } } },
     ];
     for (const info of collisions) {
       await writeFile(config, JSON.stringify(info));
@@ -160,6 +166,7 @@ describe("audit fail-closed regressions", () => {
     if ("problem" in read) throw new Error(read.problem);
     expect(opencodeModelVisible("house/one", read.selection)).toBe(true);
     expect(opencodeModelVisible("house/two", read.selection)).toBe(false);
+    expect(opencodeModelVisible("house/three", read.selection)).toBe(true);
     expect(opencodeModelVisible("other/two", read.selection)).toBe(true);
 
     // A valid alias collision keeps the later declaration: providers' empty entry replaces the alias filter.
@@ -169,5 +176,57 @@ describe("audit fail-closed regressions", () => {
     if ("problem" in alias) throw new Error(alias.problem);
     expect(opencodeModelVisible("azure-cognitive-services/one", alias.selection)).toBe(true);
     expect(opencodeModelVisible("azure-cognitive-services/two", alias.selection)).toBe(true);
+  });
+
+  it("D9-F1 keeps the canonical legacy provider declaration over its alias in both orders", () => {
+    const path = "/synthetic/merge.fixture";
+    const pairs = [["azure", "azure-cognitive-services"], ["google-vertex", "google-vertex-anthropic"]] as const;
+    for (const [canonical, alias] of pairs) {
+      const orders = [
+        { provider: { [canonical]: { whitelist: ["one"] }, [alias]: { blacklist: ["two"] } } },
+        { provider: { [alias]: { blacklist: ["two"] }, [canonical]: { whitelist: ["one"] } } },
+      ];
+      for (const info of orders) {
+        const read = opencodeSelection([{ path, info }]);
+        if ("problem" in read) throw new Error(read.problem);
+        expect(opencodeModelVisible(`${alias}/one`, read.selection), JSON.stringify(info)).toBe(true);
+        expect(opencodeModelVisible(`${alias}/two`, read.selection), JSON.stringify(info)).toBe(false);
+        expect(opencodeModelVisible(`${alias}/three`, read.selection), JSON.stringify(info)).toBe(false);
+      }
+      const alone = opencodeSelection([{ path, info: { provider: { [alias]: { whitelist: ["one"] } } } }]);
+      if ("problem" in alone) throw new Error(alone.problem);
+      expect(opencodeModelVisible(`${alias}/one`, alone.selection)).toBe(true);
+      expect(opencodeModelVisible(`${alias}/two`, alone.selection)).toBe(false);
+    }
+  });
+
+  it("D9-F1 keeps the canonical Azure whitelist on the route", async () => {
+    const { root, config } = await freshTree();
+    await writeFile(config, JSON.stringify({ provider: {
+      azure: { whitelist: ["deepseek-permitted"] }, "azure-cognitive-services": { blacklist: ["unused"] },
+    } }));
+    const read = await readProviderCatalog(azureClient, root, { config: host(root) });
+    expect(ids(read)).toEqual(["azure-cognitive-services/deepseek-permitted"]);
+    expect(read.problems).toEqual([]);
+  });
+
+  it("D9-F1 lets the canonical providers container replace a legacy alias entry", () => {
+    const read = opencodeSelection([{ path: "/synthetic/merge.fixture", info: {
+      provider: { "azure-cognitive-services": { blacklist: ["two"] } }, providers: { azure: { whitelist: ["one"] } },
+    } }]);
+    if ("problem" in read) throw new Error(read.problem);
+    expect(opencodeModelVisible("azure-cognitive-services/one", read.selection)).toBe(true);
+    expect(opencodeModelVisible("azure-cognitive-services/two", read.selection)).toBe(false);
+    expect(opencodeModelVisible("azure-cognitive-services/three", read.selection)).toBe(false);
+  });
+
+  it("D9-F1 inherits absent keys across documents without undefined filters", () => {
+    const path = "/synthetic/merge.fixture";
+    const read = opencodeSelection([
+      { path, info: { provider: { house: { whitelist: ["one", "three"], blacklist: ["one"] } } } },
+      { path, info: { providers: { house: { blacklist: ["two"] } } } },
+    ]);
+    if ("problem" in read) throw new Error(read.problem);
+    expect(read.selection.filters.get("house")).toEqual({ whitelist: ["one", "three"], blacklist: ["two"] });
   });
 });

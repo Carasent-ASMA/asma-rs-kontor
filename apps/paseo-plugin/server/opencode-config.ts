@@ -40,11 +40,15 @@ export type OpenCodeSelectionRead = { readonly selection: OpenCodeSelection } | 
 const EFFECTS = new Set(["allow", "deny"]);
 const POLICY_ACTIONS = new Set(["provider.use"]);
 
-/** OpenCode's own provider-id aliases, applied before a rule or a filter is matched. */
+/** OpenCode's legacy provider-id aliases, applied before a rule or a filter is matched. This is the one map both
+ * the normalizer and the legacy-container precedence read. */
+const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
+  "azure-cognitive-services": "azure",
+  "google-vertex-anthropic": "google-vertex",
+};
+
 export function normalizeOpenCodeProviderId(id: string): string {
-  if (id === "azure-cognitive-services") return "azure";
-  if (id === "google-vertex-anthropic") return "google-vertex";
-  return id;
+  return PROVIDER_ALIASES[id] ?? id;
 }
 
 /**
@@ -361,11 +365,19 @@ function providerEntries(info: Record<string, unknown>, path: string): { entries
     if (!(key in info)) continue;
     const group = record(info[key]);
     if (!group) return { problem: `OpenCode config ${path}: ${key} must be an object.` };
+    // Validate every declaration before precedence can skip one, so a malformed alias still fails closed.
+    const declared: { rawId: string; id: string; filters: DeclaredFilters }[] = [];
     for (const [rawId, entry] of Object.entries(group)) {
-      const id = normalizeOpenCodeProviderId(rawId), declared = declaredFilters(id, entry, path);
-      if ("problem" in declared) return declared;
-      // Valid declarations keep their precedence: the last entry for a normalized id wins.
-      merged.set(id, declared.filters);
+      const id = normalizeOpenCodeProviderId(rawId), validated = declaredFilters(id, entry, path);
+      if ("problem" in validated) return validated;
+      declared.push({ rawId, id, filters: validated.filters });
+    }
+    // Native's legacy normalizer prefers the canonical raw id when both it and its alias are declared, in either
+    // order. The canonical `providers` container is not subject to this preference; it replaces whole entries.
+    const canonical = new Set(declared.filter((entry) => entry.rawId === entry.id).map((entry) => entry.id));
+    for (const entry of declared) {
+      if (key === "provider" && entry.rawId !== entry.id && canonical.has(entry.id)) continue;
+      merged.set(entry.id, entry.filters);
     }
   }
   return { entries: merged };
