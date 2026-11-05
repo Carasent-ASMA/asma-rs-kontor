@@ -251,16 +251,18 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const archive = useStartSwitchArchive(hostId, directory, hostStatus === "online");
   const clock = useClock();
   // Native scroll bodies give running marks no viewport observer, so measured row bounds gate their motion
-  // the same way Sessions' FlatList viewability does; web keeps each mark's own observer (and the desktop
-  // host-scrolls the popover body itself, which the mark cannot see on any platform).
-  const nativeGated = !popover && Platform.OS !== "web";
+  // the same way Sessions' FlatList viewability does; web keeps each mark's own observer. The host-scrolls
+  // the popover/bottom-sheet body itself and gives no scroll signal, so on native those rows are NEVER known
+  // visible: they stay conservatively static (D3 — a mark animates only when live AND known visible).
+  const nativeGated = Platform.OS !== "web";
+  const nativeHostScrolls = popover && nativeGated;
   const pulseGate = useRowVisibility();
   const pulseBody = useRef<ScrollView>(null);
   const pulseEvaluate = useCallback(() => {
-    if (!nativeGated) return;
+    if (!nativeGated || nativeHostScrolls) return;
     // react-native's ScrollView type omits measureInWindow, but every mounted instance carries it.
     pulseGate.measure(pulseBody.current as MeasurableView | null);
-  }, [nativeGated, pulseGate]);
+  }, [nativeGated, nativeHostScrolls, pulseGate]);
   const entries = archive.directory.entries;
   const recentIds = recentRows(entries, recent.record).map((row) => row.entry.id);
   const opened = new Map(recent.record.visits.map((visit) => [visit.id, visit.at]));
@@ -318,7 +320,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       mode={selection.selecting ? { kind: "select", selected: selection.selected.includes(entry.id), unavailable: entry.archivedAt !== null ? "Archived sessions are not selected." : null }
         : { kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={actionsFor(entry)} /> }}
       onPress={() => selection.selecting ? select(entry) : onOpen(entry)} />;
-    if (!nativeGated) return inner;
+    if (!nativeGated || nativeHostScrolls) return inner;
     return <View key={entry.id} testID={testID ? `${testID}-gate` : `session-row-gate-${entry.id}`}
       ref={(node) => { if (node) pulseGate.register(entry.id, node); else pulseGate.forget(entry.id); }}
       onLayout={pulseEvaluate}>
@@ -431,7 +433,10 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       selection.remove(archived); setBulkOpen(false);
     }} /> : null}
   </>;
-  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : sessionTitle, header, body: <SessionPulseContext.Provider value={{ live: directory.live, visible: true }}>{body}{layers}</SessionPulseContext.Provider>, footer, dismiss };
+  // The outer provider is the conservative fallback for every descendant the per-row gate does not wrap
+  // (source-picker rows, mode bodies). On the web each mark observes its own viewport; on native an
+  // unmeasured descendant is not known visible, so it stays static.
+  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : sessionTitle, header, body: <SessionPulseContext.Provider value={{ live: directory.live, visible: Platform.OS === "web" }}>{body}{layers}</SessionPulseContext.Provider>, footer, dismiss };
 }
 
 /** Board C1's Details for a switcher row: its full values, read-only. Kontor's own Details adds placement, plan and retirement. */

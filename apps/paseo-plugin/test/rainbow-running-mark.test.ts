@@ -191,6 +191,29 @@ describe("rainbow running mark", () => {
     expect(suffix).toBeTruthy();
   });
 
+  it("builds a monotonic input range for every K, with full stack coverage down to degenerate stacks", () => {
+    // review-b N7: frame 0 for frames = 2 produced [0, 0.5, 0.5001, 0.5, 1] — Animated rejects a
+    // non-monotonic range. Every K >= 1 must stay monotonic with an exactly-1 stack alpha.
+    for (let frames = 1; frames <= 12; frames++) {
+      const windows = Array.from({ length: frames }, (_, frame) => rainbowFrameInterpolation(frame, frames));
+      for (const window of windows) {
+        for (let index = 1; index < window.inputRange.length; index++)
+          expect(window.inputRange[index]!).toBeGreaterThan(window.inputRange[index - 1]!);
+        expect(window.inputRange[window.inputRange.length - 1]).toBe(1);
+      }
+      expect(windows[0]!.inputRange[0]).toBe(0);
+      for (let step = 0; step <= 120; step++) {
+        let coverage = 0;
+        for (const window of windows) {
+          const alpha = opacityAt(window, step / 120);
+          coverage = alpha + (1 - alpha) * coverage;
+        }
+        expect(coverage).toBe(1);
+      }
+      if (frames < 3) for (const window of windows) expect(window.outputRange).toEqual([1, 1]);
+    }
+  });
+
   it("pre-renders each frame as the same gradient rotated 360/K about the centre", () => {
     const angles = Array.from({ length: RAINBOW_FRAMES }, (_, frame) =>
       Number(rainbowMarkSvg("play", dark, frame).match(/rotate\(([\d.]+) 12 12\)/)![1]));

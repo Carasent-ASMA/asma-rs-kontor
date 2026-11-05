@@ -47,7 +47,10 @@ export function RecentFooter({ recent, known, candidates, shown, colors, tall, o
       <Text accessibilityRole="header" style={{ ...muted, color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Saved entries · visit time and host unknown</Text>
       <Text style={muted}>Kept from an earlier version of Kontor. They are not visits and are not counted in Recent; opening one adds it.</Text>
       {/* The saved entry's current status comes from this directory, so it shares the rows' live mark; only the
-        visit time and host stay unknown. Web rows gate motion through the mark's own viewport observer. */}
+        visit time and host stay unknown. On the web each mark observes its own viewport, so a visible live
+        saved entry animates like any live row. On native the footer has no measured visibility signal (the
+        screen's viewability covers list items, not the footer), so saved entries stay conservatively static
+        there on purpose — a live one shows the static rainbow, never muted ink; last known stays muted. */}
       <SessionPulseContext.Provider value={{ live, visible: Platform.OS === "web" }}>
         {savedRows.map((entry) => <SwitchRowItem key={entry.id} role="button" row={{ entry, detail: `Saved entry · ${sessionPlace(entry)}` }} colors={colors} tall={tall} onPress={() => onOpen(entry)} />)}
       </SessionPulseContext.Provider>

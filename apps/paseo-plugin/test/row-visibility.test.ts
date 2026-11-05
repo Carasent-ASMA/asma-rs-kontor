@@ -1,7 +1,60 @@
-import { describe, expect, it } from "vitest";
-import { rowIntersectsBody, visibleRowIds, type WindowBounds } from "../client/row-visibility";
+import { describe, expect, it, vi } from "vitest";
+import { rowIntersectsBody, useRowVisibility, visibleRowIds, type WindowBounds } from "../client/row-visibility";
 
 const body: WindowBounds = { top: 300, bottom: 500 };
+
+// Drive the real hook outside React: a single state cell the mock's setter writes (functional updates
+// included), fresh per test, so measure/settle lifecycle behavior is observable.
+const hookState = vi.hoisted(() => ({ value: new Set<string>() }));
+vi.mock("react", () => ({
+  useRef: (value: unknown) => ({ current: value }),
+  useCallback: (fn: unknown) => fn,
+  useState: () => [hookState.value, (next: Set<string> | ((previous: Set<string>) => Set<string>)) => { hookState.value = typeof next === "function" ? next(hookState.value) : next; }],
+}));
+
+describe("native row visibility hook lifecycle", () => {
+  const settledBody = { measureInWindow: (cb: (x: number, y: number, width: number, height: number) => void) => cb(0, 100, 0, 400) };
+  const liveRow = () => ({ measureInWindow: (cb: (x: number, y: number, width: number, height: number) => void) => cb(0, 120, 0, 40) });
+
+  it("settles measured rows into the visible set, excludes offscreen rows, and evicts rows that leave", () => {
+    hookState.value = new Set();
+    const gate = useRowVisibility();
+    const row = liveRow();
+    const offscreenRow = { measureInWindow: (cb: (x: number, y: number, width: number, height: number) => void) => cb(0, 900, 0, 40) };
+    gate.register("a", row);
+    gate.register("b", offscreenRow);
+    gate.measure(settledBody);
+    expect([...hookState.value]).toEqual(["a"]);
+    // The row scrolls out; the next settled pass evicts it (a never-un-settling mutant fails here).
+    row.measureInWindow = (cb: (x: number, y: number, width: number, height: number) => void) => cb(0, 900, 0, 40);
+    gate.measure(settledBody);
+    expect([...hookState.value]).toEqual([]);
+  });
+
+  it("coalesces overlapping measure passes into one trailing evaluation", () => {
+    hookState.value = new Set();
+    const gate = useRowVisibility();
+    let deliver: ((x: number, y: number, width: number, height: number) => void) | null = null;
+    const inFlightBody = { measureInWindow: (cb: (x: number, y: number, width: number, height: number) => void) => { deliver = cb; } };
+    gate.register("a", liveRow());
+    gate.measure(inFlightBody);
+    gate.measure(inFlightBody); // overlaps the in-flight pass: coalesced into the trailing evaluation
+    expect(hookState.value.size).toBe(0); // nothing applies before the pass settles
+    deliver!(0, 100, 0, 400);
+    expect([...hookState.value]).toEqual(["a"]);
+  });
+
+  it("leaves the gate empty when a pass never settles, so nothing animates on unknown", () => {
+    // An undelivered body callback (an RN contract violation, and the r5 mutant's symptom) must never
+    // promote rows to visible: conservative static beats a wrong animation.
+    hookState.value = new Set();
+    const gate = useRowVisibility();
+    const silentBody = { measureInWindow: () => undefined };
+    gate.register("a", liveRow());
+    gate.measure(silentBody);
+    expect(hookState.value.size).toBe(0);
+  });
+});
 
 describe("native row visibility gate", () => {
   it("animates only rows whose measured window bounds intersect the scroll body", () => {

@@ -403,6 +403,7 @@ const report = { scope: 'Web-only evidence on the pinned renderer with the real 
     report.rms = state.rms;
     report.composite = state.composite;
     report.hue = state.hue;
+    report.midpointExport = state.midpointExport;
     assert.equal(state.frames, Number(process.env.R37_CHOSEN_K ?? state.frames), 'the shipped K equals the chosen K');
     for (const [key, value] of Object.entries(state.iou)) assert.ok(value >= 0.98, `silhouette IoU ${key} = ${value}`);
     for (const theme of Object.keys(state.rms)) {
@@ -472,28 +473,40 @@ const report = { scope: 'Web-only evidence on the pinned renderer with the real 
       if (box) await page.screenshot({ path: path.join(output, `comparison-${theme}.png`), clip: box });
     }
     // Rendered crossfade frames at the 2→3 handoff midpoint, at 22 px and 240 px, in both themes.
-    await page.evaluate(({ themes, sizes }) => {
+    // r37CompositeAlphas returns exactly two values [outgoing, incoming]; the exporter destructures them
+    // and asserts the effective computed opacity of both layers before export (review-a F6: reading
+    // [2]/[3] yielded undefined and the "midpoint" PNGs showed a fully opaque top frame).
+    const midpointExport = await page.evaluate(({ themes, sizes }) => {
       const host = document.createElement('div');
       host.id = 'crossfade-frames';
       host.style = 'position:fixed;left:0;top:0;z-index:99999;display:flex;gap:24px;padding:16px;background:#333';
+      document.body.append(host); // attached first, so the layers have computed opacity when asserted
+      const exported = {};
       for (const theme of themes) {
-        const alphaA = (window).r37CompositeAlphas(theme)[2];
-        const alphaB = (window).r37CompositeAlphas(theme)[3];
+        const [alphaA, alphaB] = (window).r37CompositeAlphas(theme);
+        if (![alphaA, alphaB].every((value) => typeof value === 'number' && value >= 0 && value <= 1)) throw new Error(`midpoint alphas on ${theme} are not [opaque, half]: ${JSON.stringify([alphaA, alphaB])}`);
+        if (Math.abs(alphaA - 1) > 1e-3 || Math.abs(alphaB - 0.5) > 1e-3) throw new Error(`midpoint alphas on ${theme} are not the handoff pair [1, 0.5]: ${JSON.stringify([alphaA, alphaB])}`);
         for (const size of sizes) {
           const box = document.createElement('div');
           box.id = `crossfade-${theme}-${size}`;
           box.style = `position:relative;width:${size}px;height:${size}px;background:${theme === 'dark' ? '#181B1A' : '#ffffff'}`;
+          host.append(box); // attached before the layers, so computed opacity is available
+          const layerOpacity = [];
           for (const [frame, alpha] of [[2, alphaA], [3, alphaB]]) {
             const layer = document.createElement('div');
             layer.style = `position:absolute;inset:0;opacity:${alpha}`;
             layer.innerHTML = (window).r37FrameMarkup(theme, frame);
             box.append(layer);
+            layerOpacity.push(getComputedStyle(layer).opacity);
           }
-          host.append(box);
+          // The effective computed opacities must match the interpolation pair before any export.
+          if (layerOpacity[0] !== String(alphaA) || Number(layerOpacity[1]) < 0.499 || Number(layerOpacity[1]) > 0.501) throw new Error(`layer opacity mismatch on ${theme}: ${JSON.stringify(layerOpacity)}`);
+          exported[theme + '-' + size] = { alphas: [alphaA, alphaB], layerOpacity };
         }
       }
-      document.body.append(host);
+      return exported;
     }, { themes: Object.keys(THEMES), sizes: [22, 240] });
+    report.midpointExport = midpointExport;
     for (const theme of Object.keys(THEMES)) for (const size of [22, 240]) {
       await page.locator(`#crossfade-${theme}-${size}`).screenshot({ path: path.join(output, `crossfade-${theme}-${size}.png`) });
     }

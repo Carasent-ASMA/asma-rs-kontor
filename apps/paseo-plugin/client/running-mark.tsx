@@ -77,7 +77,9 @@ export function rainbowMarkSvg(shape: RunningMarkShape, colors: Colors, frame: n
 export function rainbowFrameInterpolation(frame: number, frames: number): { inputRange: number[]; outputRange: number[]; extrapolate: "clamp" } {
   const at = (step: number) => Number((step / frames).toFixed(6));
   const after = (step: number) => Number((step / frames + 1e-4).toFixed(6));
-  if (frames < 2) return { inputRange: [0, 1], outputRange: [1, 1], extrapolate: "clamp" };
+  // Degenerate stacks (frames < 3) keep every layer solid: the input range stays monotonic for every K >= 1
+  // (Animated rejects a non-monotonic range) and the stack alpha stays exactly 1, with the topmost frame showing.
+  if (frames < 3) return { inputRange: [0, 1], outputRange: [1, 1], extrapolate: "clamp" };
   if (frame === 0) return { inputRange: [0, at(1), after(1), at(frames - 1), 1], outputRange: [1, 1, 0, 1, 1], extrapolate: "clamp" };
   if (frame === frames - 1) return { inputRange: [at(frame - 1), at(frame), 1], outputRange: [0, 1, 0], extrapolate: "clamp" };
   return { inputRange: [at(frame - 1), at(frame), after(frame + 1), 1], outputRange: [0, 1, 1, 0], extrapolate: "clamp" };
