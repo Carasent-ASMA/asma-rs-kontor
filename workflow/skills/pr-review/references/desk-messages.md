@@ -79,10 +79,15 @@ never change identity to repeat a finding. There is no findings quota.
   "note": "missing evidence or a concise qualification"
 }
 A full review covers every file in the recorded diff and affected behavior.
+For a full review, covered_files is exactly review.files from the facts.
+Put additional inspected callers or contracts in checked evidence, not that list.
 A delta result also includes "delta_parent": "<initial reviewed head>".
 Its covered_files includes correction files and outstanding-finding files;
 inspect affected callers/contracts too. Reuse only still-valid initial evidence.
 An empty findings list is valid; there is no finding quota.
+blocking_remaining is true exactly when a confirmed unresolved blocking finding
+is kept. Missing execution or acceptance evidence alone does not set it true:
+retain verdict "not verified" and pr_acceptance.verdict "no" for that gap.
 For Simple/Medium, REV A is also the deciding seat. Add these fields:
 "blocking_remaining": true,
 "verdict": "not verified",
@@ -123,6 +128,9 @@ checked must contain keys "1" through "10", each with status "checked",
 include unchecked; final acceptance rejects unchecked in any required record.
 Check (11) uses pr_acceptance, never checked. Persist finding IDs and stable
 root_cause strings across heads; no finding quota.
+For a full review, covered_files equals review.files exactly; additional reads
+belong in checked evidence. An empty kept-blocker list means blocking_remaining
+false even while missing evidence leaves acceptance "no" and verdict "not verified".
 {
   "pr_head_sha": "<full reviewed head>",
   "pr_base_sha": "<full reviewed base>",
@@ -208,6 +216,12 @@ Hard rules:
   under existing grants. Post a `/desk` command only on
   the pull request author's own words to you (SKILL.md, Desk commands).
 - Never edit the desk state file; record stages only through the desk.
+- Use the exact accepted desk command prefix in the facts, including its
+  interpreter, script, config folder and desk root. Work from your assigned
+  coordinator workspace; never substitute a relative script in another clone.
+- Room preparation belongs to the host before reviewer admission. If a room
+  lacks its preparation receipt or dependencies, report prepare-room's exact
+  failure without spending another review round or asking a reviewer to install.
 - Always write plain English for an average non-native reader.
 - Route routine work through bounded recovery. Escalate reserved decisions or
   exhausted recovery once to the configured owner, `{{ project.owner }}`.
@@ -227,9 +241,20 @@ Steps:
    --blocking yes|no. Use the desk-assigned IDs. Record fixing, then dispatch
    SWE with --round <n> --findings-file <file>, where the file is
    {"head":"<H>","findings":[<recorded confirmed findings>]}.
-5. When SWE finishes, publish through fix-pr <ref> --round <n>
+   If stage rejects extra supporting files in covered_files or an inconsistent
+   blocking_remaining flag, use repair-review <ref> --record-file <record.json>
+   (with --seat for a nested Complex reviewer). It requests one metadata-only
+   correction from that same seat in the same round. Preserve findings,
+   evidence and judgment; wait for its result. Other validation failures or a
+   failed second record get one concrete handoff, not repeated review launches.
+5. When SWE finishes with a successful test receipt, honor the author's consent.
+   For direct corrections, use fix-pr <ref> --round <n>
    --body-file <test-receipt.json> --findings-file <findings.json>.
-   This command appends to the ORIGINAL PR branch; it never opens a nested PR.
+   For suggest-only consent, use publish-suggestions <ref> --round <n>
+   --body-file <test-receipt.json>. This posts applicable line suggestions and
+   never pushes. Unsupported anchors remain explicit gaps; never silently omit
+   a change. A proposal is unresolved until the author applies it and it is
+   independently verified. Neither path opens a nested PR.
    Respect refusals, opt-outs and author decisions. An uncertain result is
    reconciled, never pushed again blindly.
 6. Independently verify the correction, affected callers/contracts and every
