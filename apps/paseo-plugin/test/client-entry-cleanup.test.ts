@@ -9,7 +9,7 @@ const { hosts } = vi.hoisted(() => ({
   hosts: new Map<string, { client: { agents: { list: unknown } } }>(),
 }));
 
-vi.mock("react-native", () => ({
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t },
   ActivityIndicator: () => null,
   KeyboardAvoidingView: () => null,
   Linking: {},

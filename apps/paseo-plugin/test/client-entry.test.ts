@@ -22,7 +22,7 @@ vi.mock("../client/return-control", () => ({ contributeReturnControl }));
 const { recordVisit } = vi.hoisted(() => ({ recordVisit: vi.fn() }));
 vi.mock("../client/recent-sessions", async (importOriginal) => ({ ...(await importOriginal<object>()), recordVisit }));
 
-vi.mock("react-native", () => ({
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t },
   ActivityIndicator: () => null,
   Platform: { OS: "web" },
   Pressable: () => null,
