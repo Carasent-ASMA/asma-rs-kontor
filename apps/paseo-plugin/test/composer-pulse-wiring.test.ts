@@ -13,7 +13,7 @@ const harness = vi.hoisted(() => ({
   timingConfigs: [] as Array<Record<string, unknown>>,
   loops: [] as Array<{ stopped: boolean }>,
 }));
-vi.mock("react-native", () => ({
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t },
   View: "View",
   Platform: { OS: "web" },
   AppState: {
@@ -82,7 +82,7 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 
-import { ComposerPulse, pulseMotionSnapshot, retainClock, subscribePulseMotion } from "../client/composer-pulse";
+import { ComposerPulse, pulseClockConfig, pulseMotionSnapshot, retainClock, subscribePulseMotion } from "../client/composer-pulse";
 
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
@@ -130,11 +130,11 @@ describe("composer pulse wiring: environment facts to the shared clock (F4/F5/N2
     await flush();
     // The read has answered: foreground without Reduce Motion.
     expect(pulseMotionSnapshot()).toBe("10");
-    // F4: the clock receives exactly the linear config — no easing key, 2700 ms, toValue 1, web driver off.
+    // F4: the clock receives exactly the linear config — the clock config itself (now with the
+    // explicit Easing.linear, whose omission RN reads as ease-in-out) plus driver/isInteraction.
     const release = retainClock();
     expect(harness.timingConfigs).toHaveLength(1);
-    expect(harness.timingConfigs[0]).toEqual({ toValue: 1, duration: 2700, useNativeDriver: false, isInteraction: false });
-    expect(Object.keys(harness.timingConfigs[0]!)).not.toContain("easing");
+    expect(harness.timingConfigs[0]).toEqual({ ...pulseClockConfig, useNativeDriver: false, isInteraction: false });
     expect(harness.loops).toHaveLength(1);
     expect(harness.loops[0]!.stopped).toBe(false);
     // F5/M7: backgrounded means the facts flip off and the clock is released — nothing keeps looping.

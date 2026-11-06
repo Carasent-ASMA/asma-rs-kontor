@@ -8,7 +8,7 @@ const model = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0,
   },
 }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: <T,>(initial: T) => model.useState(initial) }));
-vi.mock("react-native", () => ({ ScrollView: "ScrollView", View: "View", Text: "Text" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, ScrollView: "ScrollView", View: "View", Text: "Text" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../shared/organization";

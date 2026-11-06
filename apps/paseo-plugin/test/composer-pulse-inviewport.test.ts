@@ -4,7 +4,7 @@ import type { Colors } from "../client/page-controls";
 const rn = vi.hoisted(() => ({ OS: "web" }));
 const stateInits = vi.hoisted(() => ({ seen: [] as unknown[] }));
 
-vi.mock("react-native", () => ({
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t },
   View: "View",
   Platform: { get OS() { return rn.OS; } },
   Animated: {

@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ open: false }));
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), useState: () => [state.open, (value: boolean) => { state.open = value; }] }));
-vi.mock("react-native", () => ({ Platform: { OS: "web" }, Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { OS: "web" }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", Modal: Object.assign("Modal", { Content: "ModalContent" }) }));
 vi.mock("../client/control-help", () => ({ useActionHelp: () => ({ bindings: {}, dismiss() {} }) }));
 vi.mock("../client/dense-session-row", () => ({ cancelDelayedOpen() {} }));

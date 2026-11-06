@@ -5,7 +5,7 @@ import { buildOrganizationTree, type OrganizationGroup, type OrganizationInput }
 import { relateSplitProjects } from "../client/split-project-rows";
 import { sessionEntry } from "./session-fixtures";
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useContext: () => null, useRef: (current: unknown) => ({ current }) }));
-vi.mock("react-native", () => ({ PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 
 // One native project's sessions settle different epics, so it shows a recognised row and a No epic linked row; the

@@ -39,7 +39,7 @@ vi.mock("react", async (original) => ({
   useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback,
   useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => { model.effects.push({ effect, deps }); },
 }));
-vi.mock("react-native", () => ({
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t },
   Linking: { openURL: vi.fn(async () => {}) },
   SafeAreaView: "SafeAreaView", KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable",
 }));

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 const layout = vi.hoisted(() => ({ width: 0, fontScale: 1 }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useRef: () => ({ current: null }), useEffect: () => {}, useImperativeHandle: () => {},
   useState: () => [layout.width, (width: number) => { layout.width = width; }] }));
-vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View", ScrollView: "ScrollView", useWindowDimensions: () => ({ fontScale: layout.fontScale }) }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Pressable: "Pressable", Text: "Text", View: "View", ScrollView: "ScrollView", useWindowDimensions: () => ({ fontScale: layout.fontScale }) }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
 vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ dismiss() {} }) }));
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";

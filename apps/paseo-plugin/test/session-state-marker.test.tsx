@@ -1,6 +1,6 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-vi.mock("react-native", () => ({ View: "View", Text: "Text" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, View: "View", Text: "Text" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 // SessionStateMarker reads the pulse context through useContext; outside a renderer the stub hands back
 // the value each test sets, and with no value set it reads the module's own createContext default —

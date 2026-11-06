@@ -1,16 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-vi.mock("react-native", () => ({ View: "View", Platform: { OS: "web" } }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, View: "View", Platform: { OS: "web" } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
-import { PULSE_SAMPLES, PULSE_SCALE_MAX, pulseClockConfig, pulseMotion, pulseScaleEasing, pulseScaleInterpolation } from "../client/composer-pulse";
+import { PULSE_SAMPLES, PULSE_SCALE_MAX, pulseMotion, pulseScaleEasing, pulseScaleInterpolation } from "../client/composer-pulse";
 import { RAINBOW_FRAMES } from "../client/running-mark";
 import { observePulseEnvironment, type PulseEnvironment } from "../client/composer-pulse-environment";
 
 describe("composer pulse breathing", () => {
   it("reads the pulse as a sampled cosine on the linear clock, capped at 1.12 (D7)", () => {
-    // The clock itself is linear (no easing on the timing); the pulse's cosine shape is a piecewise-linear
-    // sample table over the same clock. A seeded eased ping-pong clock (M-B) fails the linear-clock pin.
-    expect(pulseClockConfig).toEqual({ toValue: 1, duration: 2700 });
-    expect(Object.keys(pulseClockConfig)).not.toContain("easing");
+    // The pulse's cosine shape is a piecewise-linear sample table over the same clock. An eased clock
+    // (M-easing-drop/inout/quad, R-bezier) fails the real-engine clock test in composer-pulse-clock.test.ts.
     expect(PULSE_SCALE_MAX).toBeLessThanOrEqual(1.12);
     // D7: at least eight forward crossfade frames and a sampled cosine with at least eight samples.
     expect(RAINBOW_FRAMES).toBeGreaterThanOrEqual(8);

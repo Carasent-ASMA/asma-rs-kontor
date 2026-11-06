@@ -1,6 +1,6 @@
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
-vi.mock("react-native", () => ({ View: "View" }));
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import type { PluginButtonIconProps } from "@getpaseo/plugin/client";
 import { composerSessionPresentation } from "../client/composer-session-state";

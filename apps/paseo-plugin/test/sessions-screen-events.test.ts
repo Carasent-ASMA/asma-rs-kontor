@@ -239,7 +239,7 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 
-vi.mock("react-native", () => ({
+vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t },
   AccessibilityInfo: {
     addEventListener: () => ({ remove: () => undefined }),
     isReduceMotionEnabled: async () => false,
