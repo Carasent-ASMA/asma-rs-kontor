@@ -138,7 +138,7 @@ async function enterSelection(page, firstRowId) {
 // reveal the control — and press it with a real pointer press at freshly read coordinates. The
 // reach+read+dispatch is retried with an outcome check: background refetches can reflow text
 // between a box read and the dispatch (the press must land on the control, verified, or retry).
-async function tapBarControl(page, testId) {
+async function tapBarControl(page, testId, expectOpen = true) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const outcome = await page.evaluate((id) => {
       const barNode = document.querySelector('[data-testid="selection-bar"]');
