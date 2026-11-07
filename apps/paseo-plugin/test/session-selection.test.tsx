@@ -220,17 +220,16 @@ describe("SelectionBar", () => {
   it("starts the bar's scroll at its end when the content does not fit, and never fights a user who scrolled up (R38-D2-r3)", () => {
     helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
-    const scroller = byTestId(tree, "selection-bar")!.props.children;
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     // The bar wires its scroller for the rest-end pin: a content-size change re-pins to the end only
     // while the scroller sits at the end; a user scroll up un-pins it.
     expect(typeof scroller.props.onContentSizeChange).toBe("function");
     expect(typeof scroller.props.onScroll).toBe("function");
     const scrollToEnd = vi.fn();
     (scroller.props.ref as { current: unknown }).current = { scrollToEnd };
-    // The bar's content arrives (larger than the scroller): re-pin to the end.
     scroller.props.onContentSizeChange(360, 300);
     expect(scrollToEnd).toHaveBeenCalledTimes(1);
-    expect(scrollToEnd.mock.calls[0][0]).toMatchObject({ animated: false });
+    expect(scrollToEnd.mock.calls[0]![0]).toMatchObject({ animated: false });
     // A user scrolls up to read: the pin releases...
     scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 0 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
     // ...so further content changes (a refetch, a label width settling) do not re-pin.

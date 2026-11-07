@@ -864,7 +864,9 @@ describe("Start or switch sheet", () => {
     // R38 F-SHEET: while the footer bar is mounted, the sheet's list takes its room as flex with
     // basis 0 — the same V1 treatment as the Sessions screen — so Yoga never weighs the bar's content
     // against the list's content-sized basis and shrink the bar below its own content.
-    expect((out.body as { props: { style: Record<string, unknown> } }).props.style).toMatchObject({ flexGrow: 1, flexShrink: 1, flexBasis: 0 });
+    const listNode = scoped([out.body], { live: true, visible: true }).map((entry) => entry.node)
+      .find((node) => node.props.testID === "kontor-switch-list")!;
+    expect(listNode.props.style).toMatchObject({ flexGrow: 1, flexShrink: 1, flexBasis: 0 });
     // The capabilities read is async: flush its microtasks, then draw with the disclosure in hand.
     for (let flush = 0; flush < 6; flush++) { await Promise.resolve(); out = render(); }
     expect(out.footer).toBeDefined();
