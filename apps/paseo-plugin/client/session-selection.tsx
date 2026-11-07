@@ -125,12 +125,17 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // bar's own height changes — it never fights a user who has scrolled up.
   const scrollerRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
   const pinnedToEnd = useRef(true);
-  // R9 AUD-F3: ONE toggle decision per press, from the state at press start. The provider keeps a
-  // held help's state through a press on its own trigger (control-help.tsx press()), so a pointer
-  // press captures the open state in onPressIn and the decision consumes and RESETS the capture; a
-  // keyboard activation (Enter/Space) has no press start — no pointerdown, no onPressIn — and
-  // decides from the live state, which the provider has not disturbed.
+  // R10 R9-F1: ONE toggle decision per activation. A pointer press captures the open state at press
+  // start ONLY when a HELD help is showing — the one case a mid-gesture dismissal (the native root
+  // touch-start) disturbs the live state; an unheld hover help is dismissed by the press itself, and
+  // a keyboard activation has no press start, so both decide from live state. The capture belongs to
+  // its gesture: release schedules an expiry in a task that runs after any onPress the gesture could
+  // still fire (on web the click is the mouseup's default action — same task; native Pressability
+  // calls onPressOut synchronously before onPress in the release dispatch), so an abandoned or
+  // cancelled press can never leak its capture into the next activation; a new press-start cancels a
+  // pending expiry.
   const pressOpen = useRef<boolean | null>(null);
+  const pressExpiry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const repinToEnd = () => { if (pinnedToEnd.current) scrollerRef.current?.scrollToEnd({ animated: false }); };
   // The bar never grows past 60% of its parent: very large text scrolls inside it instead of pushing the
   // session list out (R38 D2). In the switch sheet the footer has no definite height, so there the sheet's
@@ -159,8 +164,9 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
         {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
           accessibilityState={{ expanded: limits.open }} aria-expanded={limits.open} accessibilityHint="Opens the full take over effects and this host's stated limits."
           hitSlop={6}
-          onPressIn={() => { pressOpen.current = limits.open; }}
-          onPress={() => { const was = pressOpen.current; pressOpen.current = null; (was ?? limits.open) ? limits.dismiss() : limits.hold(); }}
+          onPressIn={() => { if (pressExpiry.current !== null) { clearTimeout(pressExpiry.current); pressExpiry.current = null; } pressOpen.current = limits.heldOpen ? limits.open : null; }}
+          onPressOut={() => { if (pressExpiry.current !== null) clearTimeout(pressExpiry.current); pressExpiry.current = setTimeout(() => { pressOpen.current = null; pressExpiry.current = null; }, 0); }}
+          onPress={() => { if (pressExpiry.current !== null) { clearTimeout(pressExpiry.current); pressExpiry.current = null; } const was = pressOpen.current; pressOpen.current = null; (was ?? limits.open) ? limits.dismiss() : limits.hold(); }}
           style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
           <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
         </Pressable> : null}

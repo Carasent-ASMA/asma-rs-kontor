@@ -14,7 +14,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 // provider would, and a test simulates the provider's own dismissals (Escape, outside press) by setting
 // `open` back — the control's expanded flag must follow, not its own press history (R38 F1).
 const helpDouble = vi.hoisted(() => ({ open: false, holds: 0, dismisses: 0, lastText: null as string | null }));
-vi.mock("../client/control-help", () => ({ useControlHelp: (text: string | null) => { helpDouble.lastText = text; return { bindings: {}, open: helpDouble.open,
+vi.mock("../client/control-help", () => ({ useControlHelp: (text: string | null) => { helpDouble.lastText = text; return { bindings: {}, open: helpDouble.open, heldOpen: true,
   hold: () => { helpDouble.holds++; helpDouble.open = true; },
   dismiss: () => { helpDouble.dismisses++; helpDouble.open = false; },
   forget: () => {} }; },
@@ -239,6 +239,57 @@ describe("SelectionBar", () => {
     pressLimits(false); draw();
     expect(expanded()).toEqual({ aria: true, state: true });
     expect(helpDouble.holds).toBeGreaterThanOrEqual(4);
+  });
+
+  it("drops an abandoned press's capture and decides cancelled-and-later activations from live state (R10 R9-F1)", async () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
+    const takeover = control(), auto = control(), archive = control();
+    let tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true })));
+    const draw = () => { tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true }))); };
+    const expanded = () => (byTestId(tree, "selection-limits")!.props.accessibilityState as { expanded: boolean }).expanded;
+    // gesture(pointer): the native/web order pressIn → [gesture] → pressOut → press. The disturbance
+    // step models what the native root touch-start does to an OPEN held help mid-gesture (dismiss).
+    const gesture = async (pointer: boolean, disturb = false) => {
+      const props = byTestId(tree, "selection-limits")!.props;
+      if (pointer) (props.onPressIn as (() => void) | undefined)?.();
+      if (disturb) helpDouble.open = false;
+      if (pointer) (props.onPressOut as (() => void) | undefined)?.();
+      (props.onPress as () => void)();
+      draw();
+    };
+    const cancel = async (pointer: boolean) => {
+      const props = byTestId(tree, "selection-limits")!.props;
+      if (pointer) (props.onPressIn as (() => void) | undefined)?.();
+      helpDouble.open = false;
+      if (pointer) (props.onPressOut as (() => void) | undefined)?.();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      draw();
+    };
+    const keyboard = () => { (byTestId(tree, "selection-limits")!.props.onPress as () => void)(); draw(); };
+    // A completed pointer press from open makes ONE decision even when the native root touch-start
+    // dismisses mid-gesture: the press-start capture survives to onPress and closes (the held-open
+    // second press must CLOSE — a synchronous onPressOut clear would reopen it here).
+    await gesture(true, false);
+    expect(expanded()).toBe(true);
+    await gesture(true, true);
+    expect(expanded()).toBe(false);
+    // A CANCELLED press (Escape while down, released outside — no onPress) drops its capture: after
+    // the gesture's expiry runs, an activation with no press start decides from the live state and
+    // OPENS the closed help (a leaked capture would dismiss it again and stay closed).
+    keyboard();
+    expect(expanded()).toBe(true);
+    await cancel(true);
+    keyboard();
+    expect(expanded()).toBe(true);
+    // The expiry with no live disturbance clears to NO decision: the next activation on the still-
+    // open help CLOSES it (an expiry that decided false would hold it open instead).
+    const props = byTestId(tree, "selection-limits")!.props;
+    (props.onPressIn as (() => void) | undefined)?.();
+    (props.onPressOut as (() => void) | undefined)?.();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    draw();
+    keyboard();
+    expect(expanded()).toBe(false);
   });
 
   it("renders no Limits control when the host states no limits, while the effects sentence is NOT clamped (R38 V2, R38-D2-r3 addendum)", () => {

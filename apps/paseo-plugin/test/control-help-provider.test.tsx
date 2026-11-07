@@ -149,3 +149,28 @@ describe("hover and focus help", () => {
     screen.control.bindings.onHoverIn(); screen.render(); handlers.get("resize")!({} as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
   });
 });
+
+describe("R10 R9-F2: the press exception covers only the anchor that holds the popover", () => {
+  it("dismisses unheld help on a root press at its own source, and preserves the held one", () => {
+    const child = { kind: "child HostInstance" };
+    const anchor = { current: Object.assign(measure(100, 200, 44, 44), { contains: (target: unknown) => target === child }) as unknown as View };
+    const screen = mount(390, 320, false, "unused");
+    const controller = hooks.controller as { show(anchor: unknown, text: string, focused: boolean, held: boolean): void };
+    // Unheld (hover) help on this anchor: a root press landing on its own child STILL dismisses —
+    // the exception covers only the anchor that HOLDS the popover (QA seed 7 regression).
+    controller.show(anchor, "Hover explanation", false, false);
+    screen.render();
+    expect(screen.tooltip()).toBeDefined();
+    handlers.get("pointerdown")?.({ pointerType: "mouse", target: child, clientX: 120, clientY: 220 } as never);
+    screen.render();
+    expect(screen.tooltip()).toBeUndefined();
+    // The help that is HELD on the same anchor survives the same root press at its child: one
+    // toggle decision belongs to the holding control's own activation.
+    controller.show(anchor, "Held explanation", false, true);
+    screen.render();
+    expect(screen.tooltip()).toBeDefined();
+    handlers.get("pointerdown")?.({ pointerType: "mouse", target: child, clientX: 120, clientY: 220 } as never);
+    screen.render();
+    expect(screen.tooltip()).toBeDefined();
+  });
+});

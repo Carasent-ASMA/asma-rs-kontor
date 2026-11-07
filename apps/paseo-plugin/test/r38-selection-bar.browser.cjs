@@ -138,7 +138,7 @@ async function enterSelection(page, firstRowId) {
 // reveal the control — and press it with a real pointer press at freshly read coordinates. The
 // reach+read+dispatch is retried with an outcome check: background refetches can reflow text
 // between a box read and the dispatch (the press must land on the control, verified, or retry).
-async function tapBarControl(page, testId, expectOpen = true) {
+async function tapBarControl(page, testId) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const outcome = await page.evaluate((id) => {
       const barNode = document.querySelector('[data-testid="selection-bar"]');
@@ -158,9 +158,10 @@ async function tapBarControl(page, testId, expectOpen = true) {
     if (outcome.state === 'ready') {
       await page.mouse.click(outcome.x, outcome.y);
       await page.waitForTimeout(180);
-      // The caller decides what one press means (R9 AUD-F3): for a closing press the panel's
-      // ABSENCE is the success state, so the open-panel check only guards the opening presses.
-      if (!expectOpen || await page.getByTestId('control-help').count() > 0) return true;
+      // R10 R9-F2: once a click has LANDED, the state it produced is the result — retry only while
+      // the control is covered or scrolled out of reach, never on a state mismatch (a retry re-press
+      // would hide a wrong first click, e.g. a closing press retried into a reopen).
+      return true;
     }
     await page.waitForTimeout(300);
   }
@@ -461,7 +462,7 @@ async function pass(width, height, theme, largeText, extra = {}) {
       await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('limits-aria-open', (await aria()) === 'true' && (await panelCount()) === 1, `tap: aria-expanded ${await aria()}, panels ${await panelCount()}`);
-      await tapBarControl(page, 'selection-limits', false);
+      await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('limits-second-press-closes', (await aria()) === 'false' && (await panelCount()) === 0, `second press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
       await tapBarControl(page, 'selection-limits');
@@ -510,6 +511,63 @@ async function pass(width, height, theme, largeText, extra = {}) {
     }
 
     if (errors.length) report.cases.push({ name: `${name}-page-errors`, status: 'FAIL', errors });
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
+// R10 R9-F1/F2 activation gates on a non-touch wide page (the audit's cancel-click and
+// hover-one-click sequences, committed): a cancelled press must not consume the next activation,
+// and hover-then-click converts the unheld hover help to the held one in exactly one click.
+async function activationPass() {
+  const name = 'activation-1280x800-light';
+  scaleText = false;
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${origin}/?scenario=baseline&layout=wide&theme=light`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    const gated = (label, condition, detail) => { report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail }); console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`); };
+    await page.getByTestId('session-actions-agt_lsa_99101').click();
+    await page.getByRole('dialog', { name: 'Session actions', exact: true }).getByTestId('session-action-select').click();
+    await page.waitForTimeout(350);
+    const limits = page.getByTestId('selection-limits');
+    await limits.waitFor({ timeout: 15000 });
+    const aria = () => limits.getAttribute('aria-expanded');
+    const panels = () => page.getByTestId('control-help').count();
+    const spot = async () => { const r = await limits.boundingBox(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
+    // Hover-then-click: the unheld hover help converts to the held one in exactly ONE click — a
+    // stale capture or an unscoped press exception would close it here instead.
+    let s = await spot();
+    await page.mouse.move(1, 1); await page.mouse.move(s.x, s.y);
+    await page.waitForTimeout(250);
+    const hoverPanels = await panels();
+    await page.mouse.click(s.x, s.y);
+    await page.waitForTimeout(250);
+    gated('limits-hover-one-click', hoverPanels === 1 && (await aria()) === 'true' && (await panels()) === 1, `hover panels ${hoverPanels} (unheld); after exactly one click aria-expanded ${await aria()}, panels ${await panels()}`);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    // Cancelled press: open, press down, Escape while down, release outside — then ONE activation
+    // without press start (a DOM click, the assistive-technology path) must OPEN from live state.
+    s = await spot();
+    await page.mouse.click(s.x, s.y);
+    await page.waitForTimeout(200);
+    gated('activation-held-open-precondition', (await aria()) === 'true' && (await panels()) === 1, `held open: aria-expanded ${await aria()}, panels ${await panels()}`);
+    await page.mouse.move(s.x, s.y);
+    await page.mouse.down();
+    await page.waitForTimeout(100);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    await page.mouse.move(1, 1);
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    gated('activation-cancel-closed', (await aria()) === 'false' && (await panels()) === 0, `cancelled release outside: aria-expanded ${await aria()}, panels ${await panels()}`);
+    await limits.evaluate((node) => node.click());
+    await page.waitForTimeout(200);
+    gated('activation-click-without-press-start-opens', (await aria()) === 'true' && (await panels()) === 1, `one DOM click after the cancel: aria-expanded ${await aria()}, panels ${await panels()}`);
   } catch (error) {
     report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
     console.log(`${name}: FAIL ${error.message}`);
@@ -769,7 +827,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
       await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('sheet-limits-aria-open', (await sheetAria()) === 'true' && (await sheetPanels()) === 1, `tap: aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
-      await tapBarControl(page, 'selection-limits', false);
+      await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('sheet-limits-second-press-closes', (await sheetAria()) === 'false' && (await sheetPanels()) === 0, `second press: aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
     } else {
@@ -868,6 +926,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     // R38 V1/D2-r1: wide and iPad — the bar keeps its content, gated, at 1280x800 and 820x1180.
     await widePass(1280, 800);
     await widePass(820, 1180);
+    await activationPass();
     // R38 V3 + F-SHEET: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the
     // panel text — and the at-rest button gates in both forms, the compact sheet also at text200.
     await switchSheetPass(1280, 800, 'popover');
