@@ -359,25 +359,32 @@ async function pass(width, height, theme, largeText, extra = {}) {
     // toggle whose count keeps the same width — must NOT re-pin the scroll. Exercised where a row is
     // visible at a short root (393×420 keeps 82/66 px of list); at 430×330 the list is 0 and no row
     // can be toggled, so no case is claimed there.
-    if (touch && extra.short && !largeText && await page.evaluate(() => {
-      const row = document.querySelector('[data-testid="sessions-row-agt_qa_99103"] [data-testid="session-row-body"]');
-      if (!row) return false;
-      const r = row.getBoundingClientRect();
-      return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight + 1; // fully on screen, tappable
-    })) {
-      await page.evaluate(() => {
-        const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
-        if (scroller) scroller.scrollTop = Math.max(0, scroller.scrollTop - 24);
-      });
+    if (touch && extra.short && !largeText) {
+      // The operator scrolls the row into view inside the sheet's list; only then is the toggle claimed.
+      const toggleRow = rowBody(page, 'agt_qa_99103');
+      await toggleRow.scrollIntoViewIfNeeded().catch(() => undefined);
       await page.waitForTimeout(150);
-      const scrolledUp = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-      await rowBody(page, 'agt_qa_99103').click();
-      await page.waitForTimeout(400);
-      const afterToggle = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-      await rowBody(page, 'agt_qa_99103').click(); // restore 1 selected; the count width is unchanged
-      await page.waitForTimeout(400);
-      const afterRestore = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-      gated('scroll-holds-against-rerender', Math.abs(afterToggle - scrolledUp) <= 1 && Math.abs(afterRestore - scrolledUp) <= 1, `scrolled up to ${scrolledUp}; after toggle ${afterToggle}, after restore ${afterRestore} (a re-pin would have jumped back to the end)`);
+      const onScreen = await page.evaluate(() => {
+        const row = document.querySelector('[data-testid="sessions-row-agt_qa_99103"] [data-testid="session-row-body"]');
+        if (!row) return false;
+        const r = row.getBoundingClientRect();
+        return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight + 1; // fully on screen, tappable
+      });
+      if (onScreen) {
+        await page.evaluate(() => {
+          const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+          if (scroller) scroller.scrollTop = Math.max(0, scroller.scrollTop - 24);
+        });
+        await page.waitForTimeout(150);
+        const scrolledUp = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
+        await toggleRow.click();
+        await page.waitForTimeout(400);
+        const afterToggle = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
+        await toggleRow.click(); // restore 1 selected; the count width is unchanged
+        await page.waitForTimeout(400);
+        const afterRestore = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
+        gated('scroll-holds-against-rerender', Math.abs(afterToggle - scrolledUp) <= 1 && Math.abs(afterRestore - scrolledUp) <= 1, `scrolled up to ${scrolledUp}; after toggle ${afterToggle}, after restore ${afterRestore} (a re-pin would have jumped back to the end)`);
+      }
     }
 
     // D1: the Limits control — collapsed by default, opens the full disclosure held, closes on Escape.
