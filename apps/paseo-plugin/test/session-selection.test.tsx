@@ -249,12 +249,17 @@ describe("SelectionBar", () => {
     const expanded = () => (byTestId(tree, "selection-limits")!.props.accessibilityState as { expanded: boolean }).expanded;
     // gesture(pointer): the native/web order pressIn → [gesture] → pressOut → press. The disturbance
     // step models what the native root touch-start does to an OPEN held help mid-gesture (dismiss).
-    const gesture = async (pointer: boolean, disturb = false) => {
+    const gesture = async (pointer: boolean, disturb = false, flush = false) => {
       const props = byTestId(tree, "selection-limits")!.props;
       if (pointer) (props.onPressIn as (() => void) | undefined)?.();
       if (disturb) helpDouble.open = false;
       if (pointer) (props.onPressOut as (() => void) | undefined)?.();
-      (props.onPress as () => void)();
+      // The web order flushes the mid-gesture dismissal into the render BEFORE the click that fires
+      // onPress (the click task follows the pointerup task); native dispatches onPress in the same
+      // release as onPressOut. The flush flag models the web order — the click dispatches on the
+      // CURRENT render, so onPress is read fresh after it.
+      if (flush) draw();
+      (byTestId(tree, "selection-limits")!.props.onPress as () => void)();
       draw();
     };
     const cancel = async (pointer: boolean) => {
@@ -272,6 +277,12 @@ describe("SelectionBar", () => {
     await gesture(true, false);
     expect(expanded()).toBe(true);
     await gesture(true, true);
+    expect(expanded()).toBe(false);
+    // Web order with the same mid-gesture dismissal flushed before the click: the held-open capture
+    // still CLOSES it (a synchronous onPressOut clear would lose the capture and reopen here).
+    keyboard();
+    expect(expanded()).toBe(true);
+    await gesture(true, true, true);
     expect(expanded()).toBe(false);
     // A CANCELLED press (Escape while down, released outside — no onPress) drops its capture: after
     // the gesture's expiry runs, an activation with no press start decides from the live state and
