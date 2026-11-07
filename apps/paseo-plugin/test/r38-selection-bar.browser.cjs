@@ -191,6 +191,10 @@ async function pass(width, height, theme, largeText, extra = {}) {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  const gated = (label, condition, detail) => {
+    report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail });
+    console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`);
+  };
   try {
     const query = new URLSearchParams({ scenario: 'baseline', theme, layout: touch ? 'compact' : 'wide', ...(extra.inflat ? { inflat: String(extra.inflat) } : {}), ...(extra.state ? { state: extra.state } : {}) });
     await page.goto(`${origin}/?${query}`);
@@ -209,6 +213,34 @@ async function pass(width, height, theme, largeText, extra = {}) {
     // only the Limits popover (whose held text stays the full ~1,700-char production disclosure).
     assert.ok(one.geometry.disclosure, `${name}: the takeover disclosure line renders while Take over can start`);
     assert.equal(one.geometry.disclosure.text, INLINE_LINE, `${name}: the inline line is the effects sentence only (V2)`);
+    // R38-D2-r3, AT REST with no harness scroll: when the bar's content does not fit, the bar starts
+    // scrolled to its END, so the buttons row shows at rest — Archive whole and tappable, Take over
+    // and Auto visible and hit-testable at their visible centre.
+    if (extra.short && one.geometry.buttonRects?.length === 3) {
+      const atRest = await page.evaluate(() => {
+        const barNode = document.querySelector('[data-testid="selection-bar"]');
+        const scroller = barNode?.querySelector('div');
+        const bar = barNode.getBoundingClientRect();
+        const inside = (node) => { const r = node.getBoundingClientRect(); return r.top >= bar.top - 1 && r.bottom <= bar.bottom + 1 && r.left >= bar.left - 1 && r.right <= bar.right + 1; };
+        const labelWhole = (node) => { const label = node.querySelector('[dir="auto"]'); const range = document.createRange(); if (label) range.selectNodeContents(label); return !label || range.getBoundingClientRect().width <= label.getBoundingClientRect().width + 1; };
+        const hitAtVisibleCentre = (node) => {
+          const r = node.getBoundingClientRect();
+          const top = Math.max(r.top, bar.top), bottom = Math.min(r.bottom, bar.bottom);
+          if (bottom - top < 20) return false;
+          const hit = document.elementFromPoint(r.x + r.width / 2, (top + bottom) / 2);
+          return hit === node || node.contains(hit);
+        };
+        const byId = (id) => document.querySelector(`[data-testid="${id}"]`);
+        const archive = byId('selection-archive'), takeover = byId('selection-takeover'), auto = byId('selection-takeover-auto');
+        return {
+          scrollTop: Math.round(scroller?.scrollTop ?? -1),
+          archiveWholeAndTappable: !!archive && inside(archive) && labelWhole(archive) && (() => { const r = archive.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === archive || archive.contains(hit); })(),
+          takeoverHit: !!takeover && hitAtVisibleCentre(takeover),
+          autoHit: !!auto && hitAtVisibleCentre(auto),
+        };
+      });
+      gated('buttons-at-rest', atRest.archiveWholeAndTappable && atRest.takeoverHit && atRest.autoHit, `rest scrollTop ${atRest.scrollTop} (no harness scroll): archive whole+tappable ${atRest.archiveWholeAndTappable}, takeover hit ${atRest.takeoverHit}, auto hit ${atRest.autoHit}`);
+    }
 
     // The 2/5/all progression and the row-tap check need visible rows; on a short root (R38 F3) the
     // floor yields to the bar's buttons and the list intentionally has no room, so they are skipped —
@@ -239,10 +271,7 @@ async function pass(width, height, theme, largeText, extra = {}) {
     }
 
     // D1/D2/D3 gate assertions — these encode the fix's targets and are expected RED at base.
-    const gated = (label, condition, detail) => {
-      report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail });
-      console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`);
-    };
+    // (gated is defined at the top of this try block.)
     // D2: while selecting on compact, the list area is at least max(40% of the Sessions root, 3×96),
     // CAPPED so the bar's buttons stay visible on a short root (R38 F3): the floor yields first.
     if (touch) {
@@ -324,6 +353,31 @@ async function pass(width, height, theme, largeText, extra = {}) {
     }
     if (touch && one.geometry.gaps.underNav !== null) {
       gated('under-nav-single-inset', one.geometry.gaps.underNav <= 6, `${Math.round(one.geometry.gaps.underNav)}px (browser inset is 0; nav paddingBottom only)`);
+    }
+
+    // R38-D2-r3, never fights the user: scroll the bar up, then a content-neutral re-render — a row
+    // toggle whose count keeps the same width — must NOT re-pin the scroll. Exercised where a row is
+    // visible at a short root (393×420 keeps 82/66 px of list); at 430×330 the list is 0 and no row
+    // can be toggled, so no case is claimed there.
+    if (touch && extra.short && !largeText && await page.evaluate(() => {
+      const row = document.querySelector('[data-testid="sessions-row-agt_qa_99103"] [data-testid="session-row-body"]');
+      if (!row) return false;
+      const r = row.getBoundingClientRect();
+      return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight + 1; // fully on screen, tappable
+    })) {
+      await page.evaluate(() => {
+        const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+        if (scroller) scroller.scrollTop = Math.max(0, scroller.scrollTop - 24);
+      });
+      await page.waitForTimeout(150);
+      const scrolledUp = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
+      await rowBody(page, 'agt_qa_99103').click();
+      await page.waitForTimeout(400);
+      const afterToggle = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
+      await rowBody(page, 'agt_qa_99103').click(); // restore 1 selected; the count width is unchanged
+      await page.waitForTimeout(400);
+      const afterRestore = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
+      gated('scroll-holds-against-rerender', Math.abs(afterToggle - scrolledUp) <= 1 && Math.abs(afterRestore - scrolledUp) <= 1, `scrolled up to ${scrolledUp}; after toggle ${afterToggle}, after restore ${afterRestore} (a re-pin would have jumped back to the end)`);
     }
 
     // D1: the Limits control — collapsed by default, opens the full disclosure held, closes on Escape.
@@ -509,9 +563,13 @@ async function widePass(width, height) {
 // in BOTH of the sheet's forms (wide popover, compact sheet). Proven by a hit test on the popover
 // TEXT: elementFromPoint at the panel's centre must return the panel itself (a z-order read is not
 // enough — a transparent overlay would win a z-order check but fail a hit test).
-async function switchSheetPass(width, height, form) {
+// R38 V3 + F-SHEET: the switch sheet in BOTH forms. At rest (scrollTop 0, no harness scroll) the
+// shared bar must show its buttons whole and hit-testable, the effects line and Limits inside the
+// bar, and the bar inside the sheet; sheet rows stay visible and tappable at 1/2/5/all. Only then
+// the Limits-above-sheet hit test (V3).
+async function switchSheetPass(width, height, form, largeText = false) {
   const compact = width < 600;
-  const name = `switch-sheet-${form}-${width}x${height}`;
+  const name = `switch-sheet-${form}-${width}x${height}${largeText ? '-text200' : ''}`;
   scaleText = false;
   const context = await browser.newContext({ viewport: { width, height }, ...(compact ? { hasTouch: true, isMobile: true } : {}) });
   const page = await context.newPage();
@@ -538,7 +596,77 @@ async function switchSheetPass(width, height, form) {
     await menu.getByTestId('session-action-select').click();
     await menu.waitFor({ state: 'detached' });
     await page.getByTestId('selection-bar').waitFor({ timeout: 15000 });
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
+    if (largeText) { await scale(page); await page.waitForTimeout(400); }
+    // F-SHEET, AT REST: no harness scroll has happened. The bar's scroll sits at 0 and STILL the
+    // buttons row must be whole and hit-testable, with the effects line and Limits inside the bar
+    // and the bar inside the sheet.
+    const atRest = await page.evaluate(() => {
+      const barNode = document.querySelector('[data-testid="selection-bar"]');
+      // The sheet root is the AnchoredMenu's own testid — present in both the popover and sheet forms.
+      const sheetRoot = document.querySelector('[data-testid="kontor-switch-sheet"]');
+      const scroller = barNode?.querySelector('div');
+      const bar = barNode?.getBoundingClientRect(), sheet = sheetRoot?.getBoundingClientRect();
+      const barBox = barNode?.querySelector('div')?.getBoundingClientRect();
+      const whole = (node, box) => { const r = node.getBoundingClientRect(); return r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1; };
+      const buttons = ['selection-takeover', 'selection-takeover-auto', 'selection-archive'].map((id) => {
+        const node = document.querySelector(`[data-testid="${id}"]`);
+        if (!node || !bar) return { id, present: false };
+        const r = node.getBoundingClientRect();
+        const hitNode = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        const label = node.querySelector('[dir="auto"]');
+        const range = document.createRange(); if (label) range.selectNodeContents(label);
+        return { id, present: true, whole: whole(node, bar), hit: hitNode === node || node.contains(hitNode), labelWhole: !label || range.getBoundingClientRect().width <= label.getBoundingClientRect().width + 1, box: [Math.round(r.top), Math.round(r.bottom)] };
+      });
+      const line = document.querySelector('[data-testid="selection-takeover-disclosure"]');
+      const limits = document.querySelector('[data-testid="selection-limits"]');
+      const scrollTop = scroller?.scrollTop ?? -1;
+      return {
+        scrollTop, bar: bar ? [Math.round(bar.top), Math.round(bar.bottom)] : null,
+        buttons, allWhole: buttons.every(b => b.present && b.whole && b.hit && b.labelWhole),
+        lineInside: line && bar ? whole(line, bar) : false, limitsInside: limits && bar ? whole(limits, bar) : false,
+        barInsideSheet: bar && sheet ? bar.bottom <= sheet.bottom + 1 && bar.top >= sheet.top - 1 && bar.left >= sheet.left - 1 && bar.right <= sheet.right + 1 : false,
+      };
+    });
+    await shot(page, `${name}-at-rest`);
+    gated('sheet-buttons-at-rest', atRest.scrollTop >= 0 && atRest.scrollTop <= 1 && atRest.allWhole, `scrollTop ${atRest.scrollTop} (rest, no harness scroll); buttons ${JSON.stringify(atRest.buttons)}`);
+    gated('sheet-effects-limits-inside', atRest.lineInside && atRest.limitsInside, `effects line inside ${atRest.lineInside}, Limits inside ${atRest.limitsInside}`);
+    gated('sheet-bar-inside-sheet', atRest.barInsideSheet, `bar ${JSON.stringify(atRest.bar)} inside the sheet root`);
+    // Sheet rows stay visible and tappable while the bar is up: 2, 5, then all; a visible row toggles
+    // at each stage (the sheet's own list scrolls rows into view).
+    const sheetCount = () => page.getByTestId('selection-count').innerText();
+    const toggleVisible = async (stage) => {
+      const body = page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_revb_pr812').getByTestId('session-row-body');
+      await body.scrollIntoViewIfNeeded().catch(() => undefined);
+      const before = await sheetCount();
+      await body.click();
+      await page.waitForTimeout(150);
+      const after = await sheetCount();
+      const toggled = before !== after;
+      gated(`sheet-rows-toggle-${stage}`, toggled, `${before} -> ${after}`);
+      if (toggled) await body.click();
+      await page.waitForTimeout(120);
+    };
+    await page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_tpm_99101').getByTestId('session-row-body').click();
+    await page.waitForTimeout(150);
+    gated('sheet-2-selected', (await sheetCount()).startsWith('2 /'), `count ${await sheetCount()}`);
+    await toggleVisible('2');
+    for (const id of ['agt_aud_99103', 'agt_qa_99202', 'agt_swe_99104_a']) await page.getByTestId('kontor-switch-list').getByTestId(`session-row-${id}`).getByTestId('session-row-body').click();
+    await page.waitForTimeout(150);
+    gated('sheet-5-selected', (await sheetCount()).startsWith('5 /'), `count ${await sheetCount()}`);
+    await toggleVisible('5');
+    await page.getByTestId('selection-all').click();
+    await page.waitForTimeout(150);
+    gated('sheet-all-selected', !(await sheetCount()).startsWith('5 /'), `count ${await sheetCount()}`);
+    await toggleVisible('all');
+    // Restore a 1-selected bar for the Limits pass: clear (the checked select-all), then toggle one
+    // row body back on — the sheet is still in selecting mode, where rows have no menus, only bodies.
+    await page.getByTestId('selection-all').click();
+    await page.waitForTimeout(150);
+    const restoreRow = page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_qa_99103').getByTestId('session-row-body');
+    await restoreRow.scrollIntoViewIfNeeded().catch(() => undefined);
+    await restoreRow.click();
+    await page.waitForTimeout(400);
     // Reach the Limits control the way an operator does — the bar's own scroll, just far enough —
     // then press it with a real pointer press (tapBarControl; locator.click()'s re-centring scroll
     // would dismiss the just-opened help).
@@ -588,9 +716,11 @@ async function switchSheetPass(width, height, form) {
     // R38 V1/D2-r1: wide and iPad — the bar keeps its content, gated, at 1280x800 and 820x1180.
     await widePass(1280, 800);
     await widePass(820, 1180);
-    // R38 V3: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the panel text.
+    // R38 V3 + F-SHEET: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the
+    // panel text — and the at-rest button gates in both forms, the compact sheet also at text200.
     await switchSheetPass(1280, 800, 'popover');
     await switchSheetPass(430, 932, 'sheet');
+    await switchSheetPass(430, 932, 'sheet', true);
   } finally {
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');

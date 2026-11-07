@@ -203,12 +203,43 @@ describe("SelectionBar", () => {
     expect(helpDouble.lastText).toBe(`Take over: ${disclosure}`);
   });
 
-  it("renders no Limits control when the host states no limits, while the effects line stays (R38 V2)", () => {
+  it("renders no Limits control when the host states no limits, while the effects sentence is NOT clamped (R38 V2, R38-D2-r3 addendum)", () => {
+    // Without limits there is no Limits control, so the full effects sentence shows unclamped and
+    // scrolls in the bar like the other text (one conditional on hasLimits).
     let tree = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`, false).tree;
-    expect(byTestId(tree, "selection-takeover-disclosure")).toBeDefined();
+    const unclamped = byTestId(tree, "selection-takeover-disclosure")!;
+    expect(unclamped).toBeDefined();
+    expect(unclamped.props.numberOfLines).toBeUndefined();
     expect(byTestId(tree, "selection-limits")).toBeUndefined();
+    // With limits, the clamp to two lines stays (the Limits popover holds the whole sentence).
     tree = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`, true).tree;
+    expect(byTestId(tree, "selection-takeover-disclosure")!.props.numberOfLines).toBe(2);
     expect(byTestId(tree, "selection-limits")).toBeDefined();
+  });
+
+  it("starts the bar's scroll at its end when the content does not fit, and never fights a user who scrolled up (R38-D2-r3)", () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = byTestId(tree, "selection-bar")!.props.children;
+    // The bar wires its scroller for the rest-end pin: a content-size change re-pins to the end only
+    // while the scroller sits at the end; a user scroll up un-pins it.
+    expect(typeof scroller.props.onContentSizeChange).toBe("function");
+    expect(typeof scroller.props.onScroll).toBe("function");
+    const scrollToEnd = vi.fn();
+    (scroller.props.ref as { current: unknown }).current = { scrollToEnd };
+    // The bar's content arrives (larger than the scroller): re-pin to the end.
+    scroller.props.onContentSizeChange(360, 300);
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    expect(scrollToEnd.mock.calls[0][0]).toMatchObject({ animated: false });
+    // A user scrolls up to read: the pin releases...
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 0 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    // ...so further content changes (a refetch, a label width settling) do not re-pin.
+    scroller.props.onContentSizeChange(360, 300);
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    // Back at the end, the pin re-arms and the next content change re-pins again.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 216 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    scroller.props.onContentSizeChange(360, 300);
+    expect(scrollToEnd).toHaveBeenCalledTimes(2);
   });
 
   it("shows the effects line only while Take over can start, and clamps every reason line to one", () => {
