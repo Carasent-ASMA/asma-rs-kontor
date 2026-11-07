@@ -135,19 +135,18 @@ async function enterSelection(page, firstRowId) {
 }
 
 // Reach a control in the bar the way an operator does — the bar's own scroll, just far enough to
-// reveal the control — and press it with a real pointer press at freshly read coordinates. The
-// reach+read+dispatch is retried with an outcome check: background refetches can reflow text
-// between a box read and the dispatch (the press must land on the control, verified, or retry).
+// reveal it, then ONE real pointer press at freshly read coordinates. Settle-then-click (r10b root
+// cause, r10c bounds): the reveal scroll is assigned, then the helper waits until NO scroll event
+// has fired for ≥150 ms (above ScrollViewBase's ~100 ms trailing scroll end) and re-reads the box
+// before clicking — a scroll event landing after the click would dismiss the very help the click
+// opens. A landed click is FINAL: no outcome-check retry, opening or closing (a retry could hide a
+// one-shot defect). The only retries are reach retries while the probe reads the control 'covered'
+// or 'missing'. Every wait is hard-bounded; hitting a bound records a FAIL row carrying the reason
+// (never PASS, never a silent fall-through, never a hang), so an unreachable control can never make
+// later gates run as though the press happened.
+const TAP_SETTLE_ROUNDS = 8, TAP_SETTLE_MS = 150, TAP_REVEAL_MAX = 4, TAP_ATTEMPTS = 3;
+let tapBoundSeq = 0;
 async function tapBarControl(page, testId) {
-  // R10b root cause (evidence probes/ROOT-CAUSE.md + logs/strict-diag-harness.log): the reveal
-  // scroll's event dispatches at the next rendering step — AFTER the click — and the provider
-  // dismisses any help that is not focused on document scroll (control-help.tsx), so the help the
-  // click just opened never mounted: tap 1 did nothing, tap 2 opened (the deterministic off-by-one
-  // at text200 roots where the bar must scroll). The helper therefore waits for the reveal scroll
-  // to SETTLE (no scroll event for ≥150 ms, above ScrollViewBase's ~100 ms trailing scroll end)
-  // before reading the box and clicking, and a landed click is FINAL — retry only while 'covered'
-  // or 'missing'; no state-mismatch retry, opening or closing (R10 R9-F2: no retry can hide a
-  // one-shot defect).
   await page.evaluate(() => {
     if (window.__r38ScrollN !== undefined) return;
     window.__r38ScrollN = 0;
@@ -170,15 +169,28 @@ async function tapBarControl(page, testId) {
     if (!hit || (!control.contains(hit) && hit !== control)) return { state: 'covered', hit: `${hit?.tagName}.${hit?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''}` };
     return { state: 'ready', x, y, scrolledBy };
   };
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const failBound = (reason) => {
+    tapBoundSeq += 1;
+    const name = `${testId}-tap-bound-${tapBoundSeq}`;
+    report.cases.push({ name, status: 'FAIL', detail: reason });
+    console.log(`${name}: FAIL ${reason}`);
+    return false;
+  };
+  let lastState = 'missing';
+  for (let attempt = 0; attempt < TAP_ATTEMPTS; attempt++) {
     let outcome = await page.evaluate(ready, testId);
+    let reveals = 0;
     while (outcome.state === 'ready' && outcome.scrolledBy !== 0) {
       // Settle the reveal scroll BEFORE clicking: the scroll event must not land after the click.
-      for (let settle = 0; settle < 8; settle++) {
+      let settled = false;
+      for (let settle = 0; settle < TAP_SETTLE_ROUNDS; settle++) {
         const beforeCount = await page.evaluate(() => window.__r38ScrollN);
-        await page.waitForTimeout(150);
-        if ((await page.evaluate(() => window.__r38ScrollN)) === beforeCount) break;
+        await page.waitForTimeout(TAP_SETTLE_MS);
+        if ((await page.evaluate(() => window.__r38ScrollN)) === beforeCount) { settled = true; break; }
       }
+      if (!settled) return failBound(`reveal scroll never settled within ${TAP_SETTLE_ROUNDS * TAP_SETTLE_MS} ms`);
+      reveals += 1;
+      if (reveals > TAP_REVEAL_MAX) return failBound(`reveal scroll never stabilized after ${TAP_REVEAL_MAX} settle+re-read rounds`);
       outcome = await page.evaluate(ready, testId);
     }
     if (outcome.state === 'ready') {
@@ -186,9 +198,10 @@ async function tapBarControl(page, testId) {
       await page.waitForTimeout(180);
       return true;
     }
+    lastState = outcome.state === 'covered' ? `covered (${outcome.hit})` : 'missing';
     await page.waitForTimeout(300);
   }
-  return false;
+  return failBound(`control still ${lastState} after ${TAP_ATTEMPTS} attempts`);
 }
 
 // R38 F4: text200 must cover the BAR too — scale() runs before this pass scales only the chrome and
