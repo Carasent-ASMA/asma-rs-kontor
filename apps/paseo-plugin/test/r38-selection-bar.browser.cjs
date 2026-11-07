@@ -355,37 +355,44 @@ async function pass(width, height, theme, largeText, extra = {}) {
       gated('under-nav-single-inset', one.geometry.gaps.underNav <= 6, `${Math.round(one.geometry.gaps.underNav)}px (browser inset is 0; nav paddingBottom only)`);
     }
 
-    // R38-D2-r3, never fights the user: scroll the bar up, then a content-neutral re-render — a row
-    // toggle whose count keeps the same width — must NOT re-pin the scroll. Exercised where a row is
-    // visible at a short root (393×420 keeps 82/66 px of list); at 430×330 the list is 0 and no row
-    // can be toggled, so no case is claimed there.
-    if (touch && extra.short && !largeText) {
-      // The operator scrolls the row into view inside the sheet's list; only then is the toggle claimed.
-      const toggleRow = rowBody(page, 'agt_qa_99103');
-      await toggleRow.scrollIntoViewIfNeeded().catch(() => undefined);
-      await page.waitForTimeout(150);
-      const onScreen = await page.evaluate(() => {
-        const row = document.querySelector('[data-testid="sessions-row-agt_qa_99103"] [data-testid="session-row-body"]');
-        if (!row) return false;
-        const r = row.getBoundingClientRect();
-        if (!(r.height > 0 && r.top >= 0 && r.bottom <= innerHeight + 1)) return false; // fully on screen
-        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-        return hit === row || row.contains(hit); // and genuinely the click target
+    // R38-D2-r3, never fights the user: scroll the bar UP with a real wheel gesture (so RNW's own
+    // onScroll events fire and release the pin), then a content-neutral re-render — a fixture refetch
+    // tick (the same synthetic data, so the bar's content size and height are unchanged) — and the
+    // offset must hold, asserted >= 300 ms later, past RNW's 100 ms scroll-end emission. Preconditions
+    // are asserted and printed; where they cannot be met the case is NOT RUN with the reason, never
+    // passed vacuously (the bar must actually scroll, and the resting offset must sit >= 20 px below
+    // the end). Runs at the short roots; at 430×330 100% there is only 8 px of scroll room, at
+    // 393×420 100% the bar cannot scroll at all.
+    if (touch && extra.short) {
+      const pre = await page.evaluate(() => {
+        const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+        if (!scroller) return null;
+        return { sh: scroller.scrollHeight, ch: scroller.clientHeight, box: document.querySelector('[data-testid="selection-bar"]')?.getBoundingClientRect().toJSON?.() ?? null };
       });
-      if (onScreen) {
-        await page.evaluate(() => {
-          const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
-          if (scroller) scroller.scrollTop = Math.max(0, scroller.scrollTop - 24);
+      if (!pre || pre.sh <= pre.ch) {
+        report.cases.push({ name: `${name}-gate-scroll-holds-against-rerender`, status: 'NOT RUN', detail: `the bar cannot scroll at this root (scrollHeight ${pre?.sh ?? '?'} <= clientHeight ${pre?.ch ?? '?'}); no qualifying re-render exists` });
+        console.log(`${name}-gate-scroll-holds-against-rerender: NOT RUN (bar cannot scroll)`);
+      } else {
+        const barBox = await page.locator('[data-testid="selection-bar"]').boundingBox();
+        const vh = page.viewportSize().height;
+        await page.mouse.move(barBox.x + barBox.width / 2, Math.max(10, Math.min(barBox.y + barBox.height / 2, vh - 10)));
+        await page.mouse.wheel(0, -240);
+        await page.waitForTimeout(400); // settle, past RNW's 100 ms scroll-end emission
+        const after = await page.evaluate(() => {
+          const scroller = document.querySelector('[data-testid="selection-bar"] div');
+          return { top: scroller.scrollTop, sh: scroller.scrollHeight, ch: scroller.clientHeight };
         });
-        await page.waitForTimeout(150);
-        const scrolledUp = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-        await toggleRow.click();
-        await page.waitForTimeout(400);
-        const afterToggle = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-        await toggleRow.click(); // restore 1 selected; the count width is unchanged
-        await page.waitForTimeout(400);
-        const afterRestore = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-        gated('scroll-holds-against-rerender', Math.abs(afterToggle - scrolledUp) <= 1 && Math.abs(afterRestore - scrolledUp) <= 1, `scrolled up to ${scrolledUp}; after toggle ${afterToggle}, after restore ${afterRestore} (a re-pin would have jumped back to the end)`);
+        const end = after.sh - after.ch, belowEnd = end - after.top;
+        if (belowEnd < 20) {
+          report.cases.push({ name: `${name}-gate-scroll-holds-against-rerender`, status: 'NOT RUN', detail: `the bar scrolls but only by ${end}px (rest offset ${after.top}, ${belowEnd}px below the end < 20); no qualifying hold can be shown` });
+          console.log(`${name}-gate-scroll-holds-against-rerender: NOT RUN (only ${end}px of scroll room)`);
+        } else {
+          // The content-neutral re-render: the fixture's refetch tick (named per the ruling).
+          await page.evaluate(() => window.__r38Refetch());
+          await page.waitForTimeout(400);
+          const held = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
+          gated('scroll-holds-against-rerender', Math.abs(held - after.top) <= 1, `precondition scrollHeight ${pre.sh} > clientHeight ${pre.ch}; wheel up to ${after.top} (${belowEnd}px below the end, >= 20); after the fixture refetch tick + 400 ms the offset is ${held}`);
+        }
       }
     }
 

@@ -220,11 +220,13 @@ describe("SelectionBar", () => {
   it("starts the bar's scroll at its end when the content does not fit, and never fights a user who scrolled up (R38-D2-r3)", () => {
     helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
-    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; scrollEventThrottle: number; ref: { current: unknown } } } }).children;
     // The bar wires its scroller for the rest-end pin: a content-size change re-pins to the end only
     // while the scroller sits at the end; a user scroll up un-pins it.
     expect(typeof scroller.props.onContentSizeChange).toBe("function");
     expect(typeof scroller.props.onScroll).toBe("function");
+    // R38-D2-r3: RNW emits onScroll during a drag only when the throttle feeds it every frame.
+    expect(scroller.props.scrollEventThrottle).toBe(16);
     const scrollToEnd = vi.fn();
     (scroller.props.ref as { current: unknown }).current = { scrollToEnd };
     scroller.props.onContentSizeChange(360, 300);

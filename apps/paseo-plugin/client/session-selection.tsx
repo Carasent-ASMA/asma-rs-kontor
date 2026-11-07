@@ -129,7 +129,10 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // first the text and then the buttons; nothing on the Sessions screen draws under the nav, and no
   // label is ever cut.
   return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: yields ? 1 : 0, maxHeight: "60%" }}>
-    <ScrollView ref={scrollerRef} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }}
+    {/* R38-D2-r3: throttle 16 keeps the pin's onScroll fed during a drag (RNW otherwise emits only at
+      scroll start and 100 ms after the end, so pinnedToEnd could stay true mid-drag; iOS Fabric already
+      dispatches every event, and 16 ms is under one frame there). */}
+    <ScrollView ref={scrollerRef} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }} scrollEventThrottle={16}
       onContentSizeChange={repinToEnd} onLayout={repinToEnd}
       onScroll={(event) => { const d = event.nativeEvent; pinnedToEnd.current = d.contentOffset.y + d.layoutMeasurement.height >= d.contentSize.height - 2; }}>
       {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
