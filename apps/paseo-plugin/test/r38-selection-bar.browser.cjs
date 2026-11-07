@@ -204,6 +204,26 @@ async function pass(width, height, theme, largeText, extra = {}) {
     await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
     const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
     if (await hide.isVisible()) await hide.click();
+    // R9 AUD-F3 regression (once per run, in browse mode where row actions exist): hover and focus
+    // help on ANOTHER control is unchanged — only the anchor that HOLDS the popover keeps its state
+    // through its own press; a hover or a press anywhere else still dismisses and re-shows as before.
+    if (!othersChecked) {
+      othersChecked = true;
+      const action = page.getByTestId('session-actions-agt_lsa_99101');
+      await action.hover();
+      await page.waitForTimeout(200);
+      const hoverPanels = await page.getByTestId('control-help').count();
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(150);
+      await action.focus();
+      await page.waitForTimeout(200);
+      const focusPanels = await page.getByTestId('control-help').count();
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(150);
+      const closedPanels = await page.getByTestId('control-help').count();
+      report.cases.push({ name: `${name}-gate-limits-help-others-unchanged`, status: hoverPanels === 1 && focusPanels === 1 && closedPanels === 0 ? 'PASS' : 'FAIL', detail: `hover help on the row's action control: panels ${hoverPanels}; focus help after keyboard use: panels ${focusPanels}; Escape closes: panels ${closedPanels}` });
+      console.log(`${name}-gate-limits-help-others-unchanged: ${hoverPanels === 1 && focusPanels === 1 && closedPanels === 0 ? 'PASS' : 'FAIL'} hover panels ${hoverPanels}, focus panels ${focusPanels}, closed panels ${closedPanels}`);
+    }
     if (largeText) { await scale(page); await page.waitForTimeout(150); }
 
     await measureSelection(page, `${name}-0-selected`, '0');
@@ -487,25 +507,6 @@ async function pass(width, height, theme, largeText, extra = {}) {
       await page.waitForTimeout(250);
       await reveal();
       gated('limits-aria-remount', (await aria()) === 'false' && (await panelCount()) === 0, `after remount aria-expanded ${await aria()}, panels ${await panelCount()}`);
-      // R9 AUD-F3 regression (once per run): hover and focus help on ANOTHER control is unchanged —
-      // only the anchor that HOLDS the popover keeps its state through its own press; a hover or a
-      // press anywhere else still dismisses and re-shows as before.
-      if (!othersChecked) {
-        othersChecked = true;
-        const action = page.getByTestId('session-actions-agt_lsa_99101');
-        await action.hover();
-        await page.waitForTimeout(200);
-        const hoverPanels = await page.getByTestId('control-help').count();
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(150);
-        await action.focus();
-        await page.waitForTimeout(200);
-        const focusPanels = await page.getByTestId('control-help').count();
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(150);
-        const closedPanels = await page.getByTestId('control-help').count();
-        gated('limits-help-others-unchanged', hoverPanels === 1 && focusPanels === 1 && closedPanels === 0, `hover help on the row's action control: panels ${hoverPanels}; focus help after keyboard use: panels ${focusPanels}; Escape closes: panels ${closedPanels}`);
-      }
     }
 
     if (errors.length) report.cases.push({ name: `${name}-page-errors`, status: 'FAIL', errors });
