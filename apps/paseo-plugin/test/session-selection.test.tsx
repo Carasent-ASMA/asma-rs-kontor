@@ -182,7 +182,7 @@ describe("SelectionBar", () => {
     const walls = tree.filter((node) => node.type === "Text" && [node.props.children].flat(Infinity).join("").startsWith("Take over: "));
     expect(walls.map((node) => node.props.numberOfLines)).toEqual([2]);
     const limits = byTestId(tree, "selection-limits")!;
-    expect(limits.props).toMatchObject({ accessibilityRole: "button", accessibilityState: { expanded: false }, hitSlop: 6 });
+    expect(limits.props).toMatchObject({ accessibilityRole: "button", accessibilityState: { expanded: false }, "aria-expanded": false, hitSlop: 6 });
     const limitStyle = (limits.props.style as (state: object) => Record<string, unknown>)({ pressed: false, focused: false });
     expect(limitStyle.minHeight).toBeGreaterThanOrEqual(44);
     expect(limitStyle.minWidth).toBeGreaterThanOrEqual(44);
@@ -201,6 +201,44 @@ describe("SelectionBar", () => {
     // R38 V2: the Limits popover keeps the FULL effects-plus-limits disclosure — the hook's text is the
     // whole prop, not the clipped inline sentence (M-limits-without-limits dies here).
     expect(helpDouble.lastText).toBe(`Take over: ${disclosure}`);
+  });
+
+  it("makes Limits a one-decision disclosure toggle per press through pointer and keyboard, with aria-expanded on the DOM (R9 AUD-F1/F3)", () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
+    const takeover = control(), auto = control(), archive = control();
+    let tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true })));
+    const draw = () => { tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true }))); };
+    draw();
+    const expanded = () => ({ aria: byTestId(tree, "selection-limits")!.props["aria-expanded"], state: (byTestId(tree, "selection-limits")!.props.accessibilityState as { expanded: boolean }).expanded });
+    const pressLimits = (pointer: boolean) => {
+      const node = byTestId(tree, "selection-limits")!.props;
+      if (pointer) (node.onPressIn as (() => void) | undefined)?.();
+      (node.onPress as () => void)();
+    };
+    // AUD-F1: the DOM carries aria-expanded beside the native state (RNW 0.21.4 maps neither
+    // accessibilityState nor accessibilityExpanded for web readers).
+    expect(expanded()).toEqual({ aria: false, state: false });
+    // A pointer press decides ONCE from the press-start state: open -> closed -> open (AUD-F3).
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: false, state: false });
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    // Keyboard (Enter/Space) fires no press start: the decision comes from the live state — closing
+    // from open and opening from closed, never double-toggling.
+    pressLimits(false); draw();
+    expect(expanded()).toEqual({ aria: false, state: false });
+    pressLimits(false); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    // The press-start capture is consumed and reset by its own decision: after a pointer press, a
+    // keyboard press closes and the NEXT keyboard press from closed OPENS (a stale capture would
+    // keep dismissing and stay closed).
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: false, state: false });
+    pressLimits(false); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    expect(helpDouble.holds).toBeGreaterThanOrEqual(4);
   });
 
   it("renders no Limits control when the host states no limits, while the effects sentence is NOT clamped (R38 V2, R38-D2-r3 addendum)", () => {

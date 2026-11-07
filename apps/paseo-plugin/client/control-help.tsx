@@ -93,6 +93,11 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
       },
       press(touch, target) {
         input.current = touch ? "touch" : "pointer";
+        // R9 AUD-F3: the control that HOLDS this popover toggles with one decision per press — a
+        // pointerdown on its own trigger must not dismiss here, so the trigger's activation reads the
+        // true press-start state. A press on any other control, or outside, dismisses as before.
+        const value = current.current;
+        if (value?.held && (value.anchor.current as Contains | null)?.contains?.(target)) return;
         if (!(panel.current as Contains | null)?.contains?.(target)) dismiss();
       },
       forget(anchor) { if (current.current?.anchor === anchor) dismiss(); },
@@ -145,7 +150,8 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     return () => { controller.dismiss(); document?.removeEventListener("keydown", key, true); document?.removeEventListener("scroll", scroll, true); document?.removeEventListener("pointerdown", press, true); document?.removeEventListener("pointerover", pointer, true); document?.removeEventListener("pointermove", pointer, true); document?.removeEventListener("pointercancel", moved, true); window?.removeEventListener("resize", moved); back.remove(); };
   }, [controller]);
   return <HelpContext.Provider value={controller}>
-    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss} onTouchStart={() => controller.press(true)} onTouchCancel={controller.dismiss}>
+    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss}
+      onTouchStart={(event) => controller.press(true, event && (event as { target?: unknown }).target)} onTouchCancel={controller.dismiss}>
       {children}
       {help && frame ? <View testID="control-help-layer" pointerEvents="box-none" style={{ position: "absolute", inset: 0, zIndex: 100 }}>
         <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={() => controller.enter(help)} onPointerLeave={() => controller.exit(help)}

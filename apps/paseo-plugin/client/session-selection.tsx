@@ -125,6 +125,12 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // bar's own height changes — it never fights a user who has scrolled up.
   const scrollerRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
   const pinnedToEnd = useRef(true);
+  // R9 AUD-F3: ONE toggle decision per press, from the state at press start. The provider keeps a
+  // held help's state through a press on its own trigger (control-help.tsx press()), so a pointer
+  // press captures the open state in onPressIn and the decision consumes and RESETS the capture; a
+  // keyboard activation (Enter/Space) has no press start — no pointerdown, no onPressIn — and
+  // decides from the live state, which the provider has not disturbed.
+  const pressOpen = useRef<boolean | null>(null);
   const repinToEnd = () => { if (pinnedToEnd.current) scrollerRef.current?.scrollToEnd({ animated: false }); };
   // The bar never grows past 60% of its parent: very large text scrolls inside it instead of pushing the
   // session list out (R38 D2). In the switch sheet the footer has no definite height, so there the sheet's
@@ -151,8 +157,10 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
           carries no empty band under the last text line (the ≤ 8 pt breath holds). */}
         <Text testID="selection-takeover-disclosure" numberOfLines={hasLimits ? 2 : undefined} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{`Take over: ${TAKEOVER_EFFECTS}`}</Text>
         {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
-          accessibilityState={{ expanded: limits.open }} accessibilityHint="Opens the full take over effects and this host's stated limits."
-          hitSlop={6} onPress={() => (limits.open ? limits.dismiss() : limits.hold())}
+          accessibilityState={{ expanded: limits.open }} aria-expanded={limits.open} accessibilityHint="Opens the full take over effects and this host's stated limits."
+          hitSlop={6}
+          onPressIn={() => { pressOpen.current = limits.open; }}
+          onPress={() => { const was = pressOpen.current; pressOpen.current = null; (was ?? limits.open) ? limits.dismiss() : limits.hold(); }}
           style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
           <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
         </Pressable> : null}

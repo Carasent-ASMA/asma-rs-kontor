@@ -420,60 +420,66 @@ async function pass(width, height, theme, largeText, extra = {}) {
       }
     }
 
-    // D1: the Limits control — collapsed by default, opens the full disclosure held, closes on Escape.
+    // D1 + R9 AUD-F1/F3: Limits is a disclosure toggle whose expanded state rides the DOM
+    // (aria-expanded — RNW 0.21.4 does not map accessibilityState) and makes ONE toggle decision per
+    // press: tap opens, a SECOND press closes, a third opens; an outside press and Escape dismiss;
+    // keyboard Enter and Space toggle from either side without double-firing; a remount starts
+    // collapsed. Real presses go through the bar's own scroll (tapBarControl) — locator.click()
+    // would re-centre the control with a second scroll, and that scroll dismisses the just-opened
+    // help (the provider closes on scroll by design).
     const limits = page.getByTestId('selection-limits');
     if (!(await limits.isVisible())) {
       gated('limits-control', false, 'no Limits control (base renders the limits inline, unbounded)');
     } else {
-      const expandedBefore = await limits.getAttribute('aria-expanded');
-      gated('limits-collapsed-default', await page.getByTestId('control-help').count() === 0, `aria-expanded ${expandedBefore}`);
-      // When the screen cannot fit the bar's content, the bar scrolls inside itself (D2); reach the
-      // control the way an operator does — the bar's own scroll, just far enough — and press it with
-      // a real pointer press (tapBarControl). locator.click() would re-centre the control with a
-      // second scroll, and that scroll dismisses the just-opened help (the provider closes on scroll
-      // by design); a bare coordinate click races background refetch reflows.
-      const opened = await tapBarControl(page, 'selection-limits');
-      const helpText = await page.getByTestId('control-help').innerText().catch(() => null);
-      const tapDiag = await page.evaluate(() => {
-        const chip = document.querySelector('[data-testid="selection-limits"]');
-        const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
-        const r = chip?.getBoundingClientRect();
-        const bar = document.querySelector('[data-testid="selection-bar"]')?.getBoundingClientRect();
-        return { chip: r ? [Math.round(r.top), Math.round(r.bottom)] : null, barBottom: Math.round(bar?.bottom ?? 0), scrollTop: Math.round(scroller?.scrollTop ?? 0), scrollHeight: scroller?.scrollHeight, clientHeight: scroller?.clientHeight, expanded: chip?.getAttribute('aria-expanded') };
-      });
-      gated('limits-opens-tap', helpText !== null && helpText.length >= 1700, `help panel ${helpText === null ? 'absent' : `${helpText.length} chars`} | chip=${JSON.stringify(tapDiag.chip)} barBottom=${tapDiag.barBottom} scroll=${tapDiag.scrollTop}/${tapDiag.scrollHeight}/${tapDiag.clientHeight} expanded=${tapDiag.expanded}`);
+      const aria = () => page.evaluate(() => document.querySelector('[data-testid="selection-limits"]')?.getAttribute('aria-expanded') ?? null);
+      const panelCount = () => page.getByTestId('control-help').count();
+      const reveal = async () => { await page.evaluate(() => { const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div'); if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight; }); await page.waitForTimeout(100); };
+      gated('limits-aria-rest', (await aria()) === 'false' && (await panelCount()) === 0, `at rest aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      await tapBarControl(page, 'selection-limits');
+      await page.waitForTimeout(150);
+      gated('limits-aria-open', (await aria()) === 'true' && (await panelCount()) === 1, `tap: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      await tapBarControl(page, 'selection-limits');
+      await page.waitForTimeout(150);
+      gated('limits-second-press-closes', (await aria()) === 'false' && (await panelCount()) === 0, `second press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      await tapBarControl(page, 'selection-limits');
+      await page.waitForTimeout(150);
+      gated('limits-third-press-opens', (await aria()) === 'true' && (await panelCount()) === 1, `third press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      // An outside press on a neutral spot (the selecting header's count text) dismisses.
+      const count = await page.getByTestId('selection-count').boundingBox().catch(() => null);
+      const spot = count ?? { x: 12, y: 120, width: 40, height: 24 };
+      await page.touchscreen.tap(spot.x + spot.width / 2, spot.y + spot.height / 2);
+      await page.waitForTimeout(150);
+      gated('limits-outside-press-closes', (await aria()) === 'false' && (await panelCount()) === 0, `outside press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      await reveal();
+      await tapBarControl(page, 'selection-limits');
+      await page.waitForTimeout(150);
       await page.keyboard.press('Escape');
       await page.waitForTimeout(150);
-      gated('limits-escape-closes', await page.getByTestId('control-help').count() === 0, 'Escape closes the held popover');
-      // Keyboard on a FRESH mount: the control's expanded flag is per-mount (the provider's Escape and
-      // outside-press dismissals re-sync on this control's next press), so the keyboard contract is
-      // measured without the tap sequence's state. Enter activates the button (its hold() bypasses the
-      // pointer-mode guard), Escape closes.
+      gated('limits-escape-closes', (await aria()) === 'false' && (await panelCount()) === 0, `Escape: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      // Keyboard Enter and Space toggle from either side with no double-fire: a keyboard activation
+      // has no press start (no pointerdown, no onPressIn), so the decision must come from the live
+      // state exactly once.
+      await reveal();
+      await limits.focus();
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(150);
+      gated('limits-keyboard-opens', (await aria()) === 'true' && (await panelCount()) === 1, `Enter from closed: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(150);
+      gated('limits-keyboard-closes', (await aria()) === 'false' && (await panelCount()) === 0, `Enter from open: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      await page.keyboard.press(' ');
+      await page.waitForTimeout(150);
+      gated('limits-space-opens', (await aria()) === 'true' && (await panelCount()) === 1, `Space from closed: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      await page.keyboard.press(' ');
+      await page.waitForTimeout(150);
+      gated('limits-space-closes', (await aria()) === 'false' && (await panelCount()) === 0, `Space from open: aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      // A remount starts collapsed.
       await page.reload();
       await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
       await enterSelection(page, 'agt_lsa_99101');
       await page.waitForTimeout(250);
-      const limits2 = page.getByTestId('selection-limits');
-      // Same operator step as the tap path: reveal the control through the bar's own scroll when tight.
-      await page.evaluate(() => {
-        const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
-        if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight;
-      });
-      await page.waitForTimeout(100);
-      // Keyboard on a fresh mount; retried once on a late background reflow (the assertion is the
-      // outcome: Enter opens the held limits).
-      let keyboardOpened = false;
-      for (let attempt = 0; attempt < 3 && !keyboardOpened; attempt++) {
-        await limits2.focus();
-        await page.keyboard.press('Enter');
-        await page.waitForTimeout(180);
-        keyboardOpened = await page.getByTestId('control-help').count() > 0;
-        if (!keyboardOpened) await page.waitForTimeout(250);
-      }
-      gated('limits-opens-keyboard', keyboardOpened, 'Enter opens the held limits');
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(150);
-      gated('limits-keyboard-closes', await page.getByTestId('control-help').count() === 0, 'Escape closes again');
+      await reveal();
+      gated('limits-aria-remount', (await aria()) === 'false' && (await panelCount()) === 0, `after remount aria-expanded ${await aria()}, panels ${await panelCount()}`);
     }
 
     if (errors.length) report.cases.push({ name: `${name}-page-errors`, status: 'FAIL', errors });
@@ -726,6 +732,22 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     gateRecorded = true;
     gated('sheet-short-bar-unclipped', shortProbe.frame && archiveRow.present && archiveRow.tappable && archiveRow.labelWhole && takeoverRow.tappable && autoRow.tappable && barInFrame,
       `menu frame ${JSON.stringify(shortProbe.frame)} maxHeight ${shortProbe.frameMaxHeight}; bar ${JSON.stringify(shortProbe.bar)} scroller ${JSON.stringify(shortProbe.scroller)}; buttons ${JSON.stringify(shortProbe.buttons)}; archive whole+tappable ${archiveRow.tappable && archiveRow.labelWhole}, takeover/auto hit ${takeoverRow.tappable}/${autoRow.tappable}, bar bottom <= frame clip edge ${barInFrame}`);
+    // R9 AUD-F1/F3 in the sheet forms: the same DOM expanded state and the one-decision toggle where
+    // the Limits control renders (the bar's own scroll reaches it on short frames too).
+    const sheetLimits = page.getByTestId('selection-limits');
+    if (await sheetLimits.isVisible().catch(() => false)) {
+      const sheetAria = () => page.evaluate(() => document.querySelector('[data-testid="selection-limits"]')?.getAttribute('aria-expanded') ?? null);
+      const sheetPanels = () => page.getByTestId('control-help').count();
+      gated('sheet-limits-aria-rest', (await sheetAria()) === 'false' && (await sheetPanels()) === 0, `at rest aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
+      await tapBarControl(page, 'selection-limits');
+      await page.waitForTimeout(150);
+      gated('sheet-limits-aria-open', (await sheetAria()) === 'true' && (await sheetPanels()) === 1, `tap: aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
+      await tapBarControl(page, 'selection-limits');
+      await page.waitForTimeout(150);
+      gated('sheet-limits-second-press-closes', (await sheetAria()) === 'false' && (await sheetPanels()) === 0, `second press: aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
+    } else {
+      gated('sheet-limits-aria-rest', false, 'no Limits control in the sheet form');
+    }
     // Sheet rows stay visible and tappable while the bar is up: 2, 5, then all; a visible row toggles
     // at each stage (the sheet's own list scrolls rows into view). The short-root sheet passes claim
     // only the F-SHEET-SHORT row above; their frame leaves no room for the 2/5/all stages.
@@ -781,6 +803,27 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     });
     await shot(page, `${name}-limits-open`);
     gated('popover-on-top', hit.onTop && hit.viewportFit, `elementFromPoint at panel centre -> ${hit.centre}; panel box ${JSON.stringify(hit.box)} inside viewport ${hit.viewportFit}`);
+    // R9 AUD-F3 regression: hover and focus help on ANOTHER control is unchanged by the trigger
+    // exception — only the anchor that HOLDS the popover keeps its state through its own press; a
+    // press or hover elsewhere still dismisses and re-shows as before. The popover form is a mouse
+    // context, so hover help fires; Escape resets the input mode so focus help fires.
+    if (!compact) {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(150);
+      const chip = page.getByTestId('kontor-switch-state-recent');
+      await chip.hover();
+      await page.waitForTimeout(200);
+      const hoverPanels = await page.getByTestId('control-help').count();
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(150);
+      await chip.focus();
+      await page.waitForTimeout(200);
+      const focusPanels = await page.getByTestId('control-help').count();
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(150);
+      const closedPanels = await page.getByTestId('control-help').count();
+      gated('limits-help-others-unchanged', hoverPanels === 1 && focusPanels === 1 && closedPanels === 0, `hover help on the Recent state chip: panels ${hoverPanels}; focus help after keyboard use: panels ${focusPanels}; Escape closes: panels ${closedPanels}`);
+    }
   } catch (error) {
     report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
     console.log(`${name}: FAIL ${error.message}`);
