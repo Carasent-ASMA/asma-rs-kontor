@@ -1,4 +1,4 @@
-import { useState, type Ref } from "react";
+import { useRef, useState, type ComponentRef, type Ref } from "react";
 import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { spaceActivates, type Colors } from "./page-controls";
@@ -112,6 +112,13 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // control's text), so its own dismissals — Escape, an outside press, scroll, resize, back — close the
   // state too and the next press on this control opens it again.
   const limits = useControlHelp(effects ?? "");
+  // R38-D2-r3: when the bar's content does not fit, the bar starts scrolled to its END, so the buttons
+  // row shows at rest (the text above scrolls up; the user reads it by scrolling the bar up). The pin
+  // re-arms only when the scroller sits at the end, and re-pins only when the content size or the
+  // bar's own height changes — it never fights a user who has scrolled up.
+  const scrollerRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
+  const pinnedToEnd = useRef(true);
+  const repinToEnd = () => { if (pinnedToEnd.current) scrollerRef.current?.scrollToEnd({ animated: false }); };
   // The bar never grows past 60% of its parent: very large text scrolls inside it instead of pushing the
   // session list out (R38 D2). In the switch sheet the footer has no definite height, so there the sheet's
   // own scroll owns the bound. R38-D2-r2: the bar carries NO minHeight of its own — on a short root the
@@ -119,15 +126,20 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // first the text and then the buttons; nothing on the Sessions screen draws under the nav, and no
   // label is ever cut.
   return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: 1, maxHeight: "60%" }}>
-    <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }}>
+    <ScrollView ref={scrollerRef} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }}
+      onContentSizeChange={repinToEnd} onLayout={repinToEnd}
+      onScroll={(event) => { const d = event.nativeEvent; pinnedToEnd.current = d.contentOffset.y + d.layoutMeasurement.height >= d.contentSize.height - 2; }}>
       {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
       {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
       {effects ? <View testID="selection-takeover-effects" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-        {/* D1: the host limits leave the inline text — the line is the fixed effects sentence only
-          (R38 V2); the full effects-plus-limits disclosure stays behind the Limits popover. R38 F2:
+        {/* D1 (R38-ORDER-r1): a refused action's reason is written in the bar, directly above its
+          buttons. The host limits leave the inline text — the line is the fixed effects sentence only,
+          clamped to two lines WHEN the host states limits (the full effects-plus-limits disclosure
+          stays behind the Limits popover, R38 V2). Where the host states NO limits there is no Limits
+          control, so the sentence shows in full and scrolls in the bar like the other text. R38 F2:
           lineHeight 22 keeps the two-line row at the 44 pt the Limits target occupies, so the row
           carries no empty band under the last text line (the ≤ 8 pt breath holds). */}
-        <Text testID="selection-takeover-disclosure" numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{`Take over: ${TAKEOVER_EFFECTS}`}</Text>
+        <Text testID="selection-takeover-disclosure" numberOfLines={hasLimits ? 2 : undefined} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{`Take over: ${TAKEOVER_EFFECTS}`}</Text>
         {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
           accessibilityState={{ expanded: limits.open }} accessibilityHint="Opens the full take over effects and this host's stated limits."
           hitSlop={6} onPress={() => (limits.open ? limits.dismiss() : limits.hold())}
