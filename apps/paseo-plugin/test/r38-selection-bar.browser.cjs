@@ -387,11 +387,16 @@ async function pass(width, height, theme, largeText, extra = {}) {
           report.cases.push({ name: `${name}-gate-scroll-holds-against-rerender`, status: 'NOT RUN', detail: `the bar scrolls but only by ${end}px (rest offset ${after.top}, ${belowEnd}px below the end < 20); no qualifying hold can be shown` });
           console.log(`${name}-gate-scroll-holds-against-rerender: NOT RUN (only ${end}px of scroll room)`);
         } else {
-          // The content-neutral re-render, named per the ruling: the fixture's refetch tick (the same
-          // synthetic data — a real re-render), plus the SAME-SIZE content-size event RNW emits after a
-          // same-size re-layout. Nothing about the bar's content or height changes; a correct pin
-          // (released by the wheel's own onScroll events) must not move, a pin that ignores the flag
-          // (M-pin-always) jumps back to the end.
+          // The content-neutral re-render: the fixture's refetch tick is a real re-render that does
+          // NOT reach the pin's trigger (RNW derives onContentSizeChange from the content container's
+          // layout reporting, which fires only on observe and on a real size change — the refetch
+          // alone fires nothing). The gate then calls the scroller's own onContentSizeChange prop
+          // directly, through the fiber, with UNCHANGED dimensions — a stand-in for the next real
+          // size or height change. That seam keeps the release under test real (a real wheel gesture
+          // → RNW onScroll → pinnedToEnd false), while the at-rest gates (rest positions 8/115/0/91)
+          // prove the platform's real triggers do call repinToEnd. Nothing about the bar's content or
+          // height changes here; a correct pin must not move, one that ignores the flag (M-pin-always)
+          // jumps back to the end.
           await page.evaluate(() => window.__r38Refetch());
           await page.waitForTimeout(200);
           const fired = await page.evaluate(() => {
@@ -410,7 +415,7 @@ async function pass(width, height, theme, largeText, extra = {}) {
           });
           await page.waitForTimeout(400);
           const held = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-          gated('scroll-holds-against-rerender', fired && Math.abs(held - after.top) <= 1, `precondition scrollHeight ${pre.sh} > clientHeight ${pre.ch}; wheel up to ${after.top} (${belowEnd}px below the end, >= 20); refetch tick + same-size content event (fired ${fired}) + 400 ms later the offset is ${held}`);
+          gated('scroll-holds-against-rerender', fired && Math.abs(held - after.top) <= 1, `precondition scrollHeight ${pre.sh} > clientHeight ${pre.ch}; real wheel up to ${after.top} (${belowEnd}px below the end, >= 20); refetch tick (a real re-render that does not reach the pin's trigger) + the scroller's own onContentSizeChange fired directly with unchanged dimensions (standing in for the next real size or height change; fired ${fired}) + 400 ms later the offset is ${held}`);
         }
       }
     }
