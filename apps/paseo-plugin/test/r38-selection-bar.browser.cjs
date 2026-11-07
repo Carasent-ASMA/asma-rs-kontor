@@ -171,6 +171,7 @@ async function tapBarControl(page, testId, expectOpen = true) {
 // list rows that exist then; the bar mounts later, so every measurement re-applies the doubling (the
 // :not([data-scaled]) marker keeps it idempotent) before the geometry is read.
 let scaleText = false;
+let othersChecked = false;
 
 async function measureSelection(page, name, expectCount) {
   if (scaleText) { await scale(page); await page.waitForTimeout(400); }
@@ -486,6 +487,25 @@ async function pass(width, height, theme, largeText, extra = {}) {
       await page.waitForTimeout(250);
       await reveal();
       gated('limits-aria-remount', (await aria()) === 'false' && (await panelCount()) === 0, `after remount aria-expanded ${await aria()}, panels ${await panelCount()}`);
+      // R9 AUD-F3 regression (once per run): hover and focus help on ANOTHER control is unchanged —
+      // only the anchor that HOLDS the popover keeps its state through its own press; a hover or a
+      // press anywhere else still dismisses and re-shows as before.
+      if (!othersChecked) {
+        othersChecked = true;
+        const action = page.getByTestId('session-actions-agt_lsa_99101');
+        await action.hover();
+        await page.waitForTimeout(200);
+        const hoverPanels = await page.getByTestId('control-help').count();
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(150);
+        await action.focus();
+        await page.waitForTimeout(200);
+        const focusPanels = await page.getByTestId('control-help').count();
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(150);
+        const closedPanels = await page.getByTestId('control-help').count();
+        gated('limits-help-others-unchanged', hoverPanels === 1 && focusPanels === 1 && closedPanels === 0, `hover help on the row's action control: panels ${hoverPanels}; focus help after keyboard use: panels ${focusPanels}; Escape closes: panels ${closedPanels}`);
+      }
     }
 
     if (errors.length) report.cases.push({ name: `${name}-page-errors`, status: 'FAIL', errors });
@@ -809,27 +829,6 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     });
     await shot(page, `${name}-limits-open`);
     gated('popover-on-top', hit.onTop && hit.viewportFit, `elementFromPoint at panel centre -> ${hit.centre}; panel box ${JSON.stringify(hit.box)} inside viewport ${hit.viewportFit}`);
-    // R9 AUD-F3 regression: hover and focus help on ANOTHER control is unchanged by the trigger
-    // exception — only the anchor that HOLDS the popover keeps its state through its own press; a
-    // press or hover elsewhere still dismisses and re-shows as before. The popover form is a mouse
-    // context, so hover help fires; Escape resets the input mode so focus help fires.
-    if (!compact) {
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(150);
-      const chip = page.locator('[data-testid^="kontor-switch-state-"]').first();
-      await chip.hover();
-      await page.waitForTimeout(200);
-      const hoverPanels = await page.getByTestId('control-help').count();
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(150);
-      await chip.focus();
-      await page.waitForTimeout(200);
-      const focusPanels = await page.getByTestId('control-help').count();
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(150);
-      const closedPanels = await page.getByTestId('control-help').count();
-      gated('limits-help-others-unchanged', hoverPanels === 1 && focusPanels === 1 && closedPanels === 0, `hover help on the Recent state chip: panels ${hoverPanels}; focus help after keyboard use: panels ${focusPanels}; Escape closes: panels ${closedPanels}`);
-    }
   } catch (error) {
     report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
     console.log(`${name}: FAIL ${error.message}`);
