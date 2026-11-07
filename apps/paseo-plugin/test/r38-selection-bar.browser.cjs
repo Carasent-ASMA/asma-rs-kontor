@@ -607,9 +607,9 @@ async function widePass(width, height) {
 // shared bar must show its buttons whole and hit-testable, the effects line and Limits inside the
 // bar, and the bar inside the sheet; sheet rows stay visible and tappable at 1/2/5/all. Only then
 // the Limits-above-sheet hit test (V3).
-async function switchSheetPass(width, height, form, largeText = false, shortSheet = false) {
+async function switchSheetPass(width, height, form, largeText = false, shortSheet = false, keyboardRoot = 0) {
   const compact = width < 600;
-  const name = `switch-sheet-${form}-${width}x${height}${largeText ? '-text200' : ''}`;
+  const name = `switch-sheet-${form}-${width}x${height}${largeText ? '-text200' : ''}${keyboardRoot ? `-kbd${keyboardRoot}` : ''}`;
   scaleText = false;
   let gateRecorded = false;
   const context = await browser.newContext({ viewport: { width, height }, ...(compact ? { hasTouch: true, isMobile: true } : {}) });
@@ -622,7 +622,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
       report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail });
       console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`);
     };
-    await page.goto(`${origin}/?scenario=baseline&theme=light&layout=${compact ? 'compact' : 'wide'}&sheet=switch`);
+    await page.goto(`${origin}/?scenario=baseline&theme=light&layout=${compact ? 'compact' : 'wide'}&sheet=switch${keyboardRoot ? `&inflat=${height - keyboardRoot}` : ''}`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
     const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
     if (await hide.isVisible()) await hide.click();
@@ -829,6 +829,13 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     await switchSheetPass(430, 330, 'sheet', true, true);
     await switchSheetPass(393, 420, 'sheet', false, true);
     await switchSheetPass(393, 420, 'sheet', true, true);
+    // F-SHEET-SHORT / R6-F1: keyboard-shortened ROOTS — the window stays tall, only the screen root
+    // is shortened by the simulated inset (bottom padding standing in for the keyboard). The bound
+    // must derive from the measured root, so these pass only when it does.
+    await switchSheetPass(430, 932, 'sheet', false, true, 330);
+    await switchSheetPass(430, 932, 'sheet', true, true, 330);
+    await switchSheetPass(393, 852, 'sheet', false, true, 420);
+    await switchSheetPass(393, 852, 'sheet', true, true, 420);
   } finally {
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');

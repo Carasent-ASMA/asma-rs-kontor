@@ -851,7 +851,7 @@ describe("Start or switch sheet", () => {
     model.rpc["sessions.navigator-capabilities"] = vi.fn(async () => ({ usageTotals: { supported: false, reason: "not read here" }, summaries: { supported: true }, draftAttach: { supported: true },
       takeover: { supported: true, limits: [hostLimit] }, takeoverBulk: { supported: true }, takeoverRoute: { supported: true } }));
     recordVisit("host-a", "agent-a", Date.now() - 60_000);
-    const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
+    const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, frameHeight: 330, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
       directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(() => ({ ok: true } as const)), onShowView: vi.fn(), onClose: vi.fn() };
     const render = () => { model.cursor = 0; model.effect = 0; return useStartSwitch(all); };
     let out = render();
@@ -879,10 +879,11 @@ describe("Start or switch sheet", () => {
     expect((out.footer as { type: unknown }).type).toBe(SelectionBar);
     const barTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
     const barRoot = byTestId(barTree, "selection-bar")!;
-    // In the sheet the bar does not yield (F-SHEET) and carries a DEFINITE pixel bound (F-SHEET-SHORT:
-    // window.height − 12, × 0.45 — the menu frame's cover formula) so its own scroller and the rest pin
-    // engage there too; this mock's window is 844 pt → round(832 × 0.45) = 374.
-    expect(barRoot.props.style).toMatchObject({ maxHeight: 374, flexShrink: 0 });
+    // In the sheet the bar does not yield (F-SHEET) and carries a DEFINITE pixel bound (F-SHEET-SHORT,
+    // R6-F1: the MEASURED root height − 12, × 0.45 — the cover frame's own formula; StartSwitchSheet
+    // passes rootSize.height as frameHeight, because the keyboard shrinks the root while the window
+    // height stays). This mock's frame is 330 pt (window 844) → round(318 × 0.45) = 143.
+    expect(barRoot.props.style).toMatchObject({ maxHeight: 143, flexShrink: 0 });
     expect((barRoot.props.children as { type: unknown }).type).toBe("ScrollView");
     const line = byTestId(barTree, "selection-takeover-disclosure")!;
     const inline = line.props.children as string[] | string;
