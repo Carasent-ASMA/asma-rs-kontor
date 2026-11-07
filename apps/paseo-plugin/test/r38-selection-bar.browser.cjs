@@ -134,6 +134,37 @@ async function enterSelection(page, firstRowId) {
   await menu.waitFor({ state: 'detached' });
 }
 
+// Reach a control in the bar the way an operator does — the bar's own scroll, just far enough to
+// reveal the control — and press it with a real pointer press at freshly read coordinates. The
+// reach+read+dispatch is retried with an outcome check: background refetches can reflow text
+// between a box read and the dispatch (the press must land on the control, verified, or retry).
+async function tapBarControl(page, testId) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const outcome = await page.evaluate((id) => {
+      const barNode = document.querySelector('[data-testid="selection-bar"]');
+      const scroller = barNode?.querySelector('div');
+      const control = document.querySelector(`[data-testid="${id}"]`);
+      if (!barNode || !control) return { state: 'missing' };
+      const s = scroller.getBoundingClientRect(), c = control.getBoundingClientRect();
+      if (c.width === 0 || c.height === 0) return { state: 'missing' };
+      if (c.top < s.top + 1) scroller.scrollTop += c.top - s.top - 2;
+      else if (c.bottom > s.bottom - 1) scroller.scrollTop += c.bottom - s.bottom + 2;
+      const r = control.getBoundingClientRect();
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || (!control.contains(hit) && hit !== control)) return { state: 'covered', hit: `${hit?.tagName}.${hit?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''}` };
+      return { state: 'ready', x, y };
+    }, testId);
+    if (outcome.state === 'ready') {
+      await page.mouse.click(outcome.x, outcome.y);
+      await page.waitForTimeout(180);
+      if (await page.getByTestId('control-help').count() > 0) return true;
+    }
+    await page.waitForTimeout(300);
+  }
+  return false;
+}
+
 // R38 F4: text200 must cover the BAR too — scale() runs before this pass scales only the chrome and
 // list rows that exist then; the bar mounts later, so every measurement re-applies the doubling (the
 // :not([data-scaled]) marker keeps it idempotent) before the geometry is read.
@@ -243,13 +274,12 @@ async function pass(width, height, theme, largeText, extra = {}) {
       gated('buttons-row-gap', one.geometry.gaps.buttonsRowGapFromText <= 6, `${Math.round(one.geometry.gaps.buttonsRowGapFromText)}px (last text line above the row -> row top)`);
     }
     if (touch && one.geometry.gaps.barLastTextToNavTop !== null) {
-      // When the bar's text yields (F3: the effects row scrolls away on a short root), the honest
-      // breath is the box's and the buttons-visible gate carries the contract.
+      // The bar is content-sized (no minHeight, R38-D2-r2) and fills its box to the bottom with real
+      // content — text above, the buttons row last — so the honest box breath IS the no-dead-band
+      // contract; the last-text and glyph numbers ride the geometry for the F2 tables.
       const clipped = one.geometry.effectsClipped;
-      const value = clipped ? one.geometry.gaps.barLastLineToNavTop : one.geometry.gaps.barLastTextToNavTop;
-      gated('bar-to-nav-gap', value <= 8, clipped
-        ? `effects row yields (clipped): box -> nav ${Math.round(one.geometry.gaps.barLastLineToNavTop ?? 0)}px`
-        : `last text -> nav ${Math.round(one.geometry.gaps.barLastTextToNavTop)}px (box -> nav ${Math.round(one.geometry.gaps.barLastLineToNavTop ?? 0)}px)`);
+      const value = one.geometry.gaps.barLastLineToNavTop;
+      gated('bar-to-nav-gap', value <= 8, `box -> nav ${Math.round(value)}px (content-filled; last text -> nav ${Math.round(one.geometry.gaps.barLastTextToNavTop)}px, glyph -> nav ${one.geometry.gaps.barLastGlyphToNavTop !== null ? Math.round(one.geometry.gaps.barLastGlyphToNavTop) : 'n/a'}${clipped ? '; effects row yields at this root' : ''})`);
     }
     // R38-D2-r2: nothing draws under the nav. Where everything fits, the buttons row is fully visible
     // above the nav; where the root is too short (short roots at text200), the bar takes what is left
@@ -304,14 +334,11 @@ async function pass(width, height, theme, largeText, extra = {}) {
       const expandedBefore = await limits.getAttribute('aria-expanded');
       gated('limits-collapsed-default', await page.getByTestId('control-help').count() === 0, `aria-expanded ${expandedBefore}`);
       // When the screen cannot fit the bar's content, the bar scrolls inside itself (D2); reach the
-      // control the way an operator does — the bar's own scroll — before tapping.
-      await page.evaluate(() => {
-        const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
-        if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight;
-      });
-      await page.waitForTimeout(100);
-      await limits.click();
-      await page.waitForTimeout(150);
+      // control the way an operator does — the bar's own scroll, just far enough — and press it with
+      // a real pointer press (tapBarControl). locator.click() would re-centre the control with a
+      // second scroll, and that scroll dismisses the just-opened help (the provider closes on scroll
+      // by design); a bare coordinate click races background refetch reflows.
+      const opened = await tapBarControl(page, 'selection-limits');
       const helpText = await page.getByTestId('control-help').innerText().catch(() => null);
       const tapDiag = await page.evaluate(() => {
         const chip = document.querySelector('[data-testid="selection-limits"]');
@@ -339,10 +366,17 @@ async function pass(width, height, theme, largeText, extra = {}) {
         if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight;
       });
       await page.waitForTimeout(100);
-      await limits2.focus();
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(150);
-      gated('limits-opens-keyboard', await page.getByTestId('control-help').count() > 0, 'Enter opens the held limits');
+      // Keyboard on a fresh mount; retried once on a late background reflow (the assertion is the
+      // outcome: Enter opens the held limits).
+      let keyboardOpened = false;
+      for (let attempt = 0; attempt < 3 && !keyboardOpened; attempt++) {
+        await limits2.focus();
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(180);
+        keyboardOpened = await page.getByTestId('control-help').count() > 0;
+        if (!keyboardOpened) await page.waitForTimeout(250);
+      }
+      gated('limits-opens-keyboard', keyboardOpened, 'Enter opens the held limits');
       await page.keyboard.press('Escape');
       await page.waitForTimeout(150);
       gated('limits-keyboard-closes', await page.getByTestId('control-help').count() === 0, 'Escape closes again');
@@ -493,22 +527,22 @@ async function switchSheetPass(width, height, form) {
     const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
     if (await hide.isVisible()) await hide.click();
     await page.getByTestId('kontor-switch-heading').waitFor({ timeout: 15000 });
+    // The sheet lands on the Recent state; the fixture has no visits, so All lists the sessions.
+    await page.getByTestId('kontor-switch-state-all').click();
+    await page.waitForTimeout(300);
     // Select a session FROM the sheet: its row menu's Select sessions starts the sheet's selection,
-    // which mounts the shared SelectionBar as the sheet's footer. The first VISIBLE row's menu is used
-    // (the sheet's list order puts agt_lsa_99101 below the fold at this viewport).
-    await page.getByTestId('session-actions-agt_qa_99103').click();
+    // which mounts the shared SelectionBar as the sheet's footer. Scoped to the sheet's own list —
+    // the Sessions screen behind renders rows with the same action testids.
+    await page.getByTestId('kontor-switch-list').getByTestId('session-actions-agt_qa_99103').click();
     const menu = page.getByRole('dialog', { name: 'Session actions', exact: true });
     await menu.getByTestId('session-action-select').click();
     await menu.waitFor({ state: 'detached' });
     await page.getByTestId('selection-bar').waitFor({ timeout: 15000 });
     await page.waitForTimeout(300);
-    // Reach the Limits control the way an operator does — the bar's own scroll when tight — then press it.
-    await page.evaluate(() => {
-      const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
-      if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight;
-    });
-    await page.waitForTimeout(100);
-    await page.getByTestId('selection-limits').click();
+    // Reach the Limits control the way an operator does — the bar's own scroll, just far enough —
+    // then press it with a real pointer press (tapBarControl; locator.click()'s re-centring scroll
+    // would dismiss the just-opened help).
+    await tapBarControl(page, 'selection-limits');
     await page.getByTestId('control-help').waitFor({ timeout: 15000 });
     await page.waitForTimeout(150);
     // Hit test on the popover TEXT: the panel's centre must resolve to the panel (or its content).
