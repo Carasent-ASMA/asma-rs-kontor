@@ -816,7 +816,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     if (!compact) {
       await page.keyboard.press('Escape');
       await page.waitForTimeout(150);
-      const chip = page.getByTestId('kontor-switch-state-recent');
+      const chip = page.locator('[data-testid^="kontor-switch-state-"]').first();
       await chip.hover();
       await page.waitForTimeout(200);
       const hoverPanels = await page.getByTestId('control-help').count();
