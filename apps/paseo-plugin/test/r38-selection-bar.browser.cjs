@@ -158,7 +158,9 @@ async function tapBarControl(page, testId) {
     if (outcome.state === 'ready') {
       await page.mouse.click(outcome.x, outcome.y);
       await page.waitForTimeout(180);
-      if (await page.getByTestId('control-help').count() > 0) return true;
+      // The caller decides what one press means (R9 AUD-F3): for a closing press the panel's
+      // ABSENCE is the success state, so the open-panel check only guards the opening presses.
+      if (!expectOpen || await page.getByTestId('control-help').count() > 0) return true;
     }
     await page.waitForTimeout(300);
   }
@@ -438,7 +440,7 @@ async function pass(width, height, theme, largeText, extra = {}) {
       await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('limits-aria-open', (await aria()) === 'true' && (await panelCount()) === 1, `tap: aria-expanded ${await aria()}, panels ${await panelCount()}`);
-      await tapBarControl(page, 'selection-limits');
+      await tapBarControl(page, 'selection-limits', false);
       await page.waitForTimeout(150);
       gated('limits-second-press-closes', (await aria()) === 'false' && (await panelCount()) === 0, `second press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
       await tapBarControl(page, 'selection-limits');
@@ -742,7 +744,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
       await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('sheet-limits-aria-open', (await sheetAria()) === 'true' && (await sheetPanels()) === 1, `tap: aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
-      await tapBarControl(page, 'selection-limits');
+      await tapBarControl(page, 'selection-limits', false);
       await page.waitForTimeout(150);
       gated('sheet-limits-second-press-closes', (await sheetAria()) === 'false' && (await sheetPanels()) === 0, `second press: aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
     } else {
