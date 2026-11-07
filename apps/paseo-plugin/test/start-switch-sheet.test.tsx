@@ -861,12 +861,12 @@ describe("Start or switch sheet", () => {
     (row.props.onSelectStart as () => void)();
     out = render();
     expect(out.label).toBe("Select sessions");
-    // R38 F-SHEET: while the footer bar is mounted, the sheet's list takes its room as flex with
-    // basis 0 — the same V1 treatment as the Sessions screen — so Yoga never weighs the bar's content
-    // against the list's content-sized basis and shrink the bar below its own content.
+    // R38 F-SHEET: the sheet sets yields={false} — the bar does NOT shrink in the sheet (its list
+    // absorbs the squeeze), so the bar keeps its buttons at rest in both forms.
     const listNode = scoped([out.body], { live: true, visible: true }).map((entry) => entry.node)
       .find((node) => node.props.testID === "kontor-switch-list")!;
-    expect(listNode.props.style).toMatchObject({ flexGrow: 1, flexShrink: 1, flexBasis: 0 });
+    expect(listNode).toBeDefined();
+    expect((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props.yields).toBe(false);
     // The capabilities read is async: flush its microtasks, then draw with the disclosure in hand.
     for (let flush = 0; flush < 6; flush++) { await Promise.resolve(); out = render(); }
     expect(out.footer).toBeDefined();
@@ -879,7 +879,9 @@ describe("Start or switch sheet", () => {
     expect((out.footer as { type: unknown }).type).toBe(SelectionBar);
     const barTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
     const barRoot = byTestId(barTree, "selection-bar")!;
-    expect(barRoot.props.style).toMatchObject({ maxHeight: "60%", flexShrink: 1 });
+    // In the sheet the bar does not yield (F-SHEET): flexShrink 0, so its content — buttons last —
+    // stays whole at rest while the sheet's list absorbs any squeeze.
+    expect(barRoot.props.style).toMatchObject({ maxHeight: "60%", flexShrink: 0 });
     expect((barRoot.props.children as { type: unknown }).type).toBe("ScrollView");
     const line = byTestId(barTree, "selection-takeover-disclosure")!;
     const inline = line.props.children as string[] | string;

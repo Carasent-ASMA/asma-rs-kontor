@@ -416,15 +416,11 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       pickerHeight={popover ? (line) => popoverBodyHeight(window.height, compact, line) : undefined}
       header={<><IconButton label="Back to sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />{heading}</>} />
     // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
-    // While the footer bar is mounted (selecting), the list takes its room as flex with basis 0 — the
-    // same V1 treatment as the Sessions screen: Yoga weights shrinking by basis, so the bar's content
-    // would otherwise be weighed against the list's content-sized basis and squeezed below its own.
-    : popover ? <View {...list} style={selection.selecting ? { flexGrow: 1, flexShrink: 1, flexBasis: 0 } : undefined}>{items}</View>
-    : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate}
-        style={selection.selecting ? { flexGrow: 1, flexShrink: 1, flexBasis: 0 } : { flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
+    : popover ? <View {...list}>{items}</View>
+    : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate} style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
   // Board D1's sticky bar under the list, and the sheets the row menu and the bar open.
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
-  const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure} hasLimits={takeover.limits}
+  const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure} hasLimits={takeover.limits} yields={false}
     takeover={{ unavailable: takeover.unavailable, onPress: takeover.start }} auto={{ unavailable: takeover.auto, onPress: takeover.choose }}
     archive={{ unavailable: archive.disabled ? "Archive waits for the host and any running archive." : null, onPress: archiveSelected }} /> : mode === "switch" ? ops.notice : null;
   const detailsEntry = detailsId === null ? null : entries.find((entry) => entry.id === detailsId) ?? null;

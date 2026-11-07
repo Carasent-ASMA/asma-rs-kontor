@@ -78,12 +78,15 @@ function BarButton({ testID, label, accessibilityLabel, icon, trailing, unavaila
  * reason is written under the bar. The bar's text is bounded: at most two one-line reasons, and the takeover disclosure
  * clamped to two lines with a Limits control that holds the whole text open in the existing help popover (R38 D1).
  */
-export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null, hasLimits = false }: {
+export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null, hasLimits = false, yields = true }: {
   count: number; takeover: SelectionControl; auto: SelectionControl; archive: SelectionControl; colors: Colors;
   /** What Take over does and the host's stated limits, shown while it can start. */
   disclosure?: string | null;
   /** The host stated limits beyond the fixed effects sentence: the Limits control exists only then (R38 V2). */
   hasLimits?: boolean;
+  /** Whether the bar may shrink below its own content when the root is short (R38-D2-r2). The switch
+    * sheet sets false (F-SHEET): its list absorbs the squeeze, so the bar keeps its buttons at rest. */
+  yields?: boolean;
   /** Archive N, where focus returns after its review closes. */
   archiveRef?: Ref<View>;
 }) {
@@ -125,7 +128,7 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // list-floor cap keeps the buttons' 112 pt and the bar takes what is left, its ScrollView scrolling
   // first the text and then the buttons; nothing on the Sessions screen draws under the nav, and no
   // label is ever cut.
-  return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: 1, maxHeight: "60%" }}>
+  return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: yields ? 1 : 0, maxHeight: "60%" }}>
     <ScrollView ref={scrollerRef} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }}
       onContentSizeChange={repinToEnd} onLayout={repinToEnd}
       onScroll={(event) => { const d = event.nativeEvent; pinnedToEnd.current = d.contentOffset.y + d.layoutMeasurement.height >= d.contentSize.height - 2; }}>
