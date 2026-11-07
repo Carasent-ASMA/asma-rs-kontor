@@ -288,4 +288,26 @@ describe.each(["full", "slim", "compact"] as const)("bulk archive on the %s Sess
     expect(feedback("b")?.props.row).toBeUndefined();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-execute-item").map(([, input]) => input.agentId)).toEqual(["a", "b", "b"]);
   });
+
+  it("keeps the selecting list at its floor and the compact screen's bottom padding at the measured breath (R38 D2/D3)", () => {
+    mount(); start();
+    const screenRoot = () => all().filter((element) => element.props.tabIndex === -1).at(-1)!;
+    // At a 900 pt root the share term wins: 0.4 × 900 = 360 (a 0.2 share would fall back to the 288 pt 3-row floor).
+    (screenRoot().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 393, height: 900 } } });
+    harness.flush();
+    if (layout === "compact") {
+      expect(list().props.style).toEqual(expect.arrayContaining([{ minHeight: 360, flex: 1 }]));
+    } else {
+      // Wide and desktop keep the base room: no floor, no flex injection.
+      expect(JSON.stringify(list().props.style)).not.toContain('"flex":1');
+    }
+    // At a 666 pt root the 3-row floor wins: 3 × ESTIMATED_ROW_HEIGHT 96 = 288 (dropping the row term would give 266).
+    (screenRoot().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 393, height: 666 } } });
+    harness.flush();
+    if (layout === "compact") {
+      expect(list().props.style).toEqual(expect.arrayContaining([{ minHeight: 288, flex: 1 }]));
+    }
+    // D3, measured: compact keeps a 4 pt breath above the nav's top border (was 20); wide keeps 16.
+    expect(screenRoot().props.style).toMatchObject({ paddingBottom: layout === "compact" ? 4 : 16 });
+  });
 });
