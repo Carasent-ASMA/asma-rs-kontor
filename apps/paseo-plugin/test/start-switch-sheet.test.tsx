@@ -895,6 +895,17 @@ describe("Start or switch sheet", () => {
     expect((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props.hasLimits).toBe(true);
     expect(byTestId(barTree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: false });
     expect(byTestId(barTree, "selection-limits")!.props.accessibilityRole).toBe("button");
+    // R8 (QA SHOULD-FIX): the fallback must keep the bound DEFINITE without a measured root —
+    // frameHeight omitted (the composer popover's path: StartSwitchPopover never passes it) and the
+    // unmeasured {0,0} root (0) both fall back to the window height. Mock window 390×844 →
+    // round(832 × 0.45) = 374.
+    for (const fallback of ["omitted", 0] as const) {
+      if (fallback === "omitted") delete (all as { frameHeight?: number }).frameHeight;
+      else all.frameHeight = fallback;
+      out = render();
+      const fallbackTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
+      expect(byTestId(fallbackTree, "selection-bar")!.props.style).toMatchObject({ maxHeight: 374, flexShrink: 0 });
+    }
   });
 });
 
