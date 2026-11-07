@@ -387,11 +387,30 @@ async function pass(width, height, theme, largeText, extra = {}) {
           report.cases.push({ name: `${name}-gate-scroll-holds-against-rerender`, status: 'NOT RUN', detail: `the bar scrolls but only by ${end}px (rest offset ${after.top}, ${belowEnd}px below the end < 20); no qualifying hold can be shown` });
           console.log(`${name}-gate-scroll-holds-against-rerender: NOT RUN (only ${end}px of scroll room)`);
         } else {
-          // The content-neutral re-render: the fixture's refetch tick (named per the ruling).
+          // The content-neutral re-render, named per the ruling: the fixture's refetch tick (the same
+          // synthetic data — a real re-render), plus the SAME-SIZE content-size event RNW emits after a
+          // same-size re-layout. Nothing about the bar's content or height changes; a correct pin
+          // (released by the wheel's own onScroll events) must not move, a pin that ignores the flag
+          // (M-pin-always) jumps back to the end.
           await page.evaluate(() => window.__r38Refetch());
+          await page.waitForTimeout(200);
+          const fired = await page.evaluate(() => {
+            const scroller = document.querySelector('[data-testid="selection-bar"] div');
+            const key = Object.keys(scroller).find((k) => k.startsWith('__reactFiber'));
+            let cursor = scroller[key];
+            while (cursor) {
+              const props = cursor.memoizedProps;
+              if (props && typeof props.onContentSizeChange === 'function') {
+                props.onContentSizeChange(scroller.scrollWidth, scroller.scrollHeight);
+                return true;
+              }
+              cursor = cursor.return;
+            }
+            return false;
+          });
           await page.waitForTimeout(400);
           const held = await page.evaluate(() => document.querySelector('[data-testid="selection-bar"] div')?.scrollTop ?? -1);
-          gated('scroll-holds-against-rerender', Math.abs(held - after.top) <= 1, `precondition scrollHeight ${pre.sh} > clientHeight ${pre.ch}; wheel up to ${after.top} (${belowEnd}px below the end, >= 20); after the fixture refetch tick + 400 ms the offset is ${held}`);
+          gated('scroll-holds-against-rerender', fired && Math.abs(held - after.top) <= 1, `precondition scrollHeight ${pre.sh} > clientHeight ${pre.ch}; wheel up to ${after.top} (${belowEnd}px below the end, >= 20); refetch tick + same-size content event (fired ${fired}) + 400 ms later the offset is ${held}`);
         }
       }
     }
