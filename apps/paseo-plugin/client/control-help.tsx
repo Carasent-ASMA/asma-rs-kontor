@@ -173,9 +173,8 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
   // True if and only if the popover is showing this control's text: the provider notifies on every
   // open/close, including its own dismissals (Escape, an outside press, scroll, resize, back).
   const [open, setOpen] = useState(false);
-  // Whether the open help for THIS anchor is held (R10: the Limits press captures its decision only
-  // from a held-open state — an unheld hover help is dismissed by the press itself, so live state is
-  // the correct decision input there).
+  // Whether the open help for THIS anchor is held (R38-D1-r2): the Limits control uses it to stop
+  // its own touch-start from reaching the provider root's dismissal while it holds the help.
   const [heldOpen, setHeldOpen] = useState(false);
   useEffect(() => (controller ? controller.subscribe(anchor, (open, held) => { setOpen(open); setHeldOpen(held); }) : undefined), [controller]);
   return {
