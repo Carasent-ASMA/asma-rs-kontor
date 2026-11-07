@@ -50,9 +50,29 @@ async function measure(page) {
     const measureBox = document.querySelector('[data-testid="selection-label-measure"]');
     const measure = measureBox?.getBoundingClientRect() ?? null;
     const reasonLines = barNode ? [...barNode.querySelectorAll('[dir="auto"]')].filter(node => !node.closest('[role="button"]') && node.dataset.testid !== 'selection-takeover-disclosure' && !node.closest('[data-testid="selection-label-measure"]') && !node.querySelector('[role="button"]')).map(node => ({ text: node.textContent.slice(0, 40), top: node.getBoundingClientRect().top, bottom: node.getBoundingClientRect().bottom, height: Math.round(node.getBoundingClientRect().height * 10) / 10 })) : [];
+    // R38 F2, honest metric: the last VISIBLE text line (disclosure, reason, or the Limits label) —
+    // clamped to the bar's own clip — not the bar's box, which can carry the 44pt target's slack.
+    const textNodes = barNode ? [...barNode.querySelectorAll('[dir="auto"]')].filter(node => !node.closest('[data-testid="selection-label-measure"]')) : [];
+    const lastTextBottom = bar ? textNodes.reduce((bottom, node) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.top >= bar.bottom - 0.5) return bottom;                    // below the fold: not visible
+      return Math.max(bottom, Math.min(rect.bottom, bar.bottom));         // visible, clamped to the bar's clip
+    }, 0) : null;
+    const scroller = barNode?.querySelector('div');
+    const barChildren = scroller ? [...scroller.children].filter(node => node.dataset.testid !== 'selection-label-measure')
+      .map(node => ({ part: node.dataset.testid ?? node.querySelector('[data-testid^="selection-"]')?.getAttribute('data-testid') ?? 'reason-line', height: Math.round(node.getBoundingClientRect().height) })) : [];
+    const stacked = buttons.length === 3 ? buttons[2].top > buttons[1].bottom + 1 : null;
+    // F3: on a short root the bar's text may yield (scroll away) — when the effects row is clipped by
+    // the bar's own scroll box, the last-text breath is reported but not bounded.
+    const effectsClipped = bar && disclosure ? disclosure.getBoundingClientRect().bottom > bar.bottom + 1 : false;
     return {
       viewport: { width: innerWidth, height: innerHeight },
       list: list ? { top: list.top, height: list.height } : null,
+      listTop: list && screen ? list.top - screen.top : null,
+      stacked,
+      effectsClipped,
+      barChildren,
+      buttonRects: buttons.map(node => ({ top: Math.round(node.top), bottom: Math.round(node.bottom), left: Math.round(node.left), right: Math.round(node.right) })),
       bar: bar ? { top: bar.top, bottom: bar.bottom, height: bar.height } : null,
       nav: nav ? { top: nav.top, bottom: nav.bottom, height: nav.height, paddingBottom: getComputedStyle(navNode).paddingBottom } : null,
       navLabelsBottom: navLabels,
@@ -60,6 +80,7 @@ async function measure(page) {
       gaps: {
         buttonsRowToNextLine: bar && buttonsRowBottom !== null ? Math.min(...reasonLines.map(line => line.top), disclosure ? disclosure.getBoundingClientRect().top : Infinity) - buttonsRowBottom : null,
         barLastLineToNavTop: bar && nav ? nav.top - bar.bottom : null,
+        barLastTextToNavTop: bar && nav && lastTextBottom !== null ? nav.top - lastTextBottom : null,
         underNav: nav && navLabels ? nav.bottom - navLabels : null,
         navToViewportBottom: nav ? innerHeight - nav.bottom : null,
         listToBar: bar && list ? bar.top - list.bottom : null,
@@ -94,7 +115,13 @@ async function enterSelection(page, firstRowId) {
   await menu.waitFor({ state: 'detached' });
 }
 
+// R38 F4: text200 must cover the BAR too — scale() runs before this pass scales only the chrome and
+// list rows that exist then; the bar mounts later, so every measurement re-applies the doubling (the
+// :not([data-scaled]) marker keeps it idempotent) before the geometry is read.
+let scaleText = false;
+
 async function measureSelection(page, name, expectCount) {
+  if (scaleText) { await scale(page); await page.waitForTimeout(400); }
   await page.waitForTimeout(250);
   const state = await selectionState(page);
   const geometry = await measure(page);
@@ -108,6 +135,7 @@ async function measureSelection(page, name, expectCount) {
 // extra: fixture query params (inflat, state) — the device-equivalent viewports use them.
 async function pass(width, height, theme, largeText, extra = {}) {
   const touch = width < 600;
+  scaleText = largeText;
   const name = `${width}x${height}-${theme}${largeText ? '-text200' : ''}${extra.inflat ? '-inset34' : ''}${extra.state ? '-mywork' : ''}`;
   const context = await browser.newContext({ viewport: { width, height }, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
   const page = await context.newPage();
@@ -131,26 +159,32 @@ async function pass(width, height, theme, largeText, extra = {}) {
     assert.ok(one.geometry.disclosure, `${name}: the takeover disclosure line renders while Take over can start`);
     assert.ok(one.geometry.disclosure.chars >= 1700, `${name}: disclosure is production length (>=1700 chars), got ${one.geometry.disclosure.chars}`);
 
-    for (const id of ['agt_tpm_99101']) await rowBody(page, id).click();
-    const two = await measureSelection(page, `${name}-2-selected`, '2');
-    for (const id of ['agt_qa_99103', 'agt_aud_99103', 'agt_reva_99104']) await rowBody(page, id).click();
-    const five = await measureSelection(page, `${name}-5-selected`, '5');
-    await page.getByTestId('selection-all').click();
-    const all = await measureSelection(page, `${name}-all-selected`, 'all');
+    // The 2/5/all progression and the row-tap check need visible rows; on a short root (R38 F3) the
+    // floor yields to the bar's buttons and the list intentionally has no room, so they are skipped —
+    // the F3 proof at these roots is 0/1 with the buttons row fully visible (gates below).
+    if (!extra.short) {
+      for (const id of ['agt_tpm_99101']) await rowBody(page, id).click();
+      const two = await measureSelection(page, `${name}-2-selected`, '2');
+      for (const id of ['agt_qa_99103', 'agt_aud_99103', 'agt_reva_99104']) await rowBody(page, id).click();
+      const five = await measureSelection(page, `${name}-5-selected`, '5');
+      await page.getByTestId('selection-all').click();
+      const all = await measureSelection(page, `${name}-all-selected`, 'all');
+      void two; void five; void all;
 
-    // Rows stay tappable while selecting: a visible row toggles at every count (D2).
-    for (const [stage] of [['one'], ['two'], ['five'], ['all']]) {
-      const visible = stage === 'one' ? await rowBody(page, 'agt_qa_99104').isVisible() : await rowBody(page, 'agt_qa_99104').isVisible();
-      if (!visible) { report.cases.push({ name: `${name}-row-tap-${stage}`, status: 'FAIL', error: 'a session row is not visible to tap while selecting' }); console.log(`${name}-row-tap-${stage}: FAIL (row not visible)`); continue; }
-      const countBefore = (await selectionState(page)).count;
-      await rowBody(page, 'agt_qa_99104').click();
-      await page.waitForTimeout(150);
-      const countAfter = (await selectionState(page)).count;
-      const toggled = countBefore !== countAfter;
-      report.cases.push({ name: `${name}-row-tap-${stage}`, status: toggled ? 'PASS' : 'FAIL', countBefore, countAfter });
-      console.log(`${name}-row-tap-${stage}: ${toggled ? 'PASS' : 'FAIL'} (${countBefore} -> ${countAfter})`);
-      if (toggled) await rowBody(page, 'agt_qa_99104').click(); // restore the count
-      await page.waitForTimeout(100);
+      // Rows stay tappable while selecting: a visible row toggles at every count (D2).
+      for (const [stage] of [['one'], ['two'], ['five'], ['all']]) {
+        const visible = await rowBody(page, 'agt_qa_99104').isVisible();
+        if (!visible) { report.cases.push({ name: `${name}-row-tap-${stage}`, status: 'FAIL', error: 'a session row is not visible to tap while selecting' }); console.log(`${name}-row-tap-${stage}: FAIL (row not visible)`); continue; }
+        const countBefore = (await selectionState(page)).count;
+        await rowBody(page, 'agt_qa_99104').click();
+        await page.waitForTimeout(150);
+        const countAfter = (await selectionState(page)).count;
+        const toggled = countBefore !== countAfter;
+        report.cases.push({ name: `${name}-row-tap-${stage}`, status: toggled ? 'PASS' : 'FAIL', countBefore, countAfter });
+        console.log(`${name}-row-tap-${stage}: ${toggled ? 'PASS' : 'FAIL'} (${countBefore} -> ${countAfter})`);
+        if (toggled) await rowBody(page, 'agt_qa_99104').click(); // restore the count
+        await page.waitForTimeout(100);
+      }
     }
 
     // D1/D2/D3 gate assertions — these encode the fix's targets and are expected RED at base.
@@ -158,26 +192,49 @@ async function pass(width, height, theme, largeText, extra = {}) {
       report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail });
       console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`);
     };
-    // D2: while selecting on compact, the list area is at least max(40% of the Sessions root height, 3 rows).
+    // D2: while selecting on compact, the list area is at least max(40% of the Sessions root, 3×96),
+    // CAPPED so the bar's buttons stay visible on a short root (R38 F3): the floor yields first.
     if (touch) {
       const screenRoot = await page.evaluate(() => {
         const bar = document.querySelector('[data-testid="selection-bar"]');
         return bar?.parentElement?.getBoundingClientRect().height ?? 0;
       });
       const listHeight = one.geometry.list?.height ?? 0;
-      const threeRows = 3 * 60; // a compact row is at least ~60 px tall at default text
-      gated('list-floor-1', listHeight >= Math.max(0.4 * screenRoot, threeRows), `list ${Math.round(listHeight)}px vs floor ${Math.round(Math.max(0.4 * screenRoot, threeRows))}px (root ${Math.round(screenRoot)}px)`);
+      const uncapped = Math.max(0.4 * screenRoot, 288);
+      const floor = Math.min(uncapped, Math.max(0, screenRoot - (one.geometry.listTop ?? 0) - 4 - 112));
+      gated('list-floor-1', listHeight >= floor - 0.5, `list ${Math.round(listHeight)}px vs floor ${Math.round(floor)}px (root ${Math.round(screenRoot)}px, uncapped ${Math.round(uncapped)}, listTop ${Math.round(one.geometry.listTop ?? 0)})`);
     }
-    // D1: the effects line is bounded to two lines (it must clip, not push).
+    // D1: the effects line is bounded to two lines (lineHeight 22; doubled at text200 — it must clip, not push).
     if (one.geometry.disclosure) {
-      gated('effects-bounded-2-lines', one.geometry.disclosure.inlineHeight <= 2 * 16 + 2, `effects line ${Math.round(one.geometry.disclosure.inlineHeight)}px (unbounded at base renders ~25 lines)`);
+      const twoLineBound = largeText ? 2 * 44 + 2 : 2 * 22 + 2;
+      gated('effects-bounded-2-lines', one.geometry.disclosure.inlineHeight <= twoLineBound, `effects line ${Math.round(one.geometry.disclosure.inlineHeight)}px (unbounded at base renders ~25 lines)`);
     }
-    // D3: buttons row to next line <= 6; bar last line to nav top <= 8; under nav = inset + <= 6.
+    // D3: buttons row to next line <= 6; bar's last VISIBLE text line to nav top <= 8 (F2 honest
+    // metric — the box number is kept for the record); under nav = inset + <= 6.
     if (touch && one.geometry.gaps.buttonsRowToNextLine !== null && Number.isFinite(one.geometry.gaps.buttonsRowToNextLine)) {
       gated('buttons-row-gap', one.geometry.gaps.buttonsRowToNextLine <= 6, `${Math.round(one.geometry.gaps.buttonsRowToNextLine)}px`);
     }
-    if (touch && one.geometry.gaps.barLastLineToNavTop !== null) {
-      gated('bar-to-nav-gap', one.geometry.gaps.barLastLineToNavTop <= 8, `${Math.round(one.geometry.gaps.barLastLineToNavTop)}px`);
+    if (touch && one.geometry.gaps.barLastTextToNavTop !== null) {
+      // When the bar's text yields (F3: the effects row scrolls away on a short root), the honest
+      // breath is the box's and the buttons-visible gate carries the contract.
+      const clipped = one.geometry.effectsClipped;
+      const value = clipped ? one.geometry.gaps.barLastLineToNavTop : one.geometry.gaps.barLastTextToNavTop;
+      gated('bar-to-nav-gap', value <= 8, clipped
+        ? `effects row yields (clipped): box -> nav ${Math.round(one.geometry.gaps.barLastLineToNavTop ?? 0)}px`
+        : `last text -> nav ${Math.round(one.geometry.gaps.barLastTextToNavTop)}px (box -> nav ${Math.round(one.geometry.gaps.barLastLineToNavTop ?? 0)}px)`);
+    }
+    // R38 F3: the buttons row stays fully visible at every compact root height.
+    if (touch && one.geometry.buttonRects?.length === 3 && one.geometry.nav) {
+      const viewportWidth = one.geometry.viewport.width;
+      const inBar = one.geometry.buttonRects.every(rect => rect.top >= (one.geometry.bar?.top ?? 0) - 2 && rect.bottom <= one.geometry.nav.top + 1 && rect.left >= -1 && rect.right <= viewportWidth + 1);
+      gated('buttons-visible', inBar, 'takeover/auto/archive fully inside the bar, above the nav');
+      const labelsWhole = await page.evaluate(() => [...document.querySelectorAll('[data-testid="selection-bar"] [role="button"] [dir="auto"]')].every((node) => {
+        // CSS ellipsis is a paint effect: the DOM text keeps its full laid-out width, so the Range
+        // content box exposes truncation that scrollWidth hides.
+        const range = document.createRange(); range.selectNodeContents(node);
+        return range.getBoundingClientRect().width <= node.getBoundingClientRect().width + 1;
+      }));
+      gated('labels-whole', labelsWhole, 'no button label ellipsized');
     }
     if (touch && one.geometry.gaps.underNav !== null) {
       gated('under-nav-single-inset', one.geometry.gaps.underNav <= 6, `${Math.round(one.geometry.gaps.underNav)}px (browser inset is 0; nav paddingBottom only)`);
@@ -200,7 +257,14 @@ async function pass(width, height, theme, largeText, extra = {}) {
       await limits.click();
       await page.waitForTimeout(150);
       const helpText = await page.getByTestId('control-help').innerText().catch(() => null);
-      gated('limits-opens-tap', helpText !== null && helpText.length >= 1700, `help panel ${helpText === null ? 'absent' : `${helpText.length} chars`}`);
+      const tapDiag = await page.evaluate(() => {
+        const chip = document.querySelector('[data-testid="selection-limits"]');
+        const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+        const r = chip?.getBoundingClientRect();
+        const bar = document.querySelector('[data-testid="selection-bar"]')?.getBoundingClientRect();
+        return { chip: r ? [Math.round(r.top), Math.round(r.bottom)] : null, barBottom: Math.round(bar?.bottom ?? 0), scrollTop: Math.round(scroller?.scrollTop ?? 0), scrollHeight: scroller?.scrollHeight, clientHeight: scroller?.clientHeight, expanded: chip?.getAttribute('aria-expanded') };
+      });
+      gated('limits-opens-tap', helpText !== null && helpText.length >= 1700, `help panel ${helpText === null ? 'absent' : `${helpText.length} chars`} | chip=${JSON.stringify(tapDiag.chip)} barBottom=${tapDiag.barBottom} scroll=${tapDiag.scrollTop}/${tapDiag.scrollHeight}/${tapDiag.clientHeight} expanded=${tapDiag.expanded}`);
       await page.keyboard.press('Escape');
       await page.waitForTimeout(150);
       gated('limits-escape-closes', await page.getByTestId('control-help').count() === 0, 'Escape closes the held popover');
@@ -292,6 +356,11 @@ async function insetPass(width, height) {
     for (const [width, height] of [[430, 810], [393, 730]]) {
       await pass(width, height, 'light', false, { inflat: 34, state: 'mywork' });
       await pass(width, height, 'light', true, { inflat: 34, state: 'mywork' });
+    }
+    // R38 F3: short roots — the list floor yields, the bar's buttons stay fully visible (0/1 only).
+    for (const [width, height] of [[430, 330], [393, 420]]) {
+      await pass(width, height, 'light', false, { short: true });
+      await pass(width, height, 'light', true, { short: true });
     }
     // Wide is measured for the unchanged-metrics comparison; no gate assertions there.
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });

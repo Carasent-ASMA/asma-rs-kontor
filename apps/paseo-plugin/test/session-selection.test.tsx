@@ -9,6 +9,15 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 const screen = vi.hoisted(() => ({ width: 390 }));
 vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { OS: "web" }, useWindowDimensions: () => ({ width: screen.width, height: 844, fontScale: 1 }), Pressable: "Pressable", Text: "Text", View: "View", Image: "Image", ScrollView: "ScrollView", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
+// The ControlHelp provider is replaced by a stateful double: hold/dismiss move `open` exactly as the
+// provider would, and a test simulates the provider's own dismissals (Escape, outside press) by setting
+// `open` back — the control's expanded flag must follow, not its own press history (R38 F1).
+const helpDouble = vi.hoisted(() => ({ open: false, holds: 0, dismisses: 0 }));
+vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ bindings: {}, open: helpDouble.open,
+  hold: () => { helpDouble.holds++; helpDouble.open = true; },
+  dismiss: () => { helpDouble.dismisses++; helpDouble.open = false; },
+  forget: () => {} }),
+  useActionHelp: () => ({ bindings: {}, forget: () => {} }) }));
 
 import { SelectionBar, SelectionHeader, type SelectionControl } from "../client/session-selection";
 import { DenseSessionRow, type DenseRowMode } from "../client/dense-session-row";
@@ -155,11 +164,13 @@ describe("SelectionBar", () => {
   });
 
   it("clamps the takeover disclosure to two lines with a Limits control that starts collapsed, flips expanded on press and takes a 44pt target (R38-D1)", () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
     const disclosure = "Saves a compact handoff, then a wall of host limits long enough to fill twenty-five lines on a phone.";
     let tree = bar(2, control(), control(), control(), disclosure).tree;
     const line = byTestId(tree, "selection-takeover-disclosure")!;
     const inline = (line.props.children as string[] | string); expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline).startsWith("Take over: Saves a compact handoff")).toBe(true);
     expect(line.props.numberOfLines).toBe(2);
+    expect(line.props.style).toMatchObject({ lineHeight: 22 }); // two lines fill the 44pt Limits row: no dead band under the last line (R38 F2)
     // No second, unclamped copy of the effects text anywhere in the bar (R38 D1): the only carrier is
     // the two-line disclosure; anything else starting "Take over: " is the inline wall returning.
     const walls = tree.filter((node) => node.type === "Text" && [node.props.children].flat(Infinity).join("").startsWith("Take over: "));
@@ -172,6 +183,15 @@ describe("SelectionBar", () => {
     press(limits);
     tree = bar(2, control(), control(), control(), disclosure).tree;
     expect(byTestId(tree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: true });
+    // F1: the provider's own dismissals (Escape, an outside press, scroll, resize, back) close the state
+    // too — expanded tracks the popover, not this control's press history — and the first press after
+    // any such dismissal OPENS the limits again rather than dead-dismissing a closed popover.
+    helpDouble.open = false;
+    tree = bar(2, control(), control(), control(), disclosure).tree;
+    expect(byTestId(tree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: false });
+    press(byTestId(tree, "selection-limits"));
+    expect(helpDouble.holds).toBe(2);
+    expect(helpDouble.dismisses).toBe(0);
   });
 
   it("shows the effects line only while Take over can start, and clamps every reason line to one", () => {
