@@ -627,8 +627,13 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
     if (await hide.isVisible()) await hide.click();
     await page.getByTestId('kontor-switch-heading').waitFor({ timeout: 15000 });
-    // The sheet lands on the Recent state; the fixture has no visits, so All lists the sessions.
-    await page.getByTestId('kontor-switch-state-all').click();
+    // The sheet lands on the Recent state; the fixture has no visits, so All lists the sessions. On
+    // the narrowest roots (393) the states strip truncates and All folds into the More panel, so the
+    // chip click falls back to needs_input (agt_qa_99103 is a needs_input row in the fixture).
+    const allChip = page.getByTestId('kontor-switch-state-all');
+    const needsInputChip = page.getByTestId('kontor-switch-state-needs_input');
+    await allChip.or(needsInputChip).waitFor({ timeout: 15000 });
+    await ((await allChip.isVisible()) ? allChip : needsInputChip).click();
     await page.waitForTimeout(300);
     // Select a session FROM the sheet: its row menu's Select sessions starts the sheet's selection,
     // which mounts the shared SelectionBar as the sheet's footer. Scoped to the sheet's own list —

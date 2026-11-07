@@ -880,9 +880,9 @@ describe("Start or switch sheet", () => {
     const barTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
     const barRoot = byTestId(barTree, "selection-bar")!;
     // In the sheet the bar does not yield (F-SHEET) and carries a DEFINITE pixel bound (F-SHEET-SHORT:
-    // window.height − 12, × 0.6 — the menu frame's cover formula) so its own scroller and the rest pin
-    // engage there too; this mock's window is 844 pt → round(832 × 0.6) = 499.
-    expect(barRoot.props.style).toMatchObject({ maxHeight: 499, flexShrink: 0 });
+    // window.height − 12, × 0.45 — the menu frame's cover formula) so its own scroller and the rest pin
+    // engage there too; this mock's window is 844 pt → round(832 × 0.45) = 374.
+    expect(barRoot.props.style).toMatchObject({ maxHeight: 374, flexShrink: 0 });
     expect((barRoot.props.children as { type: unknown }).type).toBe("ScrollView");
     const line = byTestId(barTree, "selection-takeover-disclosure")!;
     const inline = line.props.children as string[] | string;

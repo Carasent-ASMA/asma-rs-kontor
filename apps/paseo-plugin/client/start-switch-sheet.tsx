@@ -422,9 +422,11 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
   const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure} hasLimits={takeover.limits} yields={false}
     // F-SHEET-SHORT: a definite pixel bound mirroring the menu frame's cover formula (root.height −
-    // 2×margin, anchored-menu.tsx:17) — the percentage does not resolve under the frame's own
-    // maxHeight-only cover, so here the bar's own scroller and the D2-r3 rest pin must engage.
-    barMaxHeight={Math.round((window.height - 12) * 0.6)}
+    // 2×margin, anchored-menu.tsx:17). 0.45 of the frame leaves the sheet's fixed chrome above the
+    // bar (header, states strip, search, selection header — up to ~0.5 of the frame at the smallest
+    // root with doubled text) inside the cover, so the bar's own scroller and the D2-r3 rest pin
+    // engage instead of the frame clipping the buttons away; the F-SHEET-SHORT gates verify it.
+    barMaxHeight={Math.round((window.height - 12) * 0.45)}
     takeover={{ unavailable: takeover.unavailable, onPress: takeover.start }} auto={{ unavailable: takeover.auto, onPress: takeover.choose }}
     archive={{ unavailable: archive.disabled ? "Archive waits for the host and any running archive." : null, onPress: archiveSelected }} /> : mode === "switch" ? ops.notice : null;
   const detailsEntry = detailsId === null ? null : entries.find((entry) => entry.id === detailsId) ?? null;
