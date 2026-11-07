@@ -632,7 +632,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     // chip click falls back to needs_input (agt_qa_99103 is a needs_input row in the fixture).
     const allChip = page.getByTestId('kontor-switch-state-all');
     const needsInputChip = page.getByTestId('kontor-switch-state-needs_input');
-    await allChip.or(needsInputChip).waitFor({ timeout: 15000 });
+    await allChip.or(needsInputChip).first().waitFor({ timeout: 15000 });
     await ((await allChip.isVisible()) ? allChip : needsInputChip).click();
     await page.waitForTimeout(300);
     // Select a session FROM the sheet: its row menu's Select sessions starts the sheet's selection,
@@ -668,16 +668,31 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
       const line = document.querySelector('[data-testid="selection-takeover-disclosure"]');
       const limits = document.querySelector('[data-testid="selection-limits"]');
       const scrollTop = scroller?.scrollTop ?? -1;
+      const inside = () => ({ lineInside: line && bar ? whole(line, bar) : false, limitsInside: limits && bar ? whole(limits, bar) : false });
+      let insideNow = inside();
+      // F-SHEET-SHORT: with a definite bound an overflowing bar rests END-PINNED (D2-r3), clipping a
+      // few px of the line's top until scrolled. The line and Limits must still be fully visible
+      // through the bar's own scroll: verify at the scroller's scrollTop 0, then restore the rest.
+      let scrolledToTop = false;
+      if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) {
+        const saved = scroller.scrollTop;
+        scroller.scrollTop = 0; insideNow = inside(); scroller.scrollTop = saved;
+        scrolledToTop = true;
+      }
       return {
-        scrollTop, bar: bar ? [Math.round(bar.top), Math.round(bar.bottom)] : null,
+        scrollTop, sh: scroller?.scrollHeight ?? null, ch: scroller?.clientHeight ?? null, scrolledToTop,
+        bar: bar ? [Math.round(bar.top), Math.round(bar.bottom)] : null,
         buttons, allWhole: buttons.every(b => b.present && b.whole && b.hit && b.labelWhole),
-        lineInside: line && bar ? whole(line, bar) : false, limitsInside: limits && bar ? whole(limits, bar) : false,
+        lineInside: insideNow.lineInside, limitsInside: insideNow.limitsInside,
         barInsideSheet: bar && sheet ? bar.bottom <= sheet.bottom + 1 && bar.top >= sheet.top - 1 && bar.left >= sheet.left - 1 && bar.right <= sheet.right + 1 : false,
       };
     });
     await shot(page, `${name}-at-rest`);
-    gated('sheet-buttons-at-rest', atRest.scrollTop >= 0 && atRest.scrollTop <= 1 && atRest.allWhole, `scrollTop ${atRest.scrollTop} (rest, no harness scroll); buttons ${JSON.stringify(atRest.buttons)}`);
-    gated('sheet-effects-limits-inside', atRest.lineInside && atRest.limitsInside, `effects line inside ${atRest.lineInside}, Limits inside ${atRest.limitsInside}`);
+    // At rest: content that fits rests at scrollTop 0; content that overflows rests end-pinned
+    // (D2-r3 rest pin). Both are rest — the buttons must be whole and hit-testable either way.
+    const endPinned = atRest.sh !== null && atRest.ch !== null && atRest.scrollTop >= atRest.sh - atRest.ch - 1;
+    gated('sheet-buttons-at-rest', atRest.allWhole && (atRest.scrollTop <= 1 || endPinned), `scrollTop ${atRest.scrollTop}/${atRest.sh}/${atRest.ch}${atRest.scrolledToTop ? ' (rest end-pinned, no harness scroll)' : ' (rest, no harness scroll)'}; buttons ${JSON.stringify(atRest.buttons)}`);
+    gated('sheet-effects-limits-inside', atRest.lineInside && atRest.limitsInside, `effects line inside ${atRest.lineInside}, Limits inside ${atRest.limitsInside}${atRest.scrolledToTop ? ' (verified via the bar\'s own scrollTop 0; rest position restored)' : ''}`);
     gated('sheet-bar-inside-sheet', atRest.barInsideSheet, `bar ${JSON.stringify(atRest.bar)} inside the sheet root`);
     // F-SHEET-SHORT: on a short compact root the menu frame has only a maxHeight (cover = root.height
     // − 2×margin), so the bar's percentage maxHeight may not resolve — and the buttons are LAST, so a
