@@ -73,7 +73,7 @@ describe("SelectionHeader", () => {
 });
 
 describe("SelectionBar", () => {
-  const bar = (count: number, takeover = control(), auto = control(), archive = control()) => ({ takeover, auto, archive, tree: walk(SelectionBar({ count, takeover, auto, archive, colors: COLORS })) });
+  const bar = (count: number, takeover = control(), auto = control(), archive = control(), disclosure: string | null = null) => ({ takeover, auto, archive, tree: harness.current.render(() => walk(SelectionBar({ count, takeover, auto, archive, colors: COLORS, disclosure }))) });
   const ids = ["selection-takeover", "selection-takeover-auto", "selection-archive"];
   const buttons = (tree: Element[]) => ids.map((id) => tree.find((node) => node.type === "Pressable" && node.props.testID === id)!);
 
@@ -95,9 +95,80 @@ describe("SelectionBar", () => {
       expect(icons(tree)).toEqual(["ChevronDown"]);
       expect(buttons(tree).map((button) => texts(walk(button)).join(""))).toEqual(["Take over 12", "Auto", "Archive 12"]);
       expect(buttons(tree).map((button) => [style(button).flexBasis, style(button).flexGrow, style(button).flexShrink])).toEqual([["auto", 2, undefined], ["auto", 0, undefined], ["auto", 2, undefined]]);
-      // Large text wraps Archive below the Take over group rather than cutting any label.
-      expect((byTestId(tree, "selection-bar")!.props.children as { props: { style: object } }[])[0]!.props.style).toMatchObject({ flexDirection: "row", flexWrap: "wrap" });
     } finally { screen.width = 390; }
+  });
+
+  it("lays the buttons row out without flexWrap, inside a bar that scrolls within a maxHeight (R38-D3-r1/D2)", () => {
+    const tree = bar(2).tree;
+    // R38-D3-r1: Yoga's StretchFlexBasis errata inflates a wrapped row to two lines while every button
+    // sits on line one, so the row never wraps; stacking is the measured choice below.
+    const row = byTestId(tree, "selection-buttons-row")!;
+    expect(row.props.style).toMatchObject({ flexDirection: "row", gap: 8 });
+    expect(row.props.style.flexWrap).toBeUndefined();
+    // R38 D2: the bar caps at 60% of its parent and scrolls inside that instead of pushing the list out.
+    const root = byTestId(tree, "selection-bar")!;
+    expect(root.props.style).toMatchObject({ maxHeight: "60%", flexShrink: 1, paddingTop: 6, borderTopWidth: 1 });
+    expect(root.props.children.type).toBe("ScrollView");
+    expect(root.props.children.props.style).toMatchObject({ flexGrow: 0, flexShrink: 1 });
+  });
+
+  it("stacks Archive under the takeover group exactly when the measured intrinsic widths overflow the row, and keeps it stacked (R38-D3-r1)", () => {
+    // The decision reads the row's measured width and the labels' intrinsic widths, off the layout path.
+    const draw = () => harness.current.render(() => walk(SelectionBar({ count: 2, takeover: control(), auto: control(), archive: control(), colors: COLORS })));
+    const layout = (element: Element, width: number) => (element.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width, height: 44 } } });
+    // One line: everything fits.
+    let tree = draw();
+    layout(byTestId(tree, "selection-buttons-row")!, 400);
+    const measurer = byTestId(tree, "selection-label-measure")!;
+    const labels = (measurer.props.children as Element[]).map((child) => (child.props.onLayout as (event: unknown) => void));
+    labels[0]!({ nativeEvent: { layout: { x: 0, y: 0, width: 77, height: 16 } } });
+    labels[1]!({ nativeEvent: { layout: { x: 0, y: 0, width: 30, height: 16 } } });
+    labels[2]!({ nativeEvent: { layout: { x: 0, y: 0, width: 58, height: 16 } } });
+    tree = draw();
+    expect(byTestId(tree, "selection-buttons-row")!.props.style).toMatchObject({ flexDirection: "row" });
+    expect(tree.filter((node) => (node.type as { name?: string }).name === "BarButton")[2]!.props.grow).toBe(2);
+    // Stacked: the same labels measured against a narrower row (text200-like widths overflow it).
+    tree = draw();
+    layout(byTestId(tree, "selection-buttons-row")!, 300);
+    const wide = byTestId(tree, "selection-label-measure")!;
+    const wideLabels = (wide.props.children as Element[]).map((child) => (child.props.onLayout as (event: unknown) => void));
+    wideLabels[0]!({ nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 16 } } });
+    wideLabels[1]!({ nativeEvent: { layout: { x: 0, y: 0, width: 60, height: 16 } } });
+    wideLabels[2]!({ nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 16 } } });
+    tree = draw();
+    expect(tree.filter((node) => (node.type as { name?: string }).name === "BarButton")[2]!.props.grow).toBe(0);
+    // Stable once stacked: the same measurements draw the same stack again.
+    tree = draw();
+    expect(byTestId(tree, "selection-buttons-row")!.props.style).toMatchObject({ flexDirection: "column" });
+  });
+
+  it("clamps the takeover disclosure to two lines with a Limits control that starts collapsed, flips expanded on press and takes a 44pt target (R38-D1)", () => {
+    const disclosure = "Saves a compact handoff, then a wall of host limits long enough to fill twenty-five lines on a phone.";
+    let tree = bar(2, control(), control(), control(), disclosure).tree;
+    const line = byTestId(tree, "selection-takeover-disclosure")!;
+    const inline = (line.props.children as string[] | string); expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline).startsWith("Take over: Saves a compact handoff")).toBe(true);
+    expect(line.props.numberOfLines).toBe(2);
+    const limits = byTestId(tree, "selection-limits")!;
+    expect(limits.props).toMatchObject({ accessibilityRole: "button", accessibilityState: { expanded: false }, hitSlop: 6 });
+    const limitStyle = (limits.props.style as (state: object) => Record<string, unknown>)({ pressed: false, focused: false });
+    expect(limitStyle.minHeight).toBeGreaterThanOrEqual(44);
+    expect(limitStyle.minWidth).toBeGreaterThanOrEqual(44);
+    press(limits);
+    tree = bar(2, control(), control(), control(), disclosure).tree;
+    expect(byTestId(tree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: true });
+  });
+
+  it("shows the effects line only while Take over can start, and clamps every reason line to one", () => {
+    const refusal = bar(2, control("This host is offline."), control(), control(), "Take over: effects text.").tree;
+    expect(byTestId(refusal, "selection-takeover-disclosure")).toBeUndefined();
+    expect(byTestId(refusal, "selection-limits")).toBeUndefined();
+    const enabled = bar(2, control(), control(), control("Archive waits."), "Take over: effects text.").tree;
+    expect(byTestId(enabled, "selection-takeover-disclosure")!.props.numberOfLines).toBe(2);
+    const reasons = enabled.filter((node) => node.type === "Text" && node.props.numberOfLines === 1 && !node.props.testID && (node.props.children as string) !== "Auto");
+    expect(reasons.map((node) => node.props.children)).toContain("Archive waits.");
+    const noneSelected = bar(0).tree;
+    expect(texts(noneSelected)).toContain("Select sessions first.");
+    expect(byTestId(noneSelected, "selection-takeover-disclosure")).toBeUndefined();
   });
   it("disables every action with nothing selected and says so once", () => {
     const b = bar(0, control("This host is offline."), control(), control("This host is offline."));

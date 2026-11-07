@@ -155,6 +155,10 @@ function listRowKey(row: ListRow): string {
 
 /** A row's height before any row has been measured at the list's width. */
 const ESTIMATED_ROW_HEIGHT = 96;
+/** While selecting on a compact screen the list keeps the larger of this share of the screen root and 3 full rows (R38 D2). */
+const SELECTING_LIST_MIN_SHARE = 0.4;
+const SELECTING_LIST_MIN_ROWS = 3;
+const selectingListFloor = (rootHeight: number) => Math.max(rootHeight * SELECTING_LIST_MIN_SHARE, SELECTING_LIST_MIN_ROWS * ESTIMATED_ROW_HEIGHT);
 /** A reader this close to an end of the list is at that end. */
 const LIST_EDGE = 1;
 /** Scroll events this close together are one gesture; the list holds no place for the reader during it. */
@@ -3483,7 +3487,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         backgroundColor: colors.surface0,
         paddingTop: compact ? 12 : WIDE_SCREEN_PADDING,
         paddingHorizontal: compact ? 12 : 18,
-        paddingBottom: compact ? 20 : WIDE_SCREEN_PADDING,
+        // R38 D3, measured: the bar's last line sits this padding above the nav's top border, so compact
+        // keeps only a 4 pt breath instead of the old 20 pt of dead space. Wide is unchanged.
+        paddingBottom: compact ? 4 : WIDE_SCREEN_PADDING,
         gap: TOOLBAR_LAYOUT_GAP,
       }}
     >
@@ -3546,7 +3552,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         keyboardShouldPersistTaps={compact ? "handled" : undefined}
         // No platform anchoring: it follows the first visible row, so a live re-sort of that row jumps the list.
         // The screen keeps the reader's place itself; see createRowLayout.
-        style={pageDocument() ? NO_SCROLL_ANCHOR : undefined}
+        // While selecting on compact, the list keeps its floor (R38 D2) and takes its room as flex (basis 0):
+        // with the bar mounted, the list's content-sized basis would otherwise overflow the screen on paper and
+        // shrink the bar below its own content, clipping the effects line under the nav.
+        style={[bulkSelection.selecting && compact ? { minHeight: selectingListFloor(rootSize.height), flex: 1 } : null, pageDocument() ? NO_SCROLL_ANCHOR : null]}
         scrollEventThrottle={16}
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader === null ? null : <View onLayout={rowLayout.onHeaderLayout}>{listHeader}</View>}
