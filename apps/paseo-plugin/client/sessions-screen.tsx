@@ -3566,10 +3566,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         keyboardShouldPersistTaps={compact ? "handled" : undefined}
         // No platform anchoring: it follows the first visible row, so a live re-sort of that row jumps the list.
         // The screen keeps the reader's place itself; see createRowLayout.
-        // While selecting on compact, the list keeps its floor (R38 D2) and takes its room as flex (basis 0):
-        // with the bar mounted, the list's content-sized basis would otherwise overflow the screen on paper and
-        // shrink the bar below its own content, clipping the effects line under the nav.
-        style={[bulkSelection.selecting && compact ? { minHeight: selectingListFloor(rootSize.height, listTop), flex: 1 } : null, pageDocument() ? NO_SCROLL_ANCHOR : null]}
+        // While selecting, the list takes its room as flex (basis 0) on EVERY layout (R38 V1): with the
+        // bar mounted, the list's content-sized basis overflows the column on paper and Yoga shrinks the
+        // bar below its own content, hiding the effects line and Limits inside the bar's scroll. On
+        // compact the list additionally keeps its floor (R38 D2); on wide/desktop the floor does not apply.
+        style={[bulkSelection.selecting ? (compact ? { minHeight: selectingListFloor(rootSize.height, listTop), flex: 1 } : { flex: 1 }) : null, pageDocument() ? NO_SCROLL_ANCHOR : null]}
         scrollEventThrottle={16}
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader === null ? null : <View onLayout={rowLayout.onHeaderLayout}>{listHeader}</View>}
@@ -3638,7 +3639,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       />
       {/* Board D1's sticky bar: the frozen selection's two actions; otherwise an unfinished takeover's way back to its results. */}
       {bulkSelection.selecting ? null : ops.notice}
-      {bulkSelection.selecting ? <SelectionBar count={bulkSelection.selected.length} colors={colors} archiveRef={bulkReviewRef} disclosure={ops.takeover(selectedSeats).disclosure}
+      {bulkSelection.selecting ? <SelectionBar count={bulkSelection.selected.length} colors={colors} archiveRef={bulkReviewRef} disclosure={ops.takeover(selectedSeats).disclosure} hasLimits={ops.takeover(selectedSeats).limits}
         takeover={{ unavailable: ops.takeover(selectedSeats).unavailable, onPress: ops.takeover(selectedSeats).start }}
         auto={{ unavailable: ops.takeover(selectedSeats).auto, onPress: ops.takeover(selectedSeats).choose }}
         archive={{ unavailable: !canStart ? "Archive waits for the host and any running archive." : bulkOpen ? "The archive review is open." : includeArchived ? "Leave Archived to archive sessions." : null,

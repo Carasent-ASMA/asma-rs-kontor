@@ -3,6 +3,7 @@ import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { spaceActivates, type Colors } from "./page-controls";
 import { useControlHelp } from "./control-help";
+import { TAKEOVER_EFFECTS } from "./session-takeover";
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 const focusRing = (colors: Colors, focused?: boolean) => focused && Platform.OS === "web" ? { outlineStyle: "solid" as const, outlineWidth: 2, outlineColor: colors.accent } : {};
@@ -77,10 +78,12 @@ function BarButton({ testID, label, accessibilityLabel, icon, trailing, unavaila
  * reason is written under the bar. The bar's text is bounded: at most two one-line reasons, and the takeover disclosure
  * clamped to two lines with a Limits control that holds the whole text open in the existing help popover (R38 D1).
  */
-export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null }: {
+export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null, hasLimits = false }: {
   count: number; takeover: SelectionControl; auto: SelectionControl; archive: SelectionControl; colors: Colors;
   /** What Take over does and the host's stated limits, shown while it can start. */
   disclosure?: string | null;
+  /** The host stated limits beyond the fixed effects sentence: the Limits control exists only then (R38 V2). */
+  hasLimits?: boolean;
   /** Archive N, where focus returns after its review closes. */
   archiveRef?: Ref<View>;
 }) {
@@ -139,16 +142,17 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
       {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
       {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
       {effects ? <View testID="selection-takeover-effects" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-        {/* R38-D3, measured with the 44 pt Limits target: the two lines at lineHeight 22 fill the same
-          44 pt the target occupies, so the row carries no empty band under the last text line and the
-          bar's last text line keeps the ≤ 8 pt breath above the nav (F2). */}
-        <Text testID="selection-takeover-disclosure" numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{effects}</Text>
-        <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
+        {/* D1: the host limits leave the inline text — the line is the fixed effects sentence only
+          (R38 V2); the full effects-plus-limits disclosure stays behind the Limits popover. R38 F2:
+          lineHeight 22 keeps the two-line row at the 44 pt the Limits target occupies, so the row
+          carries no empty band under the last text line (the ≤ 8 pt breath holds). */}
+        <Text testID="selection-takeover-disclosure" numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{`Take over: ${TAKEOVER_EFFECTS}`}</Text>
+        {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
           accessibilityState={{ expanded: limits.open }} accessibilityHint="Opens the full take over effects and this host's stated limits."
           hitSlop={6} onPress={() => (limits.open ? limits.dismiss() : limits.hold())}
           style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
           <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
-        </Pressable>
+        </Pressable> : null}
       </View> : null}
     </ScrollView>
   </View>;

@@ -1,5 +1,6 @@
 import { isValidElement } from "react";
 import { describe, expect, it, vi, type Mock } from "vitest";
+import { TAKEOVER_EFFECTS } from "../client/session-takeover";
 
 // The header and bar are hook-free; a session row keeps its own hooks, drawn on a fresh renderer per row.
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
@@ -12,11 +13,11 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 // The ControlHelp provider is replaced by a stateful double: hold/dismiss move `open` exactly as the
 // provider would, and a test simulates the provider's own dismissals (Escape, outside press) by setting
 // `open` back — the control's expanded flag must follow, not its own press history (R38 F1).
-const helpDouble = vi.hoisted(() => ({ open: false, holds: 0, dismisses: 0 }));
-vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ bindings: {}, open: helpDouble.open,
+const helpDouble = vi.hoisted(() => ({ open: false, holds: 0, dismisses: 0, lastText: null as string | null }));
+vi.mock("../client/control-help", () => ({ useControlHelp: (text: string | null) => { helpDouble.lastText = text; return { bindings: {}, open: helpDouble.open,
   hold: () => { helpDouble.holds++; helpDouble.open = true; },
   dismiss: () => { helpDouble.dismisses++; helpDouble.open = false; },
-  forget: () => {} }),
+  forget: () => {} }; },
   useActionHelp: () => ({ bindings: {}, forget: () => {} }) }));
 
 import { SelectionBar, SelectionHeader, type SelectionControl } from "../client/session-selection";
@@ -82,7 +83,7 @@ describe("SelectionHeader", () => {
 });
 
 describe("SelectionBar", () => {
-  const bar = (count: number, takeover = control(), auto = control(), archive = control(), disclosure: string | null = null) => ({ takeover, auto, archive, tree: harness.current.render(() => walk(SelectionBar({ count, takeover, auto, archive, colors: COLORS, disclosure }))) });
+  const bar = (count: number, takeover = control(), auto = control(), archive = control(), disclosure: string | null = null, hasLimits = true) => ({ takeover, auto, archive, tree: harness.current.render(() => walk(SelectionBar({ count, takeover, auto, archive, colors: COLORS, disclosure, hasLimits }))) });
   const ids = ["selection-takeover", "selection-takeover-auto", "selection-archive"];
   const buttons = (tree: Element[]) => ids.map((id) => tree.find((node) => node.type === "Pressable" && node.props.testID === id)!);
 
@@ -165,10 +166,12 @@ describe("SelectionBar", () => {
 
   it("clamps the takeover disclosure to two lines with a Limits control that starts collapsed, flips expanded on press and takes a 44pt target (R38-D1)", () => {
     helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
-    const disclosure = "Saves a compact handoff, then a wall of host limits long enough to fill twenty-five lines on a phone.";
+    const disclosure = `${TAKEOVER_EFFECTS} Plus a wall of host limits long enough to fill twenty-five lines on a phone.`;
     let tree = bar(2, control(), control(), control(), disclosure).tree;
     const line = byTestId(tree, "selection-takeover-disclosure")!;
-    const inline = (line.props.children as string[] | string); expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline).startsWith("Take over: Saves a compact handoff")).toBe(true);
+    // R38 V2: the inline line is EXACTLY the fixed effects sentence — the host limits leave the text
+    // entirely and ride only the Limits popover (the hook receives the full `disclosure` prop).
+    const inline = (line.props.children as string[] | string); expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline)).toBe(`Take over: ${TAKEOVER_EFFECTS}`);
     expect(line.props.numberOfLines).toBe(2);
     expect(line.props.style).toMatchObject({ lineHeight: 22 }); // two lines fill the 44pt Limits row: no dead band under the last line (R38 F2)
     // No second, unclamped copy of the effects text anywhere in the bar (R38 D1): the only carrier is
@@ -192,6 +195,17 @@ describe("SelectionBar", () => {
     press(byTestId(tree, "selection-limits"));
     expect(helpDouble.holds).toBe(2);
     expect(helpDouble.dismisses).toBe(0);
+    // R38 V2: the Limits popover keeps the FULL effects-plus-limits disclosure — the hook's text is the
+    // whole prop, not the clipped inline sentence (M-limits-without-limits dies here).
+    expect(helpDouble.lastText).toBe(`Take over: ${disclosure}`);
+  });
+
+  it("renders no Limits control when the host states no limits, while the effects line stays (R38 V2)", () => {
+    let tree = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`, false).tree;
+    expect(byTestId(tree, "selection-takeover-disclosure")).toBeDefined();
+    expect(byTestId(tree, "selection-limits")).toBeUndefined();
+    tree = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`, true).tree;
+    expect(byTestId(tree, "selection-limits")).toBeDefined();
   });
 
   it("shows the effects line only while Take over can start, and clamps every reason line to one", () => {

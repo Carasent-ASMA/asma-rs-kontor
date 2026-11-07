@@ -877,8 +877,12 @@ describe("Start or switch sheet", () => {
     expect((barRoot.props.children as { type: unknown }).type).toBe("ScrollView");
     const line = byTestId(barTree, "selection-takeover-disclosure")!;
     const inline = line.props.children as string[] | string;
-    expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline)).toContain("Take over: Saves a compact handoff");
+    // R38 V2: the line is EXACTLY "Take over: " + the effects sentence — no host limit rides inline;
+    // the full disclosure (effects + limits) stays only in the Limits popover's hook text.
+    expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline)).toBe(`Take over: ${TAKEOVER_EFFECTS}`);
     expect(line.props.numberOfLines).toBe(2);
+    // The sheet passes the host's limits state through, so the Limits control renders here.
+    expect((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props.hasLimits).toBe(true);
     expect(byTestId(barTree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: false });
     expect(byTestId(barTree, "selection-limits")!.props.accessibilityRole).toBe("button");
   });

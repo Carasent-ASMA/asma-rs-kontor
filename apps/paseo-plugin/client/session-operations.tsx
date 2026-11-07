@@ -126,6 +126,8 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
     /** The selection bar's takeover of `seats`: Auto at once, or the picker for this operation only. */
     takeover: (seats: readonly DirectoryEntry[]) => ({
       unavailable: takeoverUnavailable(seats), auto: reason("takeoverRoute"), disclosure,
+      /** The host stated limits beyond the fixed effects sentence; the Limits control exists only then. */
+      limits: disclosed.length > 0,
       start: () => { if (!takeoverUnavailable(seats)) start(seats, null); }, choose: () => { if (!takeoverUnavailable(seats)) setSheet({ kind: "picker", seats }); },
     }),
     /** Whole-session totals may be read on this host. */

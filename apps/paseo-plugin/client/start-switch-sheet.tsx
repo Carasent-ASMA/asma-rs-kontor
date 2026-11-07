@@ -420,7 +420,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate} style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
   // Board D1's sticky bar under the list, and the sheets the row menu and the bar open.
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
-  const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure}
+  const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure} hasLimits={takeover.limits}
     takeover={{ unavailable: takeover.unavailable, onPress: takeover.start }} auto={{ unavailable: takeover.auto, onPress: takeover.choose }}
     archive={{ unavailable: archive.disabled ? "Archive waits for the host and any running archive." : null, onPress: archiveSelected }} /> : mode === "switch" ? ops.notice : null;
   const detailsEntry = detailsId === null ? null : entries.find((entry) => entry.id === detailsId) ?? null;
