@@ -129,6 +129,9 @@ describe("SelectionBar", () => {
     // R38 D2: the bar caps at 60% of its parent and scrolls inside that instead of pushing the list out.
     const root = byTestId(tree, "selection-bar")!;
     expect(root.props.style).toMatchObject({ maxHeight: "60%", flexShrink: 1, paddingTop: 6, borderTopWidth: 1 });
+    // R38-D2-r2: the bar carries NO minHeight of its own — on a short root it takes what the capped
+    // list floor leaves and its scroller owns the buttons (M-bar-floor-uncapped dies here).
+    expect(JSON.stringify(root.props.style)).not.toContain('"minHeight"');
     const scroller = root.props.children as { type: unknown; props: { style: Record<string, unknown> } };
     expect(scroller.type).toBe("ScrollView");
     expect(scroller.props.style).toMatchObject({ flexGrow: 0, flexShrink: 1 });
