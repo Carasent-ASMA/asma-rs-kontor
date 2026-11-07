@@ -16,6 +16,12 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.PREVIEW_ORIGIN, output = process.env.EVIDENCE_DIR;
 assert.ok(origin && output, 'Supply the isolated fixture origin and evidence directory');
 fs.mkdirSync(output, { recursive: true });
+// R38 V2: the inline line is exactly "Take over: " + the fixed effects sentence. Read the constant
+// from the client source so the harness cannot drift from it (session-takeover.tsx:18).
+const TAKEOVER_EFFECTS = fs.readFileSync(path.join(__dirname, '../client/session-takeover.tsx'), 'utf8')
+  .match(/TAKEOVER_EFFECTS = "([^"]+)"/)?.[1];
+assert.ok(TAKEOVER_EFFECTS && TAKEOVER_EFFECTS.length > 80, 'TAKEOVER_EFFECTS extracted from the client source');
+const INLINE_LINE = `Take over: ${TAKEOVER_EFFECTS}`;
 const report = { cases: [], base: process.env.R38_RUN_LABEL || 'run', browser: null, nativeDeviceAndScreenReaderAcceptance: 'unverified' };
 let browser;
 
@@ -45,6 +51,7 @@ async function measure(page) {
     const navLabels = navNode ? [...navNode.querySelectorAll('[role="tab"]')].reduce((bottom, tab) => Math.max(bottom, tab.getBoundingClientRect().bottom), 0) : null;
     const buttons = ['selection-takeover', 'selection-takeover-auto', 'selection-archive'].map(box).filter(Boolean);
     const buttonsRowBottom = buttons.length ? Math.max(...buttons.map(node => node.bottom)) : null;
+    const buttonsRowTop = buttons.length ? Math.min(...buttons.map(node => node.top)) : null;
     const safeArea = document.querySelector('#root > div');
     const disclosure = document.querySelector('[data-testid="selection-takeover-disclosure"]');
     const measureBox = document.querySelector('[data-testid="selection-label-measure"]');
@@ -57,6 +64,15 @@ async function measure(page) {
       const rect = node.getBoundingClientRect();
       if (rect.top >= bar.bottom - 0.5) return bottom;                    // below the fold: not visible
       return Math.max(bottom, Math.min(rect.bottom, bar.bottom));         // visible, clamped to the bar's clip
+    }, 0) : null;
+    // R38 NOTE-A: the glyph (Range content) rect of that same last visible text line, reported NEXT TO
+    // the line-box number — the box carries half-leading, the Range rect tracks the laid-out content.
+    const lastGlyphBottom = bar ? textNodes.reduce((bottom, node) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.top >= bar.bottom - 0.5) return bottom;
+      const range = document.createRange(); range.selectNodeContents(node);
+      const glyph = range.getBoundingClientRect();
+      return Math.max(bottom, Math.min(glyph.bottom, bar.bottom));
     }, 0) : null;
     const scroller = barNode?.querySelector('div');
     const barChildren = scroller ? [...scroller.children].filter(node => node.dataset.testid !== 'selection-label-measure')
@@ -78,16 +94,19 @@ async function measure(page) {
       navLabelsBottom: navLabels,
       screen: screen ? { top: screen.top, bottom: screen.bottom, height: screen.height, paddingBottom: screenStyle?.paddingBottom } : null,
       gaps: {
-        buttonsRowToNextLine: bar && buttonsRowBottom !== null ? Math.min(...reasonLines.map(line => line.top), disclosure ? disclosure.getBoundingClientRect().top : Infinity) - buttonsRowBottom : null,
+        // R38-D2-r2 order: text first, buttons row LAST — the D3 no-dead-band contract now measures the
+        // gap from the last text line ABOVE the row to the row's top (same ≤ 6 contract, inverted pair).
+        buttonsRowGapFromText: bar && buttonsRowTop !== null ? buttonsRowTop - Math.max(...reasonLines.map(line => line.bottom), disclosure ? disclosure.getBoundingClientRect().bottom : 0) : null,
         barLastLineToNavTop: bar && nav ? nav.top - bar.bottom : null,
         barLastTextToNavTop: bar && nav && lastTextBottom !== null ? nav.top - lastTextBottom : null,
+        barLastGlyphToNavTop: bar && nav && lastGlyphBottom !== null ? nav.top - lastGlyphBottom : null,
         underNav: nav && navLabels ? nav.bottom - navLabels : null,
         navToViewportBottom: nav ? innerHeight - nav.bottom : null,
         listToBar: bar && list ? bar.top - list.bottom : null,
         screenBottomToNavTop: screen && nav ? nav.top - screen.bottom : null,
       },
       reasons: reasonLines,
-      disclosure: disclosure ? { chars: (disclosure.textContent ?? '').length, inlineHeight: disclosure.getBoundingClientRect().height, clipped: disclosure.scrollHeight > disclosure.clientHeight + 1 } : null,
+      disclosure: disclosure ? { chars: (disclosure.textContent ?? '').length, text: disclosure.textContent ?? '', inlineHeight: disclosure.getBoundingClientRect().height, clipped: disclosure.scrollHeight > disclosure.clientHeight + 1 } : null,
       measureBox: measure,
       safeAreaViewPaddingBottom: safeArea ? getComputedStyle(safeArea).paddingBottom : null,
     };
@@ -155,9 +174,10 @@ async function pass(width, height, theme, largeText, extra = {}) {
     await enterSelection(page, 'agt_lsa_99101');
     const one = await measureSelection(page, `${name}-1-selected`, '1');
     assert.ok(one.geometry.bar, `${name}: the selection bar renders at 1`);
-    // The disclosure is the production wall: TAKEOVER_EFFECTS + the host limits, 1,700 characters or more.
+    // R38 V2: the inline line is EXACTLY "Take over: " + the effects sentence — the host limits ride
+    // only the Limits popover (whose held text stays the full ~1,700-char production disclosure).
     assert.ok(one.geometry.disclosure, `${name}: the takeover disclosure line renders while Take over can start`);
-    assert.ok(one.geometry.disclosure.chars >= 1700, `${name}: disclosure is production length (>=1700 chars), got ${one.geometry.disclosure.chars}`);
+    assert.equal(one.geometry.disclosure.text, INLINE_LINE, `${name}: the inline line is the effects sentence only (V2)`);
 
     // The 2/5/all progression and the row-tap check need visible rows; on a short root (R38 F3) the
     // floor yields to the bar's buttons and the list intentionally has no room, so they are skipped —
@@ -208,11 +228,19 @@ async function pass(width, height, theme, largeText, extra = {}) {
     if (one.geometry.disclosure) {
       const twoLineBound = largeText ? 2 * 44 + 2 : 2 * 22 + 2;
       gated('effects-bounded-2-lines', one.geometry.disclosure.inlineHeight <= twoLineBound, `effects line ${Math.round(one.geometry.disclosure.inlineHeight)}px (unbounded at base renders ~25 lines)`);
+      // R38 V2: the visible two-line text is what a screen reader reads — no host limit rides inline.
+      gated('inline-line-text', one.geometry.disclosure.text === INLINE_LINE, `${one.geometry.disclosure.chars} chars, exactly "Take over: " + the effects sentence (limits only in the Limits popover)`);
+      // R38 D2-r2: NOTHING on the Sessions screen draws under the nav — the bar's bottom stays at
+      // least 4 pt above the screen root's bottom at every text size (the root is the bar's parent).
+      const screenBottom = one.geometry.screen?.bottom ?? null;
+      if (touch && screenBottom !== null && one.geometry.bar) {
+        gated('bar-bottom-breath', one.geometry.bar.bottom <= screenBottom - 4 + 0.5, `bar bottom ${Math.round(one.geometry.bar.bottom)} vs root bottom ${Math.round(screenBottom)} (breath ${Math.round(screenBottom - one.geometry.bar.bottom)}pt)`);
+      }
     }
     // D3: buttons row to next line <= 6; bar's last VISIBLE text line to nav top <= 8 (F2 honest
     // metric — the box number is kept for the record); under nav = inset + <= 6.
-    if (touch && one.geometry.gaps.buttonsRowToNextLine !== null && Number.isFinite(one.geometry.gaps.buttonsRowToNextLine)) {
-      gated('buttons-row-gap', one.geometry.gaps.buttonsRowToNextLine <= 6, `${Math.round(one.geometry.gaps.buttonsRowToNextLine)}px`);
+    if (touch && one.geometry.gaps.buttonsRowGapFromText !== null && Number.isFinite(one.geometry.gaps.buttonsRowGapFromText)) {
+      gated('buttons-row-gap', one.geometry.gaps.buttonsRowGapFromText <= 6, `${Math.round(one.geometry.gaps.buttonsRowGapFromText)}px (last text line above the row -> row top)`);
     }
     if (touch && one.geometry.gaps.barLastTextToNavTop !== null) {
       // When the bar's text yields (F3: the effects row scrolls away on a short root), the honest
@@ -223,23 +251,38 @@ async function pass(width, height, theme, largeText, extra = {}) {
         ? `effects row yields (clipped): box -> nav ${Math.round(one.geometry.gaps.barLastLineToNavTop ?? 0)}px`
         : `last text -> nav ${Math.round(one.geometry.gaps.barLastTextToNavTop)}px (box -> nav ${Math.round(one.geometry.gaps.barLastLineToNavTop ?? 0)}px)`);
     }
-    // R38 F3: the buttons row stays fully visible at every compact root height.
+    // R38-D2-r2: nothing draws under the nav. Where everything fits, the buttons row is fully visible
+    // above the nav; where the root is too short (short roots at text200), the bar takes what is left
+    // and ITS OWN ScrollView scrolls the buttons — proved by scrolling to the end: Archive whole and
+    // tappable (elementFromPoint at its centre is the Archive control). No label is cut, no control
+    // is covered, at both text sizes.
     if (touch && one.geometry.buttonRects?.length === 3 && one.geometry.nav) {
       const viewportWidth = one.geometry.viewport.width;
       const inBar = one.geometry.buttonRects.every(rect => rect.top >= (one.geometry.bar?.top ?? 0) - 2 && rect.bottom <= one.geometry.nav.top + 1 && rect.left >= -1 && rect.right <= viewportWidth + 1);
       if (inBar) {
-        gated('buttons-visible', true, 'takeover/auto/archive fully inside the bar, above the nav');
-      } else if (largeText) {
-        // Measured physical limit, not a silent pick (R38 F3): at 430x330 with doubled text the chrome
-        // above the list (listTop ~127) plus the stacked buttons row (96) plus the bar's chrome (7) and
-        // the screen's paddings exceed the 219 pt screen root, so the nav overlays the archive button's
-        // lower edge by the overflow (~19 pt). Default text at the same viewport passes (single-line bar).
-        // The alternatives are clipping a label (forbidden by D3-r1) or shrinking the screen's own
-        // toolbar (outside R38's diff) — reported to the TPM instead.
-        report.cases.push({ name: `${name}-gate-buttons-visible`, status: 'LIMIT', detail: `stacked buttons (96) + bar chrome (7) + chrome above the list (${Math.round(one.geometry.listTop ?? 0)}) exceed the screen root; the nav overlays the archive button's lower edge` });
-        console.log(`${name}-gate-buttons-visible: LIMIT (physical minimum exceeded at this viewport with doubled text; see report)`);
+        gated('buttons-visible', true, 'takeover/auto/archive fully inside the bar, above the nav (no scroll needed)');
       } else {
-        gated('buttons-visible', false, 'takeover/auto/archive not fully inside the bar, above the nav');
+        // The bar yields: scroll its scroller to the end and prove Archive is whole and tappable there.
+        await page.evaluate(() => {
+          const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+          if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight;
+        });
+        await page.waitForTimeout(150);
+        const scrolled = await page.evaluate(() => {
+          const barNode = document.querySelector('[data-testid="selection-bar"]');
+          const archive = document.querySelector('[data-testid="selection-archive"]');
+          if (!barNode || !archive) return { whole: false, tappable: false };
+          const barBox = barNode.getBoundingClientRect(), box = archive.getBoundingClientRect();
+          const whole = box.top >= barBox.top - 1 && box.bottom <= barBox.bottom + 1 && box.left >= barBox.left - 1 && box.right <= barBox.right + 1;
+          const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+          const tappable = hit === archive || archive.contains(hit);
+          // And the label is not cut: the Range content rect stays inside the label's box.
+          const label = archive.querySelector('[dir="auto"]');
+          const range = document.createRange(); if (label) range.selectNodeContents(label);
+          const wholeLabel = !label || range.getBoundingClientRect().width <= label.getBoundingClientRect().width + 1;
+          return { whole, tappable, wholeLabel, scrollTop: Math.round(barNode.querySelector('div')?.scrollTop ?? 0) };
+        });
+        gated('buttons-visible', scrolled.whole && scrolled.tappable && scrolled.wholeLabel, `buttons yield to the root: bar's own scroll reaches Archive whole (${scrolled.whole}) and tappable (${scrolled.tappable}, label whole ${scrolled.wholeLabel}) at scroll ${scrolled.scrollTop}`);
       }
       const labelsWhole = await page.evaluate(() => [...document.querySelectorAll('[data-testid="selection-bar"] [role="button"] [dir="auto"]')].every((node) => {
         // CSS ellipsis is a paint effect: the DOM text keeps its full laid-out width, so the Range
@@ -355,6 +398,138 @@ async function insetPass(width, height) {
   }
 }
 
+// R38 V1/D2-r1: wide and iPad are measured and GATED like every other pass — no hard-coded PASS.
+// D1 applies at every width: the bar keeps its content (effects line + Limits, and a refused
+// action's reason line) fully inside itself, up to the 60% maximum; only the D3 spacing is
+// unchanged on wide (root paddingBottom 16, nav untouched).
+async function widePass(width, height) {
+  const name = `${width}x${height}-light`;
+  scaleText = false;
+  const context = await browser.newContext({ viewport: { width, height } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(`${origin}/?scenario=baseline&theme=light&layout=wide&archiveBusy=1`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
+    if (await hide.isVisible()) await hide.click();
+    const gated = (label, condition, detail) => {
+      report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail });
+      console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`);
+    };
+    await measureSelection(page, `${name}-0-selected`, '0');
+    await enterSelection(page, 'agt_lsa_99101');
+    const one = await measureSelection(page, `${name}-1-selected`, '1');
+    assert.ok(one.geometry.bar, `${name}: the bar renders on wide`);
+    assert.equal(one.geometry.disclosure.text, INLINE_LINE, `${name}: the inline line is the effects sentence only (V2 on wide)`);
+    // V1: the bar keeps its content — effects line AND the Limits control fully inside the bar box,
+    // not hidden inside its scroller (base shrank the bar to its minHeight and clipped both).
+    const inside = await page.evaluate(() => {
+      const bar = document.querySelector('[data-testid="selection-bar"]')?.getBoundingClientRect();
+      const line = document.querySelector('[data-testid="selection-takeover-disclosure"]')?.getBoundingClientRect();
+      const limits = document.querySelector('[data-testid="selection-limits"]')?.getBoundingClientRect();
+      const inBox = (box) => bar && box && box.top >= bar.top - 1 && box.bottom <= bar.bottom + 1 && box.left >= bar.left - 1 && box.right <= bar.right + 1;
+      return { bar, line: line ? [Math.round(line.top), Math.round(line.bottom)] : null, lineInside: inBox(line), limitsInside: inBox(limits) };
+    });
+    gated('wide-effects-limits-inside', !one.geometry.effectsClipped && inside.lineInside && inside.limitsInside,
+      `effectsClipped ${one.geometry.effectsClipped}; line ${JSON.stringify(inside.line)} inside bar ${inside.lineInside}; Limits inside ${inside.limitsInside}`);
+    // The deterministic refusal: archiveBusy holds the archive preview, so the bar's Archive control
+    // refuses for a real reason and the reason line must be VISIBLE inside the bar (D1 at every width).
+    await page.getByRole('button', { name: 'Review archive of 1 selected session', exact: true }).click();
+    await page.waitForTimeout(600);
+    const refusal = await page.evaluate(() => {
+      const barNode = document.querySelector('[data-testid="selection-bar"]');
+      const bar = barNode?.getBoundingClientRect();
+      const reason = [...(barNode?.querySelectorAll('[dir="auto"]') ?? [])].find(node => node.textContent === 'Archive waits for the host and any running archive.');
+      const box = reason?.getBoundingClientRect();
+      const inside = bar && box && box.top >= bar.top - 1 && box.bottom <= bar.bottom + 1 && box.height > 0;
+      return { present: !!reason, inside, bottom: box ? Math.round(box.bottom) : null, barBottom: bar ? Math.round(bar.bottom) : null };
+    });
+    gated('wide-reason-visible', refusal.present && refusal.inside, `refusal reason present ${refusal.present}, fully inside the bar ${refusal.inside} (line bottom ${refusal.bottom}, bar bottom ${refusal.barBottom})`);
+    // Only the D3 spacing is unchanged on wide: the screen root keeps the wide padding (16, untouched
+    // by the diff) and the nav is the same static chrome as at 0-selected (equal-base; absolute base
+    // numbers are in runs/base-final).
+    const baseChrome = await page.evaluate(() => {
+      const bar = document.querySelector('[data-testid="selection-bar"]');
+      const screenEl = bar?.parentElement, nav = document.querySelector('[role="tablist"][aria-label="Kontor views"]');
+      return { paddingBottom: screenEl ? getComputedStyle(screenEl).paddingBottom : null, navBox: nav?.getBoundingClientRect().toJSON?.() ?? null, navPadding: nav ? getComputedStyle(nav).paddingBottom : null };
+    });
+    const navTop0 = report.cases.find(result => result.name === `${name}-0-selected`)?.geometry?.nav;
+    const navEqual = baseChrome.navBox && navTop0 && Math.abs(baseChrome.navBox.top - navTop0.top) < 0.5 && Math.abs(baseChrome.navBox.height - navTop0.height) < 0.5;
+    // Wide has no compact bottom nav: the base-equality contract here is the root padding (16, untouched
+    // by the diff) and the nav chrome being identical to the same pass's 0-selected measurement.
+    gated('wide-root-nav-base', baseChrome.paddingBottom === '16px' && navEqual, `root paddingBottom ${baseChrome.paddingBottom} (wide base), nav chrome equal to 0-selected ${!!navEqual}`);
+    // Let the held preview finish so the fixture state is consistent, then close the review that opens.
+    await page.evaluate(() => window.releaseArchive?.());
+    await page.waitForTimeout(400);
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
+// R38 V3: with sessions selected in the switch sheet, the Limits popover must appear ABOVE the sheet,
+// in BOTH of the sheet's forms (wide popover, compact sheet). Proven by a hit test on the popover
+// TEXT: elementFromPoint at the panel's centre must return the panel itself (a z-order read is not
+// enough — a transparent overlay would win a z-order check but fail a hit test).
+async function switchSheetPass(width, height, form) {
+  const compact = width < 600;
+  const name = `switch-sheet-${form}-${width}x${height}`;
+  scaleText = false;
+  const context = await browser.newContext({ viewport: { width, height }, ...(compact ? { hasTouch: true, isMobile: true } : {}) });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    const gated = (label, condition, detail) => {
+      report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail });
+      console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`);
+    };
+    await page.goto(`${origin}/?scenario=baseline&theme=light&layout=${compact ? 'compact' : 'wide'}&sheet=switch`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
+    if (await hide.isVisible()) await hide.click();
+    await page.getByTestId('kontor-switch-heading').waitFor({ timeout: 15000 });
+    // Select a session FROM the sheet: its row menu's Select sessions starts the sheet's selection,
+    // which mounts the shared SelectionBar as the sheet's footer. The first VISIBLE row's menu is used
+    // (the sheet's list order puts agt_lsa_99101 below the fold at this viewport).
+    await page.getByTestId('session-actions-agt_qa_99103').click();
+    const menu = page.getByRole('dialog', { name: 'Session actions', exact: true });
+    await menu.getByTestId('session-action-select').click();
+    await menu.waitFor({ state: 'detached' });
+    await page.getByTestId('selection-bar').waitFor({ timeout: 15000 });
+    await page.waitForTimeout(300);
+    // Reach the Limits control the way an operator does — the bar's own scroll when tight — then press it.
+    await page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+      if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight;
+    });
+    await page.waitForTimeout(100);
+    await page.getByTestId('selection-limits').click();
+    await page.getByTestId('control-help').waitFor({ timeout: 15000 });
+    await page.waitForTimeout(150);
+    // Hit test on the popover TEXT: the panel's centre must resolve to the panel (or its content).
+    const hit = await page.evaluate(() => {
+      const panel = document.querySelector('[data-testid="control-help"]');
+      const box = panel.getBoundingClientRect();
+      const centre = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      const onTop = centre === panel || panel.contains(centre);
+      const viewportFit = box.left >= -1 && box.right <= innerWidth + 1 && box.top >= -1 && box.bottom <= innerHeight + 1;
+      return { onTop, viewportFit, centre: centre ? `${centre.tagName}${centre.closest('[data-testid]')?.getAttribute('data-testid') ?? ''}` : null, box: [Math.round(box.left), Math.round(box.top), Math.round(box.right), Math.round(box.bottom)] };
+    });
+    await shot(page, `${name}-limits-open`);
+    gated('popover-on-top', hit.onTop && hit.viewportFit, `elementFromPoint at panel centre -> ${hit.centre}; panel box ${JSON.stringify(hit.box)} inside viewport ${hit.viewportFit}`);
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
 (async () => {
   browser = await chromium.launch({ headless: true });
   report.browser = browser.version();
@@ -370,24 +545,18 @@ async function insetPass(width, height) {
       await pass(width, height, 'light', false, { inflat: 34, state: 'mywork' });
       await pass(width, height, 'light', true, { inflat: 34, state: 'mywork' });
     }
-    // R38 F3: short roots — the list floor yields, the bar's buttons stay fully visible (0/1 only).
+    // R38 F3/D2-r2: short roots — the list floor and the bar both yield to the root; the buttons stay
+    // reachable through the bar's own scroll (0/1 only).
     for (const [width, height] of [[430, 330], [393, 420]]) {
       await pass(width, height, 'light', false, { short: true });
       await pass(width, height, 'light', true, { short: true });
     }
-    // Wide is measured for the unchanged-metrics comparison; no gate assertions there.
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-    const page = await context.newPage();
-    try {
-      await page.goto(`${origin}/?scenario=baseline&theme=light&layout=wide`);
-      await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
-      const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
-      if (await hide.isVisible()) await hide.click();
-      await measureSelection(page, '1280x800-light-0-selected', '0');
-      await enterSelection(page, 'agt_lsa_99101');
-      const one = await measureSelection(page, '1280x800-light-1-selected', '1');
-      report.cases.push({ name: 'wide-metrics', status: 'PASS', bar: one.geometry.bar, screen: one.geometry.screen, nav: one.geometry.nav, gaps: one.geometry.gaps });
-    } finally { await context.close(); }
+    // R38 V1/D2-r1: wide and iPad — the bar keeps its content, gated, at 1280x800 and 820x1180.
+    await widePass(1280, 800);
+    await widePass(820, 1180);
+    // R38 V3: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the panel text.
+    await switchSheetPass(1280, 800, 'popover');
+    await switchSheetPass(430, 932, 'sheet');
   } finally {
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');

@@ -120,9 +120,26 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // label is ever cut.
   return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: 1, maxHeight: "60%" }}>
     <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }}>
-      {/* Buttons keep their labels' width. Archive stacks under the takeover group when the measured
-        intrinsic widths do not fit one line (large text), rather than any label being cut. The row never
-        uses flexWrap: see R38-D3-r1 above. */}
+      {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
+      {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
+      {effects ? <View testID="selection-takeover-effects" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+        {/* D1: the host limits leave the inline text — the line is the fixed effects sentence only
+          (R38 V2); the full effects-plus-limits disclosure stays behind the Limits popover. R38 F2:
+          lineHeight 22 keeps the two-line row at the 44 pt the Limits target occupies, so the row
+          carries no empty band under the last text line (the ≤ 8 pt breath holds). */}
+        <Text testID="selection-takeover-disclosure" numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{`Take over: ${TAKEOVER_EFFECTS}`}</Text>
+        {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
+          accessibilityState={{ expanded: limits.open }} accessibilityHint="Opens the full take over effects and this host's stated limits."
+          hitSlop={6} onPress={() => (limits.open ? limits.dismiss() : limits.hold())}
+          style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
+          <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
+        </Pressable> : null}
+      </View> : null}
+      {/* The buttons row is LAST in the scroll (R38-D2-r2): on a short root the bar takes what is left,
+        its own ScrollView shows the text first and scrolls the buttons — scrolling to its end shows
+        Archive whole and tappable. Buttons keep their labels' width; Archive stacks under the takeover
+        group when the measured intrinsic widths do not fit one line (large text), rather than any label
+        being cut. The row never uses flexWrap: see R38-D3-r1 above. */}
       <View testID="selection-buttons-row" onLayout={(event) => setRowWidth(event.nativeEvent.layout.width)}
         style={{ flexDirection: stacked ? "column" : "row", gap: 8 }}>
         <View style={{ flexGrow: stacked ? 0 : 3, flexBasis: "auto", alignSelf: stacked ? "stretch" : undefined, flexDirection: "row", gap: 1, borderRadius: 8, overflow: "hidden" }}>
@@ -141,21 +158,6 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
         <Text onLayout={measure("auto")} numberOfLines={1} style={{ fontSize: 13, fontWeight: "600" }}>Auto</Text>
         <Text onLayout={measure("archive")} numberOfLines={1} style={{ fontSize: 13, fontWeight: "600" }}>{archiveLabel}</Text>
       </View>
-      {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
-      {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
-      {effects ? <View testID="selection-takeover-effects" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-        {/* D1: the host limits leave the inline text — the line is the fixed effects sentence only
-          (R38 V2); the full effects-plus-limits disclosure stays behind the Limits popover. R38 F2:
-          lineHeight 22 keeps the two-line row at the 44 pt the Limits target occupies, so the row
-          carries no empty band under the last text line (the ≤ 8 pt breath holds). */}
-        <Text testID="selection-takeover-disclosure" numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{`Take over: ${TAKEOVER_EFFECTS}`}</Text>
-        {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
-          accessibilityState={{ expanded: limits.open }} accessibilityHint="Opens the full take over effects and this host's stated limits."
-          hitSlop={6} onPress={() => (limits.open ? limits.dismiss() : limits.hold())}
-          style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
-          <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
-        </Pressable> : null}
-      </View> : null}
     </ScrollView>
   </View>;
 }
