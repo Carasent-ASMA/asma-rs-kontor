@@ -421,6 +421,10 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   // Board D1's sticky bar under the list, and the sheets the row menu and the bar open.
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
   const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure} hasLimits={takeover.limits} yields={false}
+    // F-SHEET-SHORT: a definite pixel bound mirroring the menu frame's cover formula (root.height −
+    // 2×margin, anchored-menu.tsx:17) — the percentage does not resolve under the frame's own
+    // maxHeight-only cover, so here the bar's own scroller and the D2-r3 rest pin must engage.
+    barMaxHeight={Math.round((window.height - 12) * 0.6)}
     takeover={{ unavailable: takeover.unavailable, onPress: takeover.start }} auto={{ unavailable: takeover.auto, onPress: takeover.choose }}
     archive={{ unavailable: archive.disabled ? "Archive waits for the host and any running archive." : null, onPress: archiveSelected }} /> : mode === "switch" ? ops.notice : null;
   const detailsEntry = detailsId === null ? null : entries.find((entry) => entry.id === detailsId) ?? null;

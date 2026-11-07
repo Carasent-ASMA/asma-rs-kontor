@@ -78,7 +78,7 @@ function BarButton({ testID, label, accessibilityLabel, icon, trailing, unavaila
  * reason is written under the bar. The bar's text is bounded: at most two one-line reasons, and the takeover disclosure
  * clamped to two lines with a Limits control that holds the whole text open in the existing help popover (R38 D1).
  */
-export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null, hasLimits = false, yields = true }: {
+export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null, hasLimits = false, yields = true, barMaxHeight = "60%" }: {
   count: number; takeover: SelectionControl; auto: SelectionControl; archive: SelectionControl; colors: Colors;
   /** What Take over does and the host's stated limits, shown while it can start. */
   disclosure?: string | null;
@@ -87,6 +87,10 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   /** Whether the bar may shrink below its own content when the root is short (R38-D2-r2). The switch
     * sheet sets false (F-SHEET): its list absorbs the squeeze, so the bar keeps its buttons at rest. */
   yields?: boolean;
+  /** A definite pixel bound where the percentage does not resolve (F-SHEET-SHORT: under the menu
+    * frame's maxHeight-only cover). With a numeric bound the bar's own scroller and the R38-D2-r3
+    * rest pin engage in the sheet too. */
+  barMaxHeight?: number | `${number}%`;
   /** Archive N, where focus returns after its review closes. */
   archiveRef?: Ref<View>;
 }) {
@@ -128,7 +132,7 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // list-floor cap keeps the buttons' 112 pt and the bar takes what is left, its ScrollView scrolling
   // first the text and then the buttons; nothing on the Sessions screen draws under the nav, and no
   // label is ever cut.
-  return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: yields ? 1 : 0, maxHeight: "60%" }}>
+  return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: yields ? 1 : 0, maxHeight: barMaxHeight }}>
     {/* R38-D2-r3: throttle 16 keeps the pin's onScroll fed during a drag (RNW otherwise emits only at
       scroll start and 100 ms after the end, so pinnedToEnd could stay true mid-drag; iOS Fabric already
       dispatches every event, and 16 ms is under one frame there). */}

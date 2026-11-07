@@ -607,16 +607,18 @@ async function widePass(width, height) {
 // shared bar must show its buttons whole and hit-testable, the effects line and Limits inside the
 // bar, and the bar inside the sheet; sheet rows stay visible and tappable at 1/2/5/all. Only then
 // the Limits-above-sheet hit test (V3).
-async function switchSheetPass(width, height, form, largeText = false) {
+async function switchSheetPass(width, height, form, largeText = false, shortSheet = false) {
   const compact = width < 600;
   const name = `switch-sheet-${form}-${width}x${height}${largeText ? '-text200' : ''}`;
   scaleText = false;
+  let gateRecorded = false;
   const context = await browser.newContext({ viewport: { width, height }, ...(compact ? { hasTouch: true, isMobile: true } : {}) });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   try {
     const gated = (label, condition, detail) => {
+      gateRecorded = true;
       report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail });
       console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`);
     };
@@ -672,8 +674,41 @@ async function switchSheetPass(width, height, form, largeText = false) {
     gated('sheet-buttons-at-rest', atRest.scrollTop >= 0 && atRest.scrollTop <= 1 && atRest.allWhole, `scrollTop ${atRest.scrollTop} (rest, no harness scroll); buttons ${JSON.stringify(atRest.buttons)}`);
     gated('sheet-effects-limits-inside', atRest.lineInside && atRest.limitsInside, `effects line inside ${atRest.lineInside}, Limits inside ${atRest.limitsInside}`);
     gated('sheet-bar-inside-sheet', atRest.barInsideSheet, `bar ${JSON.stringify(atRest.bar)} inside the sheet root`);
+    // F-SHEET-SHORT: on a short compact root the menu frame has only a maxHeight (cover = root.height
+    // − 2×margin), so the bar's percentage maxHeight may not resolve — and the buttons are LAST, so a
+    // frame clip removes exactly them, with no scroll to reach them. At rest, no harness scroll:
+    // Archive must be whole and tappable, Take over and Auto hit-tested, and the bar's bottom inside
+    // the frame's visible bottom (the clip edge), not merely inside the viewport.
+    const shortProbe = await page.evaluate(() => {
+      const frameNode = document.querySelector('[data-testid="kontor-switch-sheet"]');
+      const barNode = document.querySelector('[data-testid="selection-bar"]');
+      const scroller = barNode?.querySelector('div');
+      const box = (n) => { const r = n.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom), Math.round(r.left), Math.round(r.right)]; };
+      const buttons = ['selection-takeover', 'selection-takeover-auto', 'selection-archive'].map((id) => {
+        const node = document.querySelector(`[data-testid="${id}"]`);
+        if (!node || !barNode) return { id, present: false };
+        const r = node.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        const label = node.querySelector('[dir="auto"]');
+        const range = document.createRange(); if (label) range.selectNodeContents(label);
+        return { id, present: true, box: [Math.round(r.top), Math.round(r.bottom)], tappable: (hit === node || node.contains(hit)) && r.height > 0, labelWhole: !label || range.getBoundingClientRect().width <= label.getBoundingClientRect().width + 1 };
+      });
+      return {
+        frame: frameNode ? box(frameNode) : null,
+        frameMaxHeight: frameNode ? getComputedStyle(frameNode).maxHeight : null,
+        bar: barNode ? box(barNode) : null,
+        scroller: scroller ? { scrollTop: Math.round(scroller.scrollTop), scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight } : null,
+        buttons,
+      };
+    });
+    const archiveRow = shortProbe.buttons[2], takeoverRow = shortProbe.buttons[0], autoRow = shortProbe.buttons[1];
+    const barInFrame = shortProbe.bar && shortProbe.frame && shortProbe.bar[1] <= shortProbe.frame[1] + 1;
+    gateRecorded = true;
+    gated('sheet-short-bar-unclipped', shortProbe.frame && archiveRow.present && archiveRow.tappable && archiveRow.labelWhole && takeoverRow.tappable && autoRow.tappable && barInFrame,
+      `menu frame ${JSON.stringify(shortProbe.frame)} maxHeight ${shortProbe.frameMaxHeight}; bar ${JSON.stringify(shortProbe.bar)} scroller ${JSON.stringify(shortProbe.scroller)}; buttons ${JSON.stringify(shortProbe.buttons)}; archive whole+tappable ${archiveRow.tappable && archiveRow.labelWhole}, takeover/auto hit ${takeoverRow.tappable}/${autoRow.tappable}, bar bottom <= frame clip edge ${barInFrame}`);
     // Sheet rows stay visible and tappable while the bar is up: 2, 5, then all; a visible row toggles
-    // at each stage (the sheet's own list scrolls rows into view).
+    // at each stage (the sheet's own list scrolls rows into view). The short-root sheet passes claim
+    // only the F-SHEET-SHORT row above; their frame leaves no room for the 2/5/all stages.
     const sheetCount = () => page.getByTestId('selection-count').innerText();
     const toggleVisible = async (stage) => {
       const body = page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_revb_pr812').getByTestId('session-row-body');
@@ -687,26 +722,28 @@ async function switchSheetPass(width, height, form, largeText = false) {
       if (toggled) await body.click();
       await page.waitForTimeout(120);
     };
-    await page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_tpm_99101').getByTestId('session-row-body').click();
-    await page.waitForTimeout(150);
-    gated('sheet-2-selected', (await sheetCount()).startsWith('2 /'), `count ${await sheetCount()}`);
-    await toggleVisible('2');
-    for (const id of ['agt_aud_99103', 'agt_qa_99202', 'agt_swe_99104_a']) await page.getByTestId('kontor-switch-list').getByTestId(`session-row-${id}`).getByTestId('session-row-body').click();
-    await page.waitForTimeout(150);
-    gated('sheet-5-selected', (await sheetCount()).startsWith('5 /'), `count ${await sheetCount()}`);
-    await toggleVisible('5');
-    await page.getByTestId('selection-all').click();
-    await page.waitForTimeout(150);
-    gated('sheet-all-selected', !(await sheetCount()).startsWith('5 /'), `count ${await sheetCount()}`);
-    await toggleVisible('all');
-    // Restore a 1-selected bar for the Limits pass: clear (the checked select-all), then toggle one
-    // row body back on — the sheet is still in selecting mode, where rows have no menus, only bodies.
-    await page.getByTestId('selection-all').click();
-    await page.waitForTimeout(150);
-    const restoreRow = page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_qa_99103').getByTestId('session-row-body');
-    await restoreRow.scrollIntoViewIfNeeded().catch(() => undefined);
-    await restoreRow.click();
-    await page.waitForTimeout(400);
+    if (!shortSheet) {
+      await page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_tpm_99101').getByTestId('session-row-body').click();
+      await page.waitForTimeout(150);
+      gated('sheet-2-selected', (await sheetCount()).startsWith('2 /'), `count ${await sheetCount()}`);
+      await toggleVisible('2');
+      for (const id of ['agt_aud_99103', 'agt_qa_99202', 'agt_swe_99104_a']) await page.getByTestId('kontor-switch-list').getByTestId(`session-row-${id}`).getByTestId('session-row-body').click();
+      await page.waitForTimeout(150);
+      gated('sheet-5-selected', (await sheetCount()).startsWith('5 /'), `count ${await sheetCount()}`);
+      await toggleVisible('5');
+      await page.getByTestId('selection-all').click();
+      await page.waitForTimeout(150);
+      gated('sheet-all-selected', !(await sheetCount()).startsWith('5 /'), `count ${await sheetCount()}`);
+      await toggleVisible('all');
+      // Restore a 1-selected bar for the Limits pass: clear (the checked select-all), then toggle one
+      // row body back on — the sheet is still in selecting mode, where rows have no menus, only bodies.
+      await page.getByTestId('selection-all').click();
+      await page.waitForTimeout(150);
+      const restoreRow = page.getByTestId('kontor-switch-list').getByTestId('session-row-agt_qa_99103').getByTestId('session-row-body');
+      await restoreRow.scrollIntoViewIfNeeded().catch(() => undefined);
+      await restoreRow.click();
+      await page.waitForTimeout(400);
+    }
     // Reach the Limits control the way an operator does — the bar's own scroll, just far enough —
     // then press it with a real pointer press (tapBarControl; locator.click()'s re-centring scroll
     // would dismiss the just-opened help).
@@ -727,6 +764,12 @@ async function switchSheetPass(width, height, form, largeText = false) {
   } catch (error) {
     report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
     console.log(`${name}: FAIL ${error.message}`);
+    // F-SHEET-SHORT: if the sheet never got far enough to record its gate, the row is NOT RUN with
+    // the reason — never passed, and never silently missing.
+    if (!gateRecorded) {
+      report.cases.push({ name: `${name}-gate-sheet-short-bar-unclipped`, status: 'NOT RUN', detail: `the sheet did not open or complete at this root: ${error.message.split('\n')[0]}` });
+      console.log(`${name}-gate-sheet-short-bar-unclipped: NOT RUN (sheet did not open or complete)`);
+    }
   } finally {
     await context.close();
   }
@@ -761,6 +804,11 @@ async function switchSheetPass(width, height, form, largeText = false) {
     await switchSheetPass(1280, 800, 'popover');
     await switchSheetPass(430, 932, 'sheet');
     await switchSheetPass(430, 932, 'sheet', true);
+    // F-SHEET-SHORT: the compact sheet on short roots — the menu frame's percentage question.
+    await switchSheetPass(430, 330, 'sheet', false, true);
+    await switchSheetPass(430, 330, 'sheet', true, true);
+    await switchSheetPass(393, 420, 'sheet', false, true);
+    await switchSheetPass(393, 420, 'sheet', true, true);
   } finally {
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');
