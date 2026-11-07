@@ -368,7 +368,9 @@ async function pass(width, height, theme, largeText, extra = {}) {
         const row = document.querySelector('[data-testid="sessions-row-agt_qa_99103"] [data-testid="session-row-body"]');
         if (!row) return false;
         const r = row.getBoundingClientRect();
-        return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight + 1; // fully on screen, tappable
+        if (!(r.height > 0 && r.top >= 0 && r.bottom <= innerHeight + 1)) return false; // fully on screen
+        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return hit === row || row.contains(hit); // and genuinely the click target
       });
       if (onScreen) {
         await page.evaluate(() => {
