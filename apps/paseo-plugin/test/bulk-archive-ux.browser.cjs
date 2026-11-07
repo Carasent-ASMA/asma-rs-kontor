@@ -24,22 +24,44 @@ const scale = page => page.evaluate(() => {
   }
 });
 // Every visible control in the scope is inside the viewport with a minimum target; no text is clipped sideways.
-async function layout(page, scope, min) {
-  const problems = await page.evaluate(([scope, min]) => {
-    const root = document.querySelector(`[data-testid="${scope}"]`), out = [];
-    if (!root) return [`${scope} missing`];
-    if (document.documentElement.scrollWidth > innerWidth) out.push('page scrolls sideways');
-    for (const node of root.querySelectorAll('[role="button"], [role="checkbox"]')) {
-      const box = node.getBoundingClientRect(), name = node.getAttribute('aria-label') || node.textContent;
-      if (!box.width) continue;
-      if (box.width < min || box.height < min) out.push(`${name}: ${Math.round(box.width)}x${Math.round(box.height)} target`);
-      if (box.left < -1 || box.right > innerWidth + 1) out.push(`${name}: outside viewport`);
-    }
-    for (const text of root.querySelectorAll('[dir="auto"]')) if (text.scrollWidth > text.clientWidth + 1) out.push(`${text.textContent}: clipped`);
-    return out;
-  }, [scope, min]);
-  assert.deepEqual(problems, [], `${scope} layout`);
-}
+// R38 D1-r1 rules a bar reason line to clamp to one line with its full text on the control's accessibilityHint,
+// so a reason-line clip inside the selection bar's scope is the designed outcome and is asserted as such
+// (one line tall, full text present on a control's described-by hint) rather than as "no clip".
+const layoutProblems = (page, scope, min) => page.evaluate(([scope, min]) => {
+  const root = document.querySelector(`[data-testid="${scope}"]`), out = [];
+  if (!root) return [`${scope} missing`];
+  if (document.documentElement.scrollWidth > innerWidth) out.push('page scrolls sideways');
+  for (const node of root.querySelectorAll('[role="button"], [role="checkbox"]')) {
+    const box = node.getBoundingClientRect(), name = node.getAttribute('aria-label') || node.textContent;
+    if (!box.width) continue;
+    if (box.width < min || box.height < min) out.push(`${name}: ${Math.round(box.width)}x${Math.round(box.height)} target`);
+    if (box.left < -1 || box.right > innerWidth + 1) out.push(`${name}: outside viewport`);
+  }
+  for (const text of root.querySelectorAll('[dir="auto"]')) if (text.scrollWidth > text.clientWidth + 1) out.push(`${text.textContent}: clipped`);
+  return out;
+}, [scope, min]);
+const designedReasonClips = async (page, problems) => {
+  const kept = [];
+  for (const problem of problems) {
+    if (!problem.endsWith(': clipped')) { kept.push(problem); continue; }
+    const text = problem.slice(0, -': clipped'.length);
+    const designed = await page.evaluate((reason) => {
+      const bar = document.querySelector('[data-testid="selection-bar"]');
+      if (!bar) return false;
+      const node = [...bar.querySelectorAll('[dir="auto"]')].find(node => node.textContent === reason && !node.closest('[role="button"]') && node.dataset.testid !== 'selection-takeover-disclosure');
+      if (!node) return false;
+      if (node.getBoundingClientRect().height > parseFloat(getComputedStyle(node).lineHeight) * 1.6) return false; // one line only
+      return [...bar.querySelectorAll('[role="button"]')].some(button => {
+        const describedBy = button.getAttribute('aria-describedby');
+        return describedBy && document.getElementById(describedBy)?.textContent === reason;
+      });
+    }, text);
+    if (designed) report.cases.push({ name: `designed-reason-clip`, status: 'PASS', reason: text });
+    else kept.push(problem);
+  }
+  return kept;
+};
+const layout = async (page, scope, min) => assert.deepEqual(await layoutProblems(page, scope, min), [], `${scope} layout`);
 // WCAG 1.4.11: the row's drawn choice mark (board D1: a circle, a checked circle when selected) against what is behind it.
 const contrast = (page, id) => page.evaluate(id => {
   const rgb = value => (value.match(/[\d.]+/g) || []).map(Number);
@@ -98,7 +120,8 @@ async function check(width, height, theme, largeText, earlyClose = false) {
     const target = await row(page, 'agt_a').boundingBox();
     assert.ok(target.height >= 44, 'row choice 44pt target');
     await layout(page, 'selection-header', min);
-    await layout(page, 'selection-bar', min);
+    const barProblems = await designedReasonClips(page, await layoutProblems(page, 'selection-bar', min));
+    assert.deepEqual(barProblems, [], 'selection-bar layout');
     await shot('2-selected-focus');
 
     await page.getByRole('button', { name: 'Review archive of 5 selected sessions', exact: true }).click();
@@ -349,8 +372,11 @@ async function acknowledgeOne(width, height, theme) {
   try {
     for (const [width, height] of [[320, 568], [390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) for (const largeText of [false, true]) await check(width, height, theme, largeText);
     await check(390, 844, 'dark', false, true);
-    for (const [width, height] of [[320, 568], [390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) for (const largeText of [false, true]) await recovery(width, height, theme, largeText);
-    for (const [width, height] of [[320, 568], [390, 844]]) for (const theme of ['light', 'dark']) await acknowledgeOne(width, height, theme);
+    // R38 ruling: the ?recovery=1 fixture seeding (agt_rec_a/agt_rec_b, "2 archives need attention") is
+    // not preserved in any sealed fixture source, and these cases assert the recovery banner and its
+    // Refresh, which R38 does not change — they are NOT RUN this round.
+    for (const [width, height] of [[320, 568], [390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) for (const largeText of [false, true]) report.cases.push({ name: `${width}x${height}-${theme}${largeText ? '-text200' : ''}-recovery`, status: 'NOT RUN', reason: 'the ?recovery=1 fixture seeding is not preserved in a sealed dir; the case asserts the recovery banner and its Refresh, unchanged by R38' });
+    for (const [width, height] of [[320, 568], [390, 844]]) for (const theme of ['light', 'dark']) report.cases.push({ name: `${width}x${height}-${theme}-acknowledge-one`, status: 'NOT RUN', reason: 'same missing ?recovery=1 fixture seeding; the case asserts one held archive acknowledgement, unchanged by R38' });
   } finally {
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');
