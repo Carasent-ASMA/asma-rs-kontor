@@ -105,10 +105,10 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   const measure = (key: "takeover" | "auto" | "archive") => (event: { nativeEvent: { layout: { width: number } } }) =>
     setLabelWidths((current) => ({ takeover: 0, auto: 0, archive: 0, ...current, [key]: event.nativeEvent.layout.width }));
   // The host's limits leave the layout. They open held in the existing ControlHelp popover, collapsed by
-  // default and never persisted; `expanded` mirrors this control's own presses (the provider also closes
-  // on Escape or a press elsewhere, which the next press on this control re-syncs).
+  // default and never persisted; `expanded` mirrors the provider (true iff the popover is showing this
+  // control's text), so its own dismissals — Escape, an outside press, scroll, resize, back — close the
+  // state too and the next press on this control opens it again.
   const limits = useControlHelp(effects ?? "");
-  const [limitsOpen, setLimitsOpen] = useState(false);
   // The bar never grows past 60% of its parent: very large text scrolls inside it instead of pushing the
   // session list out (R38 D2). In the switch sheet the footer has no definite height, so there the sheet's
   // own scroll owns the bound.
@@ -138,10 +138,13 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
       {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
       {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
       {effects ? <View testID="selection-takeover-effects" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-        <Text testID="selection-takeover-disclosure" numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11, flex: 1 }}>{effects}</Text>
+        {/* R38-D3, measured with the 44 pt Limits target: the two lines at lineHeight 22 fill the same
+          44 pt the target occupies, so the row carries no empty band under the last text line and the
+          bar's last text line keeps the ≤ 8 pt breath above the nav (F2). */}
+        <Text testID="selection-takeover-disclosure" numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{effects}</Text>
         <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
-          accessibilityState={{ expanded: limitsOpen }} accessibilityHint="Opens the full take over effects and this host's stated limits."
-          hitSlop={6} onPress={() => { if (limitsOpen) { limits.dismiss(); setLimitsOpen(false); } else { limits.hold(); setLimitsOpen(true); } }}
+          accessibilityState={{ expanded: limits.open }} accessibilityHint="Opens the full take over effects and this host's stated limits."
+          hitSlop={6} onPress={() => (limits.open ? limits.dismiss() : limits.hold())}
           style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
           <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
         </Pressable>
