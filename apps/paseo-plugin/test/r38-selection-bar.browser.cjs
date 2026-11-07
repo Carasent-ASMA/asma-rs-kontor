@@ -161,12 +161,19 @@ async function tapBarControl(page, testId, expect = null) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const outcome = await page.evaluate(ready, testId);
     if (outcome.state === 'ready') {
+      const beforeAria = await page.getByTestId('selection-limits').getAttribute('aria-expanded');
       await page.mouse.click(outcome.x, outcome.y);
       await page.waitForTimeout(180);
+      if (process.env.R38_DIAG) { const tl = []; for (const ms of [0, 90, 90, 90]) { await page.waitForTimeout(ms); tl.push(`+${tl.reduce((a, b) => a + b, 0)}ms:p${await page.getByTestId('control-help').count()}`); } console.log(`[diag] ${testId} attempt ${attempt}: clicked; ${tl.join(' ')}; aria ${await page.getByTestId('selection-limits').getAttribute('aria-expanded')}`); }
       if (expect !== 'open') return true;
       if (await page.getByTestId('control-help').count() > 0) return true;
-      // No panel: the click may have been eaten by a re-render. Retry ONLY while a fresh probe
-      // reads the control covered or out of reach; a reachable control's click result stands.
+      // R10 R9-F2: a click that changed any state is FINAL — a closing press never reaches this
+      // retry (expect !== 'open' returns above), so a wrong close can never be retried into a
+      // reopen. Only an opening click that registered NOTHING (aria unchanged — a background
+      // re-render can swallow a click at text200+inset roots) is retried, and only while a fresh
+      // probe reads the control covered or scrolled out of reach.
+      const afterAria = await page.getByTestId('selection-limits').getAttribute('aria-expanded');
+      if (beforeAria !== afterAria) return true;
       if ((await page.evaluate(ready, testId)).state === 'ready') return true;
       continue;
     }
