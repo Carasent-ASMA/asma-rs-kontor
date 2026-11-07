@@ -446,9 +446,13 @@ async function pass(width, height, theme, largeText, extra = {}) {
       await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('limits-third-press-opens', (await aria()) === 'true' && (await panelCount()) === 1, `third press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
-      // An outside press on a neutral spot (the selecting header's count text) dismisses.
-      const count = await page.getByTestId('selection-count').boundingBox().catch(() => null);
-      const spot = count ?? { x: 12, y: 120, width: 40, height: 24 };
+      // An outside press on a neutral spot inside the bar (the clamped disclosure line, revealed by
+      // scrolling the bar's own content to its top) dismisses — the spot must never be one the open
+      // panel covers (on short frames the panel reaches over the selecting header).
+      await page.evaluate(() => { const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div'); if (scroller) scroller.scrollTop = 0; });
+      await page.waitForTimeout(120);
+      const line = await page.getByTestId('selection-takeover-disclosure').boundingBox().catch(() => null);
+      const spot = line ?? (await page.getByTestId('selection-count').boundingBox().catch(() => null)) ?? { x: 12, y: 120, width: 40, height: 24 };
       await page.touchscreen.tap(spot.x + spot.width / 2, spot.y + spot.height / 2);
       await page.waitForTimeout(150);
       gated('limits-outside-press-closes', (await aria()) === 'false' && (await panelCount()) === 0, `outside press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
