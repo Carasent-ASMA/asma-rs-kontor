@@ -206,6 +206,11 @@ type StartSwitchProps = {
   initialScope?: CreateScope;
   /** Opens New lead at once with this source and its saved revision pinned. */
   initialSource?: LeadSource | null;
+  /** The height the sheet's menu frame is derived from — the MEASURED screen root, which
+    * StartSwitchSheet passes as rootSize.height (R6-F1: the keyboard shrinks this root while
+    * useWindowDimensions stays tall, so the bar's bound must follow it). The composer popover
+    * has no measured root and omits it. */
+  frameHeight?: number;
 };
 
 /**
@@ -224,7 +229,7 @@ export function popoverBodyHeight(window: number, compact: boolean, line: number
  * state strip, search and layout over this host's sessions, plus New lead as a header action when the host allows it.
  * Rows open only through `onOpen`, so each surface keeps its own single open path and its refusals.
  */
-export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpenTakeover, onOpen, onShowView, onClose, popover = false, currentId = null, currentWorkspaceId, initialScope, initialSource = null }: StartSwitchProps) {
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpenTakeover, onOpen, onShowView, onClose, popover = false, currentId = null, currentWorkspaceId, initialScope, initialSource = null, frameHeight = 0 }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">(initialSource ? "new" : "switch");
   const creation = useRef({ hostId, open: !!initialSource });
   const scope = creation.current;
@@ -293,6 +298,11 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const unavailable = createAvailability(create.state);
   const tall = compact || COARSE_POINTER;
   const window = useWindowDimensions();
+  // F-SHEET-SHORT (R6-F1): the bar's bound follows the MEASURED root — the keyboard
+  // (KeyboardAvoidingView, kontor-screen.tsx) shrinks the root while the window height stays, so a
+  // window-derived bound never engages on a real phone. The composer popover has no measured root;
+  // there the window height stands in. frameHeight guards the unmeasured {0,0} root.
+  const boundHeight = frameHeight > 0 ? frameHeight : window.height;
   const dismiss = () => { creation.current.open = false; onClose(); };
   const showView = (membership: SwitchView["membership"] = "sessions") => onShowView({ status: membership === "archived" ? "all" : status, query: query.trim(), membership });
   // Provider blocked is answered by exact-ID refusal reads, which only Kontor's Sessions makes.
@@ -420,7 +430,16 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate} style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
   // Board D1's sticky bar under the list, and the sheets the row menu and the bar open.
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
-  const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure}
+  const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure} hasLimits={takeover.limits} yields={false}
+    // F-SHEET-SHORT: a definite pixel bound computed as max(0, round((boundHeight − 12) × 0.45)),
+    // where boundHeight is the MEASURED root height the cover frame itself derives from
+    // (rootSize.height − 2×margin, anchored-menu.tsx:17; StartSwitchSheet passes it as frameHeight,
+    // the composer popover falls back to window.height). 0.45 of it leaves the sheet's fixed chrome
+    // above the bar (header, states strip, search, selection header — up to ~0.5 of the frame at the
+    // smallest root with doubled text) inside the cover, so the bar's own scroller and the D2-r3
+    // rest pin engage instead of the frame clipping the buttons away; the F-SHEET-SHORT and
+    // keyboard gates verify it.
+    barMaxHeight={Math.max(0, Math.round((boundHeight - 12) * 0.45))}
     takeover={{ unavailable: takeover.unavailable, onPress: takeover.start }} auto={{ unavailable: takeover.auto, onPress: takeover.choose }}
     archive={{ unavailable: archive.disabled ? "Archive waits for the host and any running archive." : null, onPress: archiveSelected }} /> : mode === "switch" ? ops.notice : null;
   const detailsEntry = detailsId === null ? null : entries.find((entry) => entry.id === detailsId) ?? null;
@@ -455,7 +474,7 @@ function SwitchDetails({ entry, colors, clock, opened, totals, stale, onClose }:
 
 /** The Kontor screen's sheet around the shared body; closing it returns focus to its trigger. */
 export function StartSwitchSheet({ anchor, root, rootSize, onClose, ...props }: Omit<StartSwitchProps, "popover"> & { anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize }) {
-  const { label, header, body, footer, dismiss } = useStartSwitch({ ...props, onClose: () => { onClose(); setTimeout(() => focusControl(anchor.current), 0); } });
+  const { label, header, body, footer, dismiss } = useStartSwitch({ ...props, frameHeight: rootSize.height, onClose: () => { onClose(); setTimeout(() => focusControl(anchor.current), 0); } });
   return <AnchoredMenu testID="kontor-switch-sheet" dialog anchor={anchor} root={root} rootSize={rootSize} colors={props.colors} label={label} onClose={dismiss}
     placement={props.compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 420, maxHeight: 640 }} header={header}>
     {body}

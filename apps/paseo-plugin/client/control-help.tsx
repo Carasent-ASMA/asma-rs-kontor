@@ -5,7 +5,7 @@ import { anchoredPanelOpen, menuFrame, type MenuFrame, type MenuSize } from "./a
 
 type Anchor = RefObject<View | null>;
 type Help = { anchor: Anchor; text: string; focused: boolean; held?: boolean };
-type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean, held?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; forget(anchor: Anchor): void; enter(help: Help): void; exit(help: Help): void; dismiss(): void };
+type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean, held?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; forget(anchor: Anchor): void; enter(help: Help): void; exit(help: Help): void; dismiss(): void; subscribe(anchor: Anchor, listener: (open: boolean) => void): () => void };
 const HelpContext = createContext<Controller | null>(null);
 type KeyEvent = { key?: string; pointerType?: string; clientX?: number; clientY?: number; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
 type EventTarget = { addEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void; removeEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void };
@@ -25,8 +25,15 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   const fitted = useRef<{ text: string; size: MenuSize } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revision = useRef(0);
+  // Controls that mirror this popover's open state (a held Limits control's expanded flag) subscribe per
+  // anchor; a control re-renders only when its own anchor's open state flips, never on another's.
+  const openListeners = useRef(new Map<Anchor, Set<(open: boolean) => void>>());
   const [help, setHelp] = useState<Help | null>(null);
   const [frame, setFrame] = useState<MenuFrame | null>(null);
+  // The rendered panel is the truth: what the screen reader is told must match what is showing.
+  useEffect(() => {
+    for (const [anchor, listeners] of openListeners.current) { const open = help?.anchor === anchor; for (const listener of listeners) listener(open); }
+  }, [help]);
   const controller = useMemo<Controller>(() => {
     const cancel = () => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; };
     const dismiss = () => { cancel(); revision.current++; current.current = null; overPanel.current = null; fitted.current = null; setHelp(null); setFrame(null); };
@@ -86,9 +93,20 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
       },
       press(touch, target) {
         input.current = touch ? "touch" : "pointer";
+        // R9 AUD-F3: the control that HOLDS this popover toggles with one decision per press — a
+        // pointerdown on its own trigger must not dismiss here, so the trigger's activation reads the
+        // true press-start state. A press on any other control, or outside, dismisses as before.
+        const value = current.current;
+        if (value?.held && (value.anchor.current as Contains | null)?.contains?.(target)) return;
         if (!(panel.current as Contains | null)?.contains?.(target)) dismiss();
       },
       forget(anchor) { if (current.current?.anchor === anchor) dismiss(); },
+      subscribe(anchor, listener) {
+        let listeners = openListeners.current.get(anchor);
+        if (!listeners) { listeners = new Set(); openListeners.current.set(anchor, listeners); }
+        listeners.add(listener);
+        return () => { listeners!.delete(listener); if (!listeners!.size) openListeners.current.delete(anchor); };
+      },
     };
   }, [helpId]);
   useEffect(() => {
@@ -132,7 +150,8 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     return () => { controller.dismiss(); document?.removeEventListener("keydown", key, true); document?.removeEventListener("scroll", scroll, true); document?.removeEventListener("pointerdown", press, true); document?.removeEventListener("pointerover", pointer, true); document?.removeEventListener("pointermove", pointer, true); document?.removeEventListener("pointercancel", moved, true); window?.removeEventListener("resize", moved); back.remove(); };
   }, [controller]);
   return <HelpContext.Provider value={controller}>
-    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss} onTouchStart={() => controller.press(true)} onTouchCancel={controller.dismiss}>
+    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss}
+      onTouchStart={(event) => controller.press(true, event && (event as { target?: unknown }).target)} onTouchCancel={controller.dismiss}>
       {children}
       {help && frame ? <View testID="control-help-layer" pointerEvents="box-none" style={{ position: "absolute", inset: 0, zIndex: 100 }}>
         <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={() => controller.enter(help)} onPointerLeave={() => controller.exit(help)}
@@ -151,6 +170,10 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
   const controller = useContext(HelpContext);
   const anchor = useRef<View | null>(null);
   const focused = useRef(false);
+  // True if and only if the popover is showing this control's text: the provider notifies on every
+  // open/close, including its own dismissals (Escape, an outside press, scroll, resize, back).
+  const [open, setOpen] = useState(false);
+  useEffect(() => (controller ? controller.subscribe(anchor, setOpen) : undefined), [controller]);
   return {
     bindings: {
       "aria-describedby": text ? controller?.id : undefined,
@@ -169,6 +192,7 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
     dismiss: () => controller?.dismiss(),
     hold: () => controller?.show(anchor, text, false, true),
     forget: () => controller?.forget(anchor),
+    open,
   };
 }
 

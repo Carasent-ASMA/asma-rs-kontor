@@ -1,7 +1,9 @@
-import type { Ref } from "react";
-import { Platform, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { useRef, useState, type ComponentRef, type Ref } from "react";
+import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { spaceActivates, type Colors } from "./page-controls";
+import { useControlHelp } from "./control-help";
+import { TAKEOVER_EFFECTS } from "./session-takeover";
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 const focusRing = (colors: Colors, focused?: boolean) => focused && Platform.OS === "web" ? { outlineStyle: "solid" as const, outlineWidth: 2, outlineColor: colors.accent } : {};
@@ -73,31 +75,119 @@ function BarButton({ testID, label, accessibilityLabel, icon, trailing, unavaila
  * Board D1's sticky bar: [Take over N | Auto ▾] and [Archive N]. Two actions on the frozen selection, not a dismiss and
  * confirm pair. Take over starts at once on each seat's chain, so what it does and the host's stated limits are written
  * under the bar first; Auto ▾ opens the model choice and Archive opens its review. A refused action stays and its
- * reason is written under the bar.
+ * reason is written under the bar. The bar's text is bounded: at most two one-line reasons, and the takeover disclosure
+ * clamped to two lines with a Limits control that holds the whole text open in the existing help popover (R38 D1).
  */
-export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null }: {
+export function SelectionBar({ count, takeover, auto, archive, colors, archiveRef, disclosure = null, hasLimits = false, yields = true, barMaxHeight = "60%" }: {
   count: number; takeover: SelectionControl; auto: SelectionControl; archive: SelectionControl; colors: Colors;
   /** What Take over does and the host's stated limits, shown while it can start. */
   disclosure?: string | null;
+  /** The host stated limits beyond the fixed effects sentence: the Limits control exists only then (R38 V2). */
+  hasLimits?: boolean;
+  /** Whether the bar may shrink below its own content when the root is short (R38-D2-r2). The switch
+    * sheet sets false (F-SHEET): its list absorbs the squeeze, so the bar keeps its buttons at rest. */
+  yields?: boolean;
+  /** A definite pixel bound where the percentage does not resolve (F-SHEET-SHORT: under the menu
+    * frame's maxHeight-only cover). With a numeric bound the bar's own scroller and the R38-D2-r3
+    * rest pin engage in the sheet too. */
+  barMaxHeight?: number | `${number}%`;
   /** Archive N, where focus returns after its review closes. */
   archiveRef?: Ref<View>;
 }) {
   const narrow = useWindowDimensions().width < NARROW;
   const none = count ? null : "Select sessions first.";
   const reasons = [...new Set([none ?? takeover.unavailable ?? auto.unavailable, none ? null : archive.unavailable].filter((reason): reason is string => !!reason))];
-  return <View testID="selection-bar" style={{ gap: 4, paddingTop: 6, borderTopWidth: 1, borderColor: colors.border }}>
-    {/* Buttons keep their labels' width; when large text no longer fits one row, Archive wraps below rather than any label being cut. */}
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-      <View style={{ flexGrow: 3, flexBasis: "auto", flexDirection: "row", gap: 1, borderRadius: 8, overflow: "hidden" }}>
-        <BarButton testID="selection-takeover" grow={2} narrow={narrow} filled icon="RefreshCw" label={`Take over ${count}`} accessibilityLabel={`Take over ${plural(count, "selected session")} on each seat's chain`}
-          unavailable={none ?? takeover.unavailable} colors={colors} onPress={takeover.onPress} />
-        <BarButton testID="selection-takeover-auto" grow={0} narrow={narrow} filled label="Auto" trailing="ChevronDown" accessibilityLabel={`Choose a model for taking over ${plural(count, "selected session")}`}
-          unavailable={none ?? takeover.unavailable ?? auto.unavailable} colors={colors} onPress={auto.onPress} />
+  const effects = disclosure && !none && !takeover.unavailable ? `Take over: ${disclosure}` : null;
+  // R38-D3-r1: Yoga's StretchFlexBasis errata (RN 0.81.5's default) inflates a wrapping row — the
+  // container reported two 44 pt lines while every button sat on line one, the dead space under the
+  // buttons Igor reported. The row therefore never wraps. Stacking Archive under the takeover group
+  // is an explicit, measured choice, made from the labels' INTRINSIC widths measured off the layout
+  // path (a stretched button's width depends on the very line count this decides, which would feed
+  // back into itself). Both inputs are stable across a stack, so the decision is too.
+  const takeoverLabel = `Take over ${count}`;
+  const archiveLabel = `Archive ${count}`;
+  const [labelWidths, setLabelWidths] = useState<{ takeover: number; auto: number; archive: number } | null>(null);
+  const [rowWidth, setRowWidth] = useState(0);
+  const pad = narrow ? 8 : 10, innerGap = narrow ? 4 : 6, iconWidth = narrow ? 0 : 16;
+  const takeoverGroupWidth = labelWidths === null ? null : pad * 2 + iconWidth + innerGap + labelWidths.takeover + 1 + (pad * 2 + 14 + innerGap + labelWidths.auto);
+  const archiveWidth = labelWidths === null ? null : pad * 2 + 2 + iconWidth + innerGap + labelWidths.archive; // +2: Archive's 1 pt border, border-box
+  const stacked = takeoverGroupWidth !== null && archiveWidth !== null && rowWidth > 0 && takeoverGroupWidth + 8 + archiveWidth > rowWidth;
+  const measure = (key: "takeover" | "auto" | "archive") => (event: { nativeEvent: { layout: { width: number } } }) =>
+    setLabelWidths((current) => ({ takeover: 0, auto: 0, archive: 0, ...current, [key]: event.nativeEvent.layout.width }));
+  // The host's limits leave the layout. They open held in the existing ControlHelp popover, collapsed by
+  // default and never persisted; `expanded` mirrors the provider (true iff the popover is showing this
+  // control's text), so its own dismissals — Escape, an outside press, scroll, resize, back — close the
+  // state too and the next press on this control opens it again.
+  const limits = useControlHelp(effects ?? "");
+  // R38-D2-r3: when the bar's content does not fit, the bar starts scrolled to its END, so the buttons
+  // row shows at rest (the text above scrolls up; the user reads it by scrolling the bar up). The pin
+  // re-arms only when the scroller sits at the end, and re-pins only when the content size or the
+  // bar's own height changes — it never fights a user who has scrolled up.
+  const scrollerRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
+  const pinnedToEnd = useRef(true);
+  // R9 AUD-F3: ONE toggle decision per press, from the state at press start. The provider keeps a
+  // held help's state through a press on its own trigger (control-help.tsx press()), so a pointer
+  // press captures the open state in onPressIn and the decision consumes and RESETS the capture; a
+  // keyboard activation (Enter/Space) has no press start — no pointerdown, no onPressIn — and
+  // decides from the live state, which the provider has not disturbed.
+  const pressOpen = useRef<boolean | null>(null);
+  const repinToEnd = () => { if (pinnedToEnd.current) scrollerRef.current?.scrollToEnd({ animated: false }); };
+  // The bar never grows past 60% of its parent: very large text scrolls inside it instead of pushing the
+  // session list out (R38 D2). In the switch sheet the footer has no definite height, so there the sheet's
+  // own scroll owns the bound. R38-D2-r2: the bar carries NO minHeight of its own — on a short root the
+  // list-floor cap keeps the buttons' 112 pt and the bar takes what is left, its ScrollView scrolling
+  // first the text and then the buttons; nothing on the Sessions screen draws under the nav, and no
+  // label is ever cut.
+  return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: yields ? 1 : 0, maxHeight: barMaxHeight }}>
+    {/* R38-D2-r3: throttle 16 keeps the pin's onScroll fed during a drag (RNW otherwise emits only at
+      scroll start and 100 ms after the end, so pinnedToEnd could stay true mid-drag; iOS Fabric already
+      dispatches every event, and 16 ms is under one frame there). */}
+    <ScrollView ref={scrollerRef} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }} scrollEventThrottle={16}
+      onContentSizeChange={repinToEnd} onLayout={repinToEnd}
+      onScroll={(event) => { const d = event.nativeEvent; pinnedToEnd.current = d.contentOffset.y + d.layoutMeasurement.height >= d.contentSize.height - 2; }}>
+      {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
+      {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
+      {effects ? <View testID="selection-takeover-effects" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+        {/* D1 (R38-ORDER-r1): a refused action's reason is written in the bar, directly above its
+          buttons. The host limits leave the inline text — the line is the fixed effects sentence only,
+          clamped to two lines WHEN the host states limits (the full effects-plus-limits disclosure
+          stays behind the Limits popover, R38 V2). Where the host states NO limits there is no Limits
+          control, so the sentence shows in full and scrolls in the bar like the other text. R38 F2:
+          lineHeight 22 keeps the two-line row at the 44 pt the Limits target occupies, so the row
+          carries no empty band under the last text line (the ≤ 8 pt breath holds). */}
+        <Text testID="selection-takeover-disclosure" numberOfLines={hasLimits ? 2 : undefined} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 22, flex: 1 }}>{`Take over: ${TAKEOVER_EFFECTS}`}</Text>
+        {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
+          accessibilityState={{ expanded: limits.open }} aria-expanded={limits.open} accessibilityHint="Opens the full take over effects and this host's stated limits."
+          hitSlop={6}
+          onPressIn={() => { pressOpen.current = limits.open; }}
+          onPress={() => { const was = pressOpen.current; pressOpen.current = null; (was ?? limits.open) ? limits.dismiss() : limits.hold(); }}
+          style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
+          <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
+        </Pressable> : null}
+      </View> : null}
+      {/* The buttons row is LAST in the scroll (R38-D2-r2): on a short root the bar takes what is left,
+        its own ScrollView shows the text first and scrolls the buttons — scrolling to its end shows
+        Archive whole and tappable. Buttons keep their labels' width; Archive stacks under the takeover
+        group when the measured intrinsic widths do not fit one line (large text), rather than any label
+        being cut. The row never uses flexWrap: see R38-D3-r1 above. */}
+      <View testID="selection-buttons-row" onLayout={(event) => setRowWidth(event.nativeEvent.layout.width)}
+        style={{ flexDirection: stacked ? "column" : "row", gap: 8 }}>
+        <View style={{ flexGrow: stacked ? 0 : 3, flexBasis: "auto", alignSelf: stacked ? "stretch" : undefined, flexDirection: "row", gap: 1, borderRadius: 8, overflow: "hidden" }}>
+          <BarButton testID="selection-takeover" grow={2} narrow={narrow} filled icon="RefreshCw" label={takeoverLabel} accessibilityLabel={`Take over ${plural(count, "selected session")} on each seat's chain`}
+            unavailable={none ?? takeover.unavailable} colors={colors} onPress={takeover.onPress} />
+          <BarButton testID="selection-takeover-auto" grow={0} narrow={narrow} filled label="Auto" trailing="ChevronDown" accessibilityLabel={`Choose a model for taking over ${plural(count, "selected session")}`}
+            unavailable={none ?? takeover.unavailable ?? auto.unavailable} colors={colors} onPress={auto.onPress} />
+        </View>
+        <BarButton ref={archiveRef} testID="selection-archive" grow={stacked ? 0 : 2} narrow={narrow} filled={false} icon="Archive" label={archiveLabel} accessibilityLabel={`Review archive of ${plural(count, "selected session")}`}
+          unavailable={none ?? archive.unavailable} colors={colors} onPress={archive.onPress} />
       </View>
-      <BarButton ref={archiveRef} testID="selection-archive" grow={2} narrow={narrow} filled={false} icon="Archive" label={`Archive ${count}`} accessibilityLabel={`Review archive of ${plural(count, "selected session")}`}
-        unavailable={none ?? archive.unavailable} colors={colors} onPress={archive.onPress} />
-    </View>
-    {reasons.map((reason) => <Text key={reason} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
-    {disclosure && !none && !takeover.unavailable ? <Text testID="selection-takeover-disclosure" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{`Take over: ${disclosure}`}</Text> : null}
+      {/* Off-screen measurer for the labels' intrinsic widths; hidden from accessibility and touch. */}
+      <View testID="selection-label-measure" aria-hidden accessibilityElementsHidden importantForAccessibility="no-hide-descendants" pointerEvents="none"
+        style={{ position: "absolute", top: 0, left: 0, flexDirection: "row", opacity: 0 }}>
+        <Text onLayout={measure("takeover")} numberOfLines={1} style={{ fontSize: 13, fontWeight: "600" }}>{takeoverLabel}</Text>
+        <Text onLayout={measure("auto")} numberOfLines={1} style={{ fontSize: 13, fontWeight: "600" }}>Auto</Text>
+        <Text onLayout={measure("archive")} numberOfLines={1} style={{ fontSize: 13, fontWeight: "600" }}>{archiveLabel}</Text>
+      </View>
+    </ScrollView>
   </View>;
 }

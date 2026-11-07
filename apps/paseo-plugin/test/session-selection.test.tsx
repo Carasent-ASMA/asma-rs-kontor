@@ -1,5 +1,6 @@
 import { isValidElement } from "react";
 import { describe, expect, it, vi, type Mock } from "vitest";
+import { TAKEOVER_EFFECTS } from "../client/session-takeover";
 
 // The header and bar are hook-free; a session row keeps its own hooks, drawn on a fresh renderer per row.
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
@@ -9,6 +10,15 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 const screen = vi.hoisted(() => ({ width: 390 }));
 vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { OS: "web" }, useWindowDimensions: () => ({ width: screen.width, height: 844, fontScale: 1 }), Pressable: "Pressable", Text: "Text", View: "View", Image: "Image", ScrollView: "ScrollView", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
+// The ControlHelp provider is replaced by a stateful double: hold/dismiss move `open` exactly as the
+// provider would, and a test simulates the provider's own dismissals (Escape, outside press) by setting
+// `open` back — the control's expanded flag must follow, not its own press history (R38 F1).
+const helpDouble = vi.hoisted(() => ({ open: false, holds: 0, dismisses: 0, lastText: null as string | null }));
+vi.mock("../client/control-help", () => ({ useControlHelp: (text: string | null) => { helpDouble.lastText = text; return { bindings: {}, open: helpDouble.open,
+  hold: () => { helpDouble.holds++; helpDouble.open = true; },
+  dismiss: () => { helpDouble.dismisses++; helpDouble.open = false; },
+  forget: () => {} }; },
+  useActionHelp: () => ({ bindings: {}, forget: () => {} }) }));
 
 import { SelectionBar, SelectionHeader, type SelectionControl } from "../client/session-selection";
 import { DenseSessionRow, type DenseRowMode } from "../client/dense-session-row";
@@ -73,7 +83,7 @@ describe("SelectionHeader", () => {
 });
 
 describe("SelectionBar", () => {
-  const bar = (count: number, takeover = control(), auto = control(), archive = control()) => ({ takeover, auto, archive, tree: walk(SelectionBar({ count, takeover, auto, archive, colors: COLORS })) });
+  const bar = (count: number, takeover = control(), auto = control(), archive = control(), disclosure: string | null = null, hasLimits = true) => ({ takeover, auto, archive, tree: harness.current.render(() => walk(SelectionBar({ count, takeover, auto, archive, colors: COLORS, disclosure, hasLimits }))) });
   const ids = ["selection-takeover", "selection-takeover-auto", "selection-archive"];
   const buttons = (tree: Element[]) => ids.map((id) => tree.find((node) => node.type === "Pressable" && node.props.testID === id)!);
 
@@ -83,6 +93,16 @@ describe("SelectionBar", () => {
     expect(buttons(b.tree).map((button) => (button.props.accessibilityState as { disabled: boolean }).disabled)).toEqual([false, false, false]);
     buttons(b.tree).forEach(press);
     expect([b.takeover.onPress, b.auto.onPress, b.archive.onPress].map((fn) => fn.mock.calls.length)).toEqual([1, 1, 1]);
+  });
+
+  it("carries every refused control's full reason on its accessibilityHint (R38 D1)", () => {
+    const b = bar(2, control("This host is offline."), control(), control("Archive waits for the host and any running archive."));
+    const hints = buttons(b.tree).map((button) => button.props.accessibilityHint as string | undefined);
+    expect(hints[0]).toContain("This host is offline.");
+    expect(hints[1]).toContain("This host is offline."); // the takeover group shares the group's refusal
+    expect(hints[2]).toContain("Archive waits for the host and any running archive.");
+    const cleared = bar(2);
+    expect(buttons(cleared.tree).map((button) => button.props.accessibilityHint)).toEqual([undefined, undefined, undefined]);
   });
 
   it("keeps every label whole on a narrow phone by dropping the bar's icons, each button first taking its label's width", () => {
@@ -95,9 +115,183 @@ describe("SelectionBar", () => {
       expect(icons(tree)).toEqual(["ChevronDown"]);
       expect(buttons(tree).map((button) => texts(walk(button)).join(""))).toEqual(["Take over 12", "Auto", "Archive 12"]);
       expect(buttons(tree).map((button) => [style(button).flexBasis, style(button).flexGrow, style(button).flexShrink])).toEqual([["auto", 2, undefined], ["auto", 0, undefined], ["auto", 2, undefined]]);
-      // Large text wraps Archive below the Take over group rather than cutting any label.
-      expect((byTestId(tree, "selection-bar")!.props.children as { props: { style: object } }[])[0]!.props.style).toMatchObject({ flexDirection: "row", flexWrap: "wrap" });
     } finally { screen.width = 390; }
+  });
+
+  it("lays the buttons row out without flexWrap, inside a bar that scrolls within a maxHeight (R38-D3-r1/D2)", () => {
+    const tree = bar(2).tree;
+    // R38-D3-r1: Yoga's StretchFlexBasis errata inflates a wrapped row to two lines while every button
+    // sits on line one, so the row never wraps; stacking is the measured choice below.
+    const row = byTestId(tree, "selection-buttons-row")!;
+    const rowStyle = row.props.style as Record<string, unknown>;
+    expect(rowStyle).toMatchObject({ flexDirection: "row", gap: 8 });
+    expect(rowStyle.flexWrap).toBeUndefined();
+    // R38 D2: the bar caps at 60% of its parent and scrolls inside that instead of pushing the list out.
+    const root = byTestId(tree, "selection-bar")!;
+    expect(root.props.style).toMatchObject({ maxHeight: "60%", flexShrink: 1, paddingTop: 6, borderTopWidth: 1 });
+    // R38-D2-r2: the bar carries NO minHeight of its own — on a short root it takes what the capped
+    // list floor leaves and its scroller owns the buttons (M-bar-floor-uncapped dies here).
+    expect(JSON.stringify(root.props.style)).not.toContain('"minHeight"');
+    const scroller = root.props.children as { type: unknown; props: { style: Record<string, unknown> } };
+    expect(scroller.type).toBe("ScrollView");
+    expect(scroller.props.style).toMatchObject({ flexGrow: 0, flexShrink: 1 });
+  });
+
+  it("stacks Archive under the takeover group exactly when the measured intrinsic widths overflow the row, and keeps it stacked (R38-D3-r1)", () => {
+    // The decision reads the row's measured width and the labels' intrinsic widths, off the layout path.
+    const draw = () => harness.current.render(() => walk(SelectionBar({ count: 2, takeover: control(), auto: control(), archive: control(), colors: COLORS })));
+    const layout = (element: Element, width: number) => (element.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width, height: 44 } } });
+    // One line: everything fits.
+    let tree = draw();
+    layout(byTestId(tree, "selection-buttons-row")!, 400);
+    const measurer = byTestId(tree, "selection-label-measure")!;
+    const labels = (measurer.props.children as Element[]).map((child) => (child.props.onLayout as (event: unknown) => void));
+    labels[0]!({ nativeEvent: { layout: { x: 0, y: 0, width: 77, height: 16 } } });
+    labels[1]!({ nativeEvent: { layout: { x: 0, y: 0, width: 30, height: 16 } } });
+    labels[2]!({ nativeEvent: { layout: { x: 0, y: 0, width: 58, height: 16 } } });
+    tree = draw();
+    expect(byTestId(tree, "selection-buttons-row")!.props.style).toMatchObject({ flexDirection: "row" });
+    expect(tree.filter((node) => (node.type as { name?: string }).name === "BarButton")[2]!.props.grow).toBe(2);
+    // Stacked: the same labels measured against a narrower row (text200-like widths overflow it).
+    tree = draw();
+    layout(byTestId(tree, "selection-buttons-row")!, 300);
+    const wide = byTestId(tree, "selection-label-measure")!;
+    const wideLabels = (wide.props.children as Element[]).map((child) => (child.props.onLayout as (event: unknown) => void));
+    wideLabels[0]!({ nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 16 } } });
+    wideLabels[1]!({ nativeEvent: { layout: { x: 0, y: 0, width: 60, height: 16 } } });
+    wideLabels[2]!({ nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 16 } } });
+    tree = draw();
+    expect(tree.filter((node) => (node.type as { name?: string }).name === "BarButton")[2]!.props.grow).toBe(0);
+    // Stable once stacked: the same measurements draw the same stack again.
+    tree = draw();
+    expect(byTestId(tree, "selection-buttons-row")!.props.style).toMatchObject({ flexDirection: "column" });
+  });
+
+  it("clamps the takeover disclosure to two lines with a Limits control that starts collapsed, flips expanded on press and takes a 44pt target (R38-D1)", () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
+    const disclosure = `${TAKEOVER_EFFECTS} Plus a wall of host limits long enough to fill twenty-five lines on a phone.`;
+    let tree = bar(2, control(), control(), control(), disclosure).tree;
+    const line = byTestId(tree, "selection-takeover-disclosure")!;
+    // R38 V2: the inline line is EXACTLY the fixed effects sentence — the host limits leave the text
+    // entirely and ride only the Limits popover (the hook receives the full `disclosure` prop).
+    const inline = (line.props.children as string[] | string); expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline)).toBe(`Take over: ${TAKEOVER_EFFECTS}`);
+    expect(line.props.numberOfLines).toBe(2);
+    expect(line.props.style).toMatchObject({ lineHeight: 22 }); // two lines fill the 44pt Limits row: no dead band under the last line (R38 F2)
+    // No second, unclamped copy of the effects text anywhere in the bar (R38 D1): the only carrier is
+    // the two-line disclosure; anything else starting "Take over: " is the inline wall returning.
+    const walls = tree.filter((node) => node.type === "Text" && [node.props.children].flat(Infinity).join("").startsWith("Take over: "));
+    expect(walls.map((node) => node.props.numberOfLines)).toEqual([2]);
+    const limits = byTestId(tree, "selection-limits")!;
+    expect(limits.props).toMatchObject({ accessibilityRole: "button", accessibilityState: { expanded: false }, "aria-expanded": false, hitSlop: 6 });
+    const limitStyle = (limits.props.style as (state: object) => Record<string, unknown>)({ pressed: false, focused: false });
+    expect(limitStyle.minHeight).toBeGreaterThanOrEqual(44);
+    expect(limitStyle.minWidth).toBeGreaterThanOrEqual(44);
+    press(limits);
+    tree = bar(2, control(), control(), control(), disclosure).tree;
+    expect(byTestId(tree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: true });
+    // F1: the provider's own dismissals (Escape, an outside press, scroll, resize, back) close the state
+    // too — expanded tracks the popover, not this control's press history — and the first press after
+    // any such dismissal OPENS the limits again rather than dead-dismissing a closed popover.
+    helpDouble.open = false;
+    tree = bar(2, control(), control(), control(), disclosure).tree;
+    expect(byTestId(tree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: false });
+    press(byTestId(tree, "selection-limits"));
+    expect(helpDouble.holds).toBe(2);
+    expect(helpDouble.dismisses).toBe(0);
+    // R38 V2: the Limits popover keeps the FULL effects-plus-limits disclosure — the hook's text is the
+    // whole prop, not the clipped inline sentence (M-limits-without-limits dies here).
+    expect(helpDouble.lastText).toBe(`Take over: ${disclosure}`);
+  });
+
+  it("makes Limits a one-decision disclosure toggle per press through pointer and keyboard, with aria-expanded on the DOM (R9 AUD-F1/F3)", () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
+    const takeover = control(), auto = control(), archive = control();
+    let tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true })));
+    const draw = () => { tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true }))); };
+    draw();
+    const expanded = () => ({ aria: byTestId(tree, "selection-limits")!.props["aria-expanded"], state: (byTestId(tree, "selection-limits")!.props.accessibilityState as { expanded: boolean }).expanded });
+    const pressLimits = (pointer: boolean) => {
+      const node = byTestId(tree, "selection-limits")!.props;
+      if (pointer) (node.onPressIn as (() => void) | undefined)?.();
+      (node.onPress as () => void)();
+    };
+    // AUD-F1: the DOM carries aria-expanded beside the native state (RNW 0.21.4 maps neither
+    // accessibilityState nor accessibilityExpanded for web readers).
+    expect(expanded()).toEqual({ aria: false, state: false });
+    // A pointer press decides ONCE from the press-start state: open -> closed -> open (AUD-F3).
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: false, state: false });
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    // Keyboard (Enter/Space) fires no press start: the decision comes from the live state — closing
+    // from open and opening from closed, never double-toggling.
+    pressLimits(false); draw();
+    expect(expanded()).toEqual({ aria: false, state: false });
+    pressLimits(false); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    // The press-start capture is consumed and reset by its own decision: after a pointer press, a
+    // keyboard press closes and the NEXT keyboard press from closed OPENS (a stale capture would
+    // keep dismissing and stay closed).
+    pressLimits(true); draw();
+    expect(expanded()).toEqual({ aria: false, state: false });
+    pressLimits(false); draw();
+    expect(expanded()).toEqual({ aria: true, state: true });
+    expect(helpDouble.holds).toBeGreaterThanOrEqual(4);
+  });
+
+  it("renders no Limits control when the host states no limits, while the effects sentence is NOT clamped (R38 V2, R38-D2-r3 addendum)", () => {
+    // Without limits there is no Limits control, so the full effects sentence shows unclamped and
+    // scrolls in the bar like the other text (one conditional on hasLimits).
+    let tree = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`, false).tree;
+    const unclamped = byTestId(tree, "selection-takeover-disclosure")!;
+    expect(unclamped).toBeDefined();
+    expect(unclamped.props.numberOfLines).toBeUndefined();
+    expect(byTestId(tree, "selection-limits")).toBeUndefined();
+    // With limits, the clamp to two lines stays (the Limits popover holds the whole sentence).
+    tree = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`, true).tree;
+    expect(byTestId(tree, "selection-takeover-disclosure")!.props.numberOfLines).toBe(2);
+    expect(byTestId(tree, "selection-limits")).toBeDefined();
+  });
+
+  it("starts the bar's scroll at its end when the content does not fit, and never fights a user who scrolled up (R38-D2-r3)", () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; scrollEventThrottle: number; ref: { current: unknown } } } }).children;
+    // The bar wires its scroller for the rest-end pin: a content-size change re-pins to the end only
+    // while the scroller sits at the end; a user scroll up un-pins it.
+    expect(typeof scroller.props.onContentSizeChange).toBe("function");
+    expect(typeof scroller.props.onScroll).toBe("function");
+    // R38-D2-r3: RNW emits onScroll during a drag only when the throttle feeds it every frame.
+    expect(scroller.props.scrollEventThrottle).toBe(16);
+    const scrollToEnd = vi.fn();
+    (scroller.props.ref as { current: unknown }).current = { scrollToEnd };
+    scroller.props.onContentSizeChange(360, 300);
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    expect(scrollToEnd.mock.calls[0]![0]).toMatchObject({ animated: false });
+    // A user scrolls up to read: the pin releases...
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 0 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    // ...so further content changes (a refetch, a label width settling) do not re-pin.
+    scroller.props.onContentSizeChange(360, 300);
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    // Back at the end, the pin re-arms and the next content change re-pins again.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 216 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    scroller.props.onContentSizeChange(360, 300);
+    expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the effects line only while Take over can start, and clamps every reason line to one", () => {
+    const refusal = bar(2, control("This host is offline."), control(), control(), "Take over: effects text.").tree;
+    expect(byTestId(refusal, "selection-takeover-disclosure")).toBeUndefined();
+    expect(byTestId(refusal, "selection-limits")).toBeUndefined();
+    const enabled = bar(2, control(), control(), control("Archive waits."), "Take over: effects text.").tree;
+    expect(byTestId(enabled, "selection-takeover-disclosure")!.props.numberOfLines).toBe(2);
+    const reasons = enabled.filter((node) => node.type === "Text" && node.props.numberOfLines === 1 && !node.props.testID && (node.props.children as string) !== "Auto");
+    expect(reasons.map((node) => node.props.children)).toContain("Archive waits.");
+    const noneSelected = bar(0).tree;
+    expect(texts(noneSelected)).toContain("Select sessions first.");
+    expect(byTestId(noneSelected, "selection-takeover-disclosure")).toBeUndefined();
   });
   it("disables every action with nothing selected and says so once", () => {
     const b = bar(0, control("This host is offline."), control(), control("This host is offline."));
