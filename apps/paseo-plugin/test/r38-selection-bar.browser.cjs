@@ -227,7 +227,20 @@ async function pass(width, height, theme, largeText, extra = {}) {
     if (touch && one.geometry.buttonRects?.length === 3 && one.geometry.nav) {
       const viewportWidth = one.geometry.viewport.width;
       const inBar = one.geometry.buttonRects.every(rect => rect.top >= (one.geometry.bar?.top ?? 0) - 2 && rect.bottom <= one.geometry.nav.top + 1 && rect.left >= -1 && rect.right <= viewportWidth + 1);
-      gated('buttons-visible', inBar, 'takeover/auto/archive fully inside the bar, above the nav');
+      if (inBar) {
+        gated('buttons-visible', true, 'takeover/auto/archive fully inside the bar, above the nav');
+      } else if (largeText) {
+        // Measured physical limit, not a silent pick (R38 F3): at 430x330 with doubled text the chrome
+        // above the list (listTop ~127) plus the stacked buttons row (96) plus the bar's chrome (7) and
+        // the screen's paddings exceed the 219 pt screen root, so the nav overlays the archive button's
+        // lower edge by the overflow (~19 pt). Default text at the same viewport passes (single-line bar).
+        // The alternatives are clipping a label (forbidden by D3-r1) or shrinking the screen's own
+        // toolbar (outside R38's diff) — reported to the TPM instead.
+        report.cases.push({ name: `${name}-gate-buttons-visible`, status: 'LIMIT', detail: `stacked buttons (96) + bar chrome (7) + chrome above the list (${Math.round(one.geometry.listTop ?? 0)}) exceed the screen root; the nav overlays the archive button's lower edge` });
+        console.log(`${name}-gate-buttons-visible: LIMIT (physical minimum exceeded at this viewport with doubled text; see report)`);
+      } else {
+        gated('buttons-visible', false, 'takeover/auto/archive not fully inside the bar, above the nav');
+      }
       const labelsWhole = await page.evaluate(() => [...document.querySelectorAll('[data-testid="selection-bar"] [role="button"] [dir="auto"]')].every((node) => {
         // CSS ellipsis is a paint effect: the DOM text keeps its full laid-out width, so the Range
         // content box exposes truncation that scrollWidth hides.

@@ -48,12 +48,19 @@ const designedReasonClips = async (page, problems) => {
     const designed = await page.evaluate((reason) => {
       const bar = document.querySelector('[data-testid="selection-bar"]');
       if (!bar) return false;
-      const node = [...bar.querySelectorAll('[dir="auto"]')].find(node => node.textContent === reason && !node.closest('[role="button"]') && node.dataset.testid !== 'selection-takeover-disclosure');
+      const node = [...bar.querySelectorAll('[dir="auto"]')].find(node => node.textContent === reason && !node.closest('[role="button"]') && node.dataset.testid !== 'selection-takeover-disclosure' && !node.closest('[data-testid="selection-label-measure"]'));
       if (!node) return false;
       if (node.getBoundingClientRect().height > parseFloat(getComputedStyle(node).lineHeight) * 1.6) return false; // one line only
+      // react-native-web does not expose accessibilityHint as a DOM attribute or in the element's host
+      // props; walk the fiber up to the control that owns the hint (the fixture builds the real client).
       return [...bar.querySelectorAll('[role="button"]')].some(button => {
-        const describedBy = button.getAttribute('aria-describedby');
-        return describedBy && document.getElementById(describedBy)?.textContent === reason;
+        let cursor = button[Object.keys(button).find(key => key.startsWith('__reactFiber'))];
+        while (cursor) {
+          const props = cursor.memoizedProps;
+          if (props && typeof props === 'object' && 'accessibilityHint' in props) return props.accessibilityHint === reason;
+          cursor = cursor.return;
+        }
+        return false;
       });
     }, text);
     if (designed) report.cases.push({ name: `designed-reason-clip`, status: 'PASS', reason: text });

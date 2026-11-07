@@ -111,8 +111,9 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   const limits = useControlHelp(effects ?? "");
   // The bar never grows past 60% of its parent: very large text scrolls inside it instead of pushing the
   // session list out (R38 D2). In the switch sheet the footer has no definite height, so there the sheet's
-  // own scroll owns the bound.
-  return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: 1, maxHeight: "60%" }}>
+  // own scroll owns the bound. Its floor is its buttons row (R38 F3): 7 pt chrome + one line (44) or the
+  // measured stack (44 + 8 + 44) — the bar's text may scroll away on a short root, the buttons may not.
+  return <View testID="selection-bar" style={{ paddingTop: 6, borderTopWidth: 1, borderColor: colors.border, flexShrink: 1, maxHeight: "60%", minHeight: stacked ? 103 : 51 }}>
     <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }}>
       {/* Buttons keep their labels' width. Archive stacks under the takeover group when the measured
         intrinsic widths do not fit one line (large text), rather than any label being cut. The row never
