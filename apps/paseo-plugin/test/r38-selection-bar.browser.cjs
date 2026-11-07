@@ -146,7 +146,7 @@ async function enterSelection(page, firstRowId) {
 // later gates run as though the press happened.
 const TAP_SETTLE_ROUNDS = 8, TAP_SETTLE_MS = 150, TAP_REVEAL_MAX = 4, TAP_ATTEMPTS = 3;
 let tapBoundSeq = 0;
-async function tapBarControl(page, testId) {
+async function tapBarControl(page, testId, opts = {}) {
   await page.evaluate(() => {
     if (window.__r38ScrollN !== undefined) return;
     window.__r38ScrollN = 0;
@@ -169,12 +169,18 @@ async function tapBarControl(page, testId) {
     if (!hit || (!control.contains(hit) && hit !== control)) return { state: 'covered', hit: `${hit?.tagName}.${hit?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''}` };
     return { state: 'ready', x, y, scrolledBy };
   };
+  // R10-F3 (r11): a bound hit is terminal for the caller — the reason-bearing FAIL row is recorded
+  // and the helper THROWS, so the pass-level catch stops the pass and NO later gate can run as
+  // though the press happened (never a silent fall-through). opts.expectBound tags the row as
+  // exercised intentionally (the committed control-flow regression); the row stays FAIL in the
+  // report, only the exit accounting treats it as expected.
   const failBound = (reason) => {
     tapBoundSeq += 1;
     const name = `${testId}-tap-bound-${tapBoundSeq}`;
-    report.cases.push({ name, status: 'FAIL', detail: reason });
-    console.log(`${name}: FAIL ${reason}`);
-    return false;
+    const expectedBound = opts.expectBound === true;
+    report.cases.push({ name, status: 'FAIL', detail: reason, expectedBound: expectedBound || undefined });
+    console.log(`${name}: FAIL ${reason}${expectedBound ? ' (exercised intentionally by the control-flow regression)' : ''}`);
+    throw new Error(reason);
   };
   let lastState = 'missing';
   for (let attempt = 0; attempt < TAP_ATTEMPTS; attempt++) {
@@ -558,6 +564,55 @@ async function pass(width, height, theme, largeText, extra = {}) {
 // R10 R9-F1/F2 activation gates on a non-touch wide page (the audit's cancel-click and
 // hover-one-click sequences, committed): a cancelled press must not consume the next activation,
 // and hover-then-click converts the unheld hover help to the held one in exactly one click.
+// R10-F3 (r11) committed control-flow regression: with Limits COVERED (an overlay element over it),
+// the helper records its reason-bearing bound FAIL row and THROWS, so the dependent gate after the
+// call NEVER runs — there is no PASS row past the bound row in this pass, and the pass's own gate
+// asserts exactly that.
+async function helperFlowPass() {
+  const name = 'helper-flow-430x810-light';
+  scaleText = false;
+  const context = await browser.newContext({ viewport: { width: 430, height: 810 } });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${origin}/?scenario=baseline&theme=light&layout=compact&inflat=34&state=mywork`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
+    if (await hide.isVisible().catch(() => false)) await hide.click();
+    await page.getByTestId('session-actions-agt_lsa_99101').click();
+    await page.getByRole('dialog', { name: 'Session actions', exact: true }).getByTestId('session-action-select').click();
+    await page.waitForTimeout(600);
+    const limits = page.getByTestId('selection-limits');
+    await limits.waitFor({ timeout: 15000 });
+    await page.evaluate(() => {
+      const limitsNode = document.querySelector('[data-testid="selection-limits"]');
+      const r = limitsNode.getBoundingClientRect();
+      const cover = document.createElement('div');
+      cover.id = 'r11-cover';
+      Object.assign(cover.style, { position: 'fixed', left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px`, zIndex: '99999', background: 'transparent' });
+      document.body.appendChild(cover);
+    });
+    const boundRowBefore = report.cases.length;
+    let threw = null;
+    try {
+      await tapBarControl(page, 'selection-limits', { expectBound: true });
+    } catch (error) {
+      threw = error;
+    }
+    const boundRow = report.cases.find((row) => row.name.startsWith('selection-limits-tap-bound-') && row.expectedBound);
+    const rowsAfterBound = report.cases.slice(boundRowBefore).filter((row) => row !== boundRow && row.status === 'PASS');
+    const ok = threw instanceof Error && boundRow && typeof boundRow.detail === 'string' && /still covered/.test(boundRow.detail) && rowsAfterBound.length === 0;
+    report.cases.push({ name: `${name}-gate-reach-fail-stops-the-pass`, status: ok ? 'PASS' : 'FAIL', detail: ok
+      ? `covered Limits: helper threw '${threw.message}'; reason row '${boundRow.name}: ${boundRow.detail}' recorded; dependent gates after it: 0 (none ran as though the press happened)`
+      : `expected the helper to record a covered-target bound row and throw; threw=${threw?.message ?? 'nothing'}, boundRow=${JSON.stringify(boundRow)}, PASS rows after bound: ${rowsAfterBound.length}` });
+    console.log(`${name}-gate-reach-fail-stops-the-pass: ${ok ? 'PASS' : 'FAIL'}`);
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
 async function activationPass() {
   const name = 'activation-1280x800-light';
   scaleText = false;
@@ -963,6 +1018,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     await widePass(1280, 800);
     await widePass(820, 1180);
     await activationPass();
+    await helperFlowPass();
     // R38 V3 + F-SHEET: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the
     // panel text — and the at-rest button gates in both forms, the compact sheet also at text200.
     await switchSheetPass(1280, 800, 'popover');
@@ -984,8 +1040,10 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');
   }
-  const failed = report.cases.filter(result => result.status === 'FAIL');
-  console.log(`\ncases: ${report.cases.length}, FAIL: ${failed.length}`);
+  const expectedBound = report.cases.filter(result => result.status === 'FAIL' && result.expectedBound);
+  const failed = report.cases.filter(result => result.status === 'FAIL' && !result.expectedBound);
+  console.log(`\ncases: ${report.cases.length}, FAIL: ${failed.length}${expectedBound.length ? `, expected-bound rows: ${expectedBound.length}` : ''}`);
+  for (const result of expectedBound) console.log(`EXPECTED-BOUND ${result.name}: ${result.detail ?? ''}`);
   for (const result of failed) console.log(`FAIL ${result.name}: ${result.error ?? result.detail ?? ''}`);
   if (failed.length) process.exitCode = 1;
 })().catch(error => { console.error(error); process.exitCode = 1; });

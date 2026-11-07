@@ -125,17 +125,22 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // bar's own height changes — it never fights a user who has scrolled up.
   const scrollerRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
   const pinnedToEnd = useRef(true);
-  // R10 R9-F1: ONE toggle decision per activation. A pointer press captures the open state at press
-  // start ONLY when a HELD help is showing — the one case a mid-gesture dismissal (the native root
-  // touch-start) disturbs the live state; an unheld hover help is dismissed by the press itself, and
-  // a keyboard activation has no press start, so both decide from live state. The capture belongs to
-  // its gesture: release schedules an expiry in a task that runs after any onPress the gesture could
-  // still fire (on web the click is the mouseup's default action — same task; native Pressability
-  // calls onPressOut synchronously before onPress in the release dispatch), so an abandoned or
-  // cancelled press can never leak its capture into the next activation; a new press-start cancels a
-  // pending expiry.
-  const pressOpen = useRef<boolean | null>(null);
-  const pressExpiry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // R38-D1-r2: the Limits press needs NO state capture — one decision per activation, from live
+  // state only. The capture existed only because, on native, the root's touch-start dismissal used
+  // to close the held help before this control's onPress ran. Limits now stops that touch itself:
+  // onTouchStart below calls stopPropagation while the help is HELD — React Native's bubbling
+  // honours it, and Pressability supplies no onTouchStart of its own (Pressable.js:326-328 spreads
+  // the rest props onto the View before Pressability's handlers, which carry no onTouchStart), so
+  // the press path is unaffected. Proven on the pinned react-native 0.81.5 Fabric renderer by the
+  // r11 stop-rule probe (both handlers run target-first without the stop; with the stop the root
+  // handler never runs). While HELD: the root dismissal never runs, live state is undisturbed, and
+  // onPress toggles it. While NOT held (hover or keyboard-focus help): the touch is NOT stopped,
+  // the root dismisses, and onPress opens the held disclosure from the live closed state. On web
+  // the provider's capture-phase pointerdown keeps the r9 holding-anchor exception
+  // (control-help.tsx:100), which works because contains() exists there. A cancelled press that
+  // fires the root's onTouchCancel closes the help; expanded follows through the subscription —
+  // consistent state, not a defect. PressResponder's keydown also starts a press on web (0.21.4
+  // PressResponder.js:236), so keyboard activations are ordinary live-state activations.
   const repinToEnd = () => { if (pinnedToEnd.current) scrollerRef.current?.scrollToEnd({ animated: false }); };
   // The bar never grows past 60% of its parent: very large text scrolls inside it instead of pushing the
   // session list out (R38 D2). In the switch sheet the footer has no definite height, so there the sheet's
@@ -164,9 +169,8 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
         {hasLimits ? <Pressable testID="selection-limits" {...limits.bindings} accessibilityRole="button" accessibilityLabel="Take over limits"
           accessibilityState={{ expanded: limits.open }} aria-expanded={limits.open} accessibilityHint="Opens the full take over effects and this host's stated limits."
           hitSlop={6}
-          onPressIn={() => { if (pressExpiry.current !== null) { clearTimeout(pressExpiry.current); pressExpiry.current = null; } pressOpen.current = limits.heldOpen ? limits.open : null; }}
-          onPressOut={() => { if (pressExpiry.current !== null) clearTimeout(pressExpiry.current); pressExpiry.current = setTimeout(() => { pressOpen.current = null; pressExpiry.current = null; }, 0); }}
-          onPress={() => { if (pressExpiry.current !== null) { clearTimeout(pressExpiry.current); pressExpiry.current = null; } const was = pressOpen.current; pressOpen.current = null; (was ?? limits.open) ? limits.dismiss() : limits.hold(); }}
+          onTouchStart={(e) => { if (limits.heldOpen) e.stopPropagation(); }}
+          onPress={() => { limits.open ? limits.dismiss() : limits.hold(); }}
           style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", borderRadius: 6, ...focusRing(colors, focused) })}>
           <Text numberOfLines={1} style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Limits</Text>
         </Pressable> : null}

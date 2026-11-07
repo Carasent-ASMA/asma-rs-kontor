@@ -13,10 +13,10 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 // The ControlHelp provider is replaced by a stateful double: hold/dismiss move `open` exactly as the
 // provider would, and a test simulates the provider's own dismissals (Escape, outside press) by setting
 // `open` back — the control's expanded flag must follow, not its own press history (R38 F1).
-const helpDouble = vi.hoisted(() => ({ open: false, holds: 0, dismisses: 0, lastText: null as string | null }));
-vi.mock("../client/control-help", () => ({ useControlHelp: (text: string | null) => { helpDouble.lastText = text; return { bindings: {}, open: helpDouble.open, heldOpen: true,
-  hold: () => { helpDouble.holds++; helpDouble.open = true; },
-  dismiss: () => { helpDouble.dismisses++; helpDouble.open = false; },
+const helpDouble = vi.hoisted(() => ({ open: false, holds: 0, dismisses: 0, lastText: null as string | null, heldOpen: false }));
+vi.mock("../client/control-help", () => ({ useControlHelp: (text: string | null) => { helpDouble.lastText = text; return { bindings: {}, open: helpDouble.open, heldOpen: helpDouble.heldOpen,
+  hold: () => { helpDouble.holds++; helpDouble.open = true; helpDouble.heldOpen = true; },
+  dismiss: () => { helpDouble.dismisses++; helpDouble.open = false; helpDouble.heldOpen = false; },
   forget: () => {} }; },
   useActionHelp: () => ({ bindings: {}, forget: () => {} }) }));
 
@@ -241,66 +241,59 @@ describe("SelectionBar", () => {
     expect(helpDouble.holds).toBeGreaterThanOrEqual(4);
   });
 
-  it("drops an abandoned press's capture and decides cancelled-and-later activations from live state (R10 R9-F1)", async () => {
-    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0;
+  it("makes ONE live-state decision per activation and needs no press capture (R11 R38-D1-r2)", () => {
+    helpDouble.open = false; helpDouble.holds = 0; helpDouble.dismisses = 0; helpDouble.heldOpen = false;
     const takeover = control(), auto = control(), archive = control();
     let tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true })));
     const draw = () => { tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true }))); };
     const expanded = () => (byTestId(tree, "selection-limits")!.props.accessibilityState as { expanded: boolean }).expanded;
-    // gesture(pointer): the native/web order pressIn → [gesture] → pressOut → press. The disturbance
-    // step models what the native root touch-start does to an OPEN held help mid-gesture (dismiss).
-    const gesture = async (pointer: boolean, disturb = false, flush = false) => {
-      const props = byTestId(tree, "selection-limits")!.props;
-      if (pointer) (props.onPressIn as (() => void) | undefined)?.();
-      if (disturb) helpDouble.open = false;
-      if (pointer) (props.onPressOut as (() => void) | undefined)?.();
-      // The web order flushes the mid-gesture dismissal into the render BEFORE the click that fires
-      // onPress (the click task follows the pointerup task); native dispatches onPress in the same
-      // release as onPressOut. The flush flag models the web order — the click dispatches on the
-      // CURRENT render, so onPress is read fresh after it.
-      if (flush) draw();
-      (byTestId(tree, "selection-limits")!.props.onPress as () => void)();
-      draw();
-    };
-    const cancel = async (pointer: boolean) => {
-      const props = byTestId(tree, "selection-limits")!.props;
-      if (pointer) (props.onPressIn as (() => void) | undefined)?.();
-      helpDouble.open = false;
-      if (pointer) (props.onPressOut as (() => void) | undefined)?.();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      draw();
-    };
-    const keyboard = () => { (byTestId(tree, "selection-limits")!.props.onPress as () => void)(); draw(); };
-    // A completed pointer press from open makes ONE decision even when the native root touch-start
-    // dismisses mid-gesture: the press-start capture survives to onPress and closes (the held-open
-    // second press must CLOSE — a synchronous onPressOut clear would reopen it here).
-    await gesture(true, false);
+    const props = () => byTestId(tree, "selection-limits")!.props;
+    const press = () => { (props().onPress as () => void)(); draw(); };
+    // Held open: the press CLOSES, whether or not a mid-gesture root dismissal disturbed the state —
+    // the decision is the live state at onPress; there is no press-start capture to consume or leak.
+    helpDouble.open = true; helpDouble.heldOpen = true; draw();
     expect(expanded()).toBe(true);
-    await gesture(true, true);
+    press();
     expect(expanded()).toBe(false);
-    // Web order with the same mid-gesture dismissal flushed before the click: the held-open capture
-    // still CLOSES it (a synchronous onPressOut clear would lose the capture and reopen here).
-    keyboard();
+    press();
     expect(expanded()).toBe(true);
-    await gesture(true, true, true);
+    // Same press with the root-dismissal disturbance flushed before onPress (the web click order):
+    // still one live decision — the press that opened it closes it again.
+    helpDouble.open = true; draw();
+    press();
     expect(expanded()).toBe(false);
-    // A CANCELLED press (Escape while down, released outside — no onPress) drops its capture: after
-    // the gesture's expiry runs, an activation with no press start decides from the live state and
-    // OPENS the closed help (a leaked capture would dismiss it again and stay closed).
-    keyboard();
+    // A CANCELLED gesture (press down, released outside — the client's press events never fire
+    // onPress): the next activation opens from the live state; no capture is left behind.
+    helpDouble.open = true; helpDouble.heldOpen = true; draw();
     expect(expanded()).toBe(true);
-    await cancel(true);
-    keyboard();
+    // the press-down itself touches nothing: onPress decides only when the activation lands
+    helpDouble.open = false; draw();
+    press();
     expect(expanded()).toBe(true);
-    // The expiry with no live disturbance clears to NO decision: the next activation on the still-
-    // open help CLOSES it (an expiry that decided false would hold it open instead).
-    const props = byTestId(tree, "selection-limits")!.props;
-    (props.onPressIn as (() => void) | undefined)?.();
-    (props.onPressOut as (() => void) | undefined)?.();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    draw();
-    keyboard();
-    expect(expanded()).toBe(false);
+  });
+
+  it("stops the root touch-start on Limits only while HELD, and an unheld-focus tap opens the held popover (R11 R38-D1-r2, R10-F2)", () => {
+    helpDouble.open = true; helpDouble.heldOpen = true; helpDouble.holds = 0; helpDouble.dismisses = 0;
+    const takeover = control(), auto = control(), archive = control();
+    let tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true })));
+    const draw = () => { tree = harness.current.render(() => walk(SelectionBar({ count: 1, takeover, auto, archive, colors: COLORS, disclosure: `Take over: ${TAKEOVER_EFFECTS}`, hasLimits: true }))); };
+    const props = () => byTestId(tree, "selection-limits")!.props;
+    expect(typeof props().onTouchStart).toBe("function");
+    let stopped = 0;
+    const evt = { stopPropagation: () => { stopped += 1; } };
+    (props().onTouchStart as (e: unknown) => void)(evt);
+    expect(stopped).toBe(1);
+    // Native keyboard-focus help is unheld: the touch propagates, so the root dismissal runs.
+    helpDouble.heldOpen = false; draw();
+    (props().onTouchStart as (e: unknown) => void)(evt);
+    expect(stopped).toBe(1);
+    // The unheld-focus tap: the root touch-start dismissal closes the unheld help (the touch was
+    // NOT stopped), and onPress then decides from the live closed state — the held popover OPENS.
+    helpDouble.open = true; helpDouble.heldOpen = false; draw();
+    helpDouble.open = false; draw();
+    (props().onPress as () => void)(); draw();
+    expect(helpDouble.open).toBe(true);
+    expect(helpDouble.heldOpen).toBe(true);
   });
 
   it("renders no Limits control when the host states no limits, while the effects sentence is NOT clamped (R38 V2, R38-D2-r3 addendum)", () => {
