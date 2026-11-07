@@ -138,30 +138,37 @@ async function enterSelection(page, firstRowId) {
 // reveal the control — and press it with a real pointer press at freshly read coordinates. The
 // reach+read+dispatch is retried with an outcome check: background refetches can reflow text
 // between a box read and the dispatch (the press must land on the control, verified, or retry).
-async function tapBarControl(page, testId) {
+async function tapBarControl(page, testId, expect = null) {
+  // expect 'open': an opening press may be eaten by a background re-render, so it retries — but
+  // only while a fresh probe reads the control covered or scrolled out of reach (R10 R9-F2: once a
+  // click lands on a reachable control, the state it produced is the result; a closing press never
+  // passes 'open', so it can never be retried into a reopen).
+  const ready = (id) => {
+    const barNode = document.querySelector('[data-testid="selection-bar"]');
+    const scroller = barNode?.querySelector('div');
+    const control = document.querySelector(`[data-testid="${id}"]`);
+    if (!barNode || !control) return { state: 'missing' };
+    const s = scroller.getBoundingClientRect(), c = control.getBoundingClientRect();
+    if (c.width === 0 || c.height === 0) return { state: 'missing' };
+    if (c.top < s.top + 1) scroller.scrollTop += c.top - s.top - 2;
+    else if (c.bottom > s.bottom - 1) scroller.scrollTop += c.bottom - s.bottom + 2;
+    const r = control.getBoundingClientRect();
+    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || (!control.contains(hit) && hit !== control)) return { state: 'covered', hit: `${hit?.tagName}.${hit?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''}` };
+    return { state: 'ready', x, y };
+  };
   for (let attempt = 0; attempt < 3; attempt++) {
-    const outcome = await page.evaluate((id) => {
-      const barNode = document.querySelector('[data-testid="selection-bar"]');
-      const scroller = barNode?.querySelector('div');
-      const control = document.querySelector(`[data-testid="${id}"]`);
-      if (!barNode || !control) return { state: 'missing' };
-      const s = scroller.getBoundingClientRect(), c = control.getBoundingClientRect();
-      if (c.width === 0 || c.height === 0) return { state: 'missing' };
-      if (c.top < s.top + 1) scroller.scrollTop += c.top - s.top - 2;
-      else if (c.bottom > s.bottom - 1) scroller.scrollTop += c.bottom - s.bottom + 2;
-      const r = control.getBoundingClientRect();
-      const x = r.x + r.width / 2, y = r.y + r.height / 2;
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || (!control.contains(hit) && hit !== control)) return { state: 'covered', hit: `${hit?.tagName}.${hit?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''}` };
-      return { state: 'ready', x, y };
-    }, testId);
+    const outcome = await page.evaluate(ready, testId);
     if (outcome.state === 'ready') {
       await page.mouse.click(outcome.x, outcome.y);
       await page.waitForTimeout(180);
-      // R10 R9-F2: once a click has LANDED, the state it produced is the result — retry only while
-      // the control is covered or scrolled out of reach, never on a state mismatch (a retry re-press
-      // would hide a wrong first click, e.g. a closing press retried into a reopen).
-      return true;
+      if (expect !== 'open') return true;
+      if (await page.getByTestId('control-help').count() > 0) return true;
+      // No panel: the click may have been eaten by a re-render. Retry ONLY while a fresh probe
+      // reads the control covered or out of reach; a reachable control's click result stands.
+      if ((await page.evaluate(ready, testId)).state === 'ready') return true;
+      continue;
     }
     await page.waitForTimeout(300);
   }
@@ -459,13 +466,13 @@ async function pass(width, height, theme, largeText, extra = {}) {
       const panelCount = () => page.getByTestId('control-help').count();
       const reveal = async () => { await page.evaluate(() => { const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div'); if (scroller && scroller.scrollHeight > scroller.clientHeight) scroller.scrollTop = scroller.scrollHeight; }); await page.waitForTimeout(100); };
       gated('limits-aria-rest', (await aria()) === 'false' && (await panelCount()) === 0, `at rest aria-expanded ${await aria()}, panels ${await panelCount()}`);
-      await tapBarControl(page, 'selection-limits');
+      await tapBarControl(page, 'selection-limits', 'open');
       await page.waitForTimeout(150);
       gated('limits-aria-open', (await aria()) === 'true' && (await panelCount()) === 1, `tap: aria-expanded ${await aria()}, panels ${await panelCount()}`);
       await tapBarControl(page, 'selection-limits');
       await page.waitForTimeout(150);
       gated('limits-second-press-closes', (await aria()) === 'false' && (await panelCount()) === 0, `second press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
-      await tapBarControl(page, 'selection-limits');
+      await tapBarControl(page, 'selection-limits', 'open');
       await page.waitForTimeout(150);
       gated('limits-third-press-opens', (await aria()) === 'true' && (await panelCount()) === 1, `third press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
       // An outside press on a neutral spot inside the bar (the clamped disclosure line, revealed by
@@ -479,7 +486,7 @@ async function pass(width, height, theme, largeText, extra = {}) {
       await page.waitForTimeout(150);
       gated('limits-outside-press-closes', (await aria()) === 'false' && (await panelCount()) === 0, `outside press: aria-expanded ${await aria()}, panels ${await panelCount()}`);
       await reveal();
-      await tapBarControl(page, 'selection-limits');
+      await tapBarControl(page, 'selection-limits', 'open');
       await page.waitForTimeout(150);
       await page.keyboard.press('Escape');
       await page.waitForTimeout(150);
@@ -824,7 +831,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
       const sheetAria = () => page.evaluate(() => document.querySelector('[data-testid="selection-limits"]')?.getAttribute('aria-expanded') ?? null);
       const sheetPanels = () => page.getByTestId('control-help').count();
       gated('sheet-limits-aria-rest', (await sheetAria()) === 'false' && (await sheetPanels()) === 0, `at rest aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
-      await tapBarControl(page, 'selection-limits');
+      await tapBarControl(page, 'selection-limits', 'open');
       await page.waitForTimeout(150);
       gated('sheet-limits-aria-open', (await sheetAria()) === 'true' && (await sheetPanels()) === 1, `tap: aria-expanded ${await sheetAria()}, panels ${await sheetPanels()}`);
       await tapBarControl(page, 'selection-limits');
@@ -874,7 +881,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     // Reach the Limits control the way an operator does — the bar's own scroll, just far enough —
     // then press it with a real pointer press (tapBarControl; locator.click()'s re-centring scroll
     // would dismiss the just-opened help).
-    await tapBarControl(page, 'selection-limits');
+    await tapBarControl(page, 'selection-limits', 'open');
     await page.getByTestId('control-help').waitFor({ timeout: 15000 });
     await page.waitForTimeout(150);
     // Hit test on the popover TEXT: the panel's centre must resolve to the panel (or its content).
