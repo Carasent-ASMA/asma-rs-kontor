@@ -207,13 +207,14 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // it.each table is the bounded mount alphabet): four more rows — nocount-nolimits,
   // unavailable-nolimits, nocount-unavailable and nocount-unavailable-nolimits — covering the four
   // reachable cells of the effects × hasLimits × count × Take over matrix that had no case.
-  // Kills: named in this comment's kill list below, from the round's results.json.
-  // Kills (r16d results.json): V-n2-mount-effects-no-limits,
-  // V-n2-mount-no-effects-with-limits (each fails exactly its own it.each case — the gate is the
-  // UNIQUE killer of V-n2-mount-effects-no-limits), N-m-no-count, N-m-none,
-  // N-m-takeover-unavailable (each fails exactly its own new case — unique kills),
-  // NV-n2-dismiss-at-mount (this gate stays its SOLE killer — the variant now fails five cases),
-  // and M-rb-r14-presence-dismiss-any.
+  // Kills (r16f results.json): the mount gate is the SOLE killer of NV-n2-dismiss-at-mount (the
+  // variant now fails all NINE cases) and the UNIQUE killer of V-n2-mount-effects-no-limits,
+  // R-cell-elcu, R-cell-elCU, R-cell-eLcU and R-cell-elcU (each fails exactly its own case);
+  // N-m-no-count, N-m-none and N-m-takeover-unavailable die on their own case plus the new
+  // nocount rows; V-n2-mount-no-effects-with-limits fails FOUR cases (its own, count-zero,
+  // takeover-unavailable and nocount-unavailable); R-m-nocount-nolimits, R-m-unavailable-nolimits
+  // and R-m-nocount-unavailable each fail their own case plus nocount-unavailable-nolimits; and
+  // M-rb-r14-presence-dismiss-any.
   it.each([
     ["no effects, no Limits", 1, null, false, () => control()],
     ["effects, no Limits", 1, "effects text", false, () => control()],
