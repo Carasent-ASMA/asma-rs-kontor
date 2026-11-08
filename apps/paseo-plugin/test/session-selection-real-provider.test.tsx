@@ -195,9 +195,16 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // so the effect's mount run always happened under hasLimits=true. The variant adds a mount-only
   // effect (`useEffect(() => { if (!effects || !hasLimits) limits.dismiss(); }, []);` after the
   // presence effect) that fires exactly when the bar mounts with no Limits — dismiss() closes the
-  // whole controller, so another owner's already-open help must not go with it. This gate is the
-  // SOLE killer of NV-n2-dismiss-at-mount; it also kills M-rb-r14-presence-dismiss-any.
-  it("stays open when the bar mounts on a host with no Limits", () => {
+  // whole controller, so another owner's already-open help must not go with it. r16c: run as an
+  // it.each over ALL THREE presence combinations (review-B finding N2-r16 — the single set covered
+  // one of three, so a mount effect limited to either other combination escaped): effects+no-Limits
+  // and no-effects+Limits alongside the original no-effects+no-Limits. This gate is the SOLE killer
+  // of NV-n2-dismiss-at-mount; it also kills M-rb-r14-presence-dismiss-any.
+  it.each([
+    ["no effects, no Limits", null, false],
+    ["effects, no Limits", "effects text", false],
+    ["no effects, Limits", null, true],
+  ] as Array<[string, string | null, boolean]>)("stays open when the bar mounts: %s", (_name, disclosure, hasLimits) => {
     let providerEl!: Element;
     const provider = () => { providerEl = ControlHelpProvider({ children: "screen", colors: {} as Parameters<typeof ControlHelpProvider>[0]["colors"] }) as Element; harness.controller = providerEl.props.value; };
     harness.current.render(provider);
@@ -205,7 +212,7 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
     (harness.controller as { show: (a: unknown, t: string, f: boolean, h: boolean) => void }).show({ current: measure(200, 200, 40, 40) }, "Help for another control", false, true);
     harness.current.render(provider); harness.current.render(provider); harness.current.render(provider);
     expect(all(providerEl).find((node) => node.props.role === "tooltip")).toBeDefined();
-    const props = { count: 1, takeover: control(), auto: control(), archive: control(), colors: COLORS, disclosure: null, hasLimits: false };
+    const props = { count: 1, takeover: control(), auto: control(), archive: control(), colors: COLORS, disclosure, hasLimits };
     const renderAll = () => { provider(); all(SelectionBar(props)); };
     harness.current.render(renderAll); harness.current.render(renderAll); harness.current.render(renderAll);
     expect(all(providerEl).find((node) => node.props.role === "tooltip")).toBeDefined();

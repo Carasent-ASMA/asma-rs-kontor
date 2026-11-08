@@ -249,9 +249,10 @@ describe("SelectionBar", () => {
 
   it("a lower event after a higher stable-geometry event releases the pin: every event stores y (r16 SF1-r15, D2-r4)", () => {
     // Review-B survivor probe (NV-sf1-only-changed-geometry): a y-store condition that skips a
-    // stable event's y leaves lastY stale (0 here), so the 50 and 30 drags read as same-direction
-    // and the pin never releases — the settle then re-pins over the user. With every event storing
-    // y the 30 < 50 release is real and the settle must not re-pin. Asserts behaviour only.
+    // stable event's y leaves lastY stale (10 here — the first event is unstable and stores its 10),
+    // so the 50 and 30 drags read as same-direction and the pin never releases — the settle then
+    // re-pins over the user. With every event storing y the 30 < 50 release is real and the settle
+    // must not re-pin. Asserts behaviour only.
     // Kills (r16b results.json): NV-sf1-only-changed-geometry, NV-sf1-heights-only-at-end,
     // M-rb-r14-lasty-only-at-end (the y-atEnd matrix cell), M-r16-y-removed,
     // M-r16-heights-stableGeometry, M-r16-heights-removed, M-r16-heights-content-kept,
@@ -318,6 +319,77 @@ describe("SelectionBar", () => {
     scroller.props.onContentSizeChange(369, content);
     scroller.props.onLayout();
     expect(y).toBe(91);
+  });
+
+  it("the re-arm event stores y and both heights: the first lower event after it releases the pin (r16 SF1-r16, D2-r4/D2-r3)", () => {
+    // Review-B finding SF1-r16: the nearest r16 gate ("the re-armed offset") was never released, so
+    // its at-end event was not a re-arm. Here the pin IS released (50), the at-end event (78 at
+    // changed geometry) re-arms AND stores, and the first lower event after the re-arm (60, stable
+    // against the fresh store) must release — a y or heights store skipped on the re-arm leaves the
+    // stale 50 (V-y-wasPinned) or the stale {97,97}→changed geometry (V-h-wasPinned), the 60 reads
+    // same-direction and the content-size settle re-pins over the user. Asserts behaviour only.
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    const scrollToEnd = vi.fn();
+    scroller.props.ref.current = { scrollToEnd };
+    const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
+    event(91, 97, 188);
+    event(50, 97, 188);
+    event(78, 110, 188);
+    event(60, 110, 188);
+    scroller.props.onContentSizeChange(369, 200);
+    expect(scrollToEnd).toHaveBeenCalledTimes(0);
+  });
+
+  it("a height that shrinks and stays smaller is stored: the guard follows the real geometry (r16 SF2-r16, D2-r4/D2-r3)", () => {
+    // Review-B finding SF2-r16: no gate covered a shrink that STAYS. The clip shrinks 110→97 and
+    // the content 200→188, then the user drags down and back (30 then 10). A store kept at the old
+    // high water (V-h-content-high-water, V-h-clip-high-water) reads every later event as changed
+    // geometry, so the 10 < 30 release never happens and the content-size settle re-pins over the
+    // user for as long as the height stays below its peak. Asserts behaviour only.
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    const scrollToEnd = vi.fn();
+    scroller.props.ref.current = { scrollToEnd };
+    const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
+    event(10, 110, 200);
+    event(30, 97, 188);
+    event(10, 97, 188);
+    scroller.props.onContentSizeChange(369, 200);
+    expect(scrollToEnd).toHaveBeenCalledTimes(0);
+  });
+
+  it("a fractional offset is stored unrounded: a sub-pixel drop still releases the pin (r16 N1-r16, D2-r4)", () => {
+    // Review-B finding N1-r16: every store gate used whole numbers. At y 30.4 then 30.2 the drop
+    // is real and the pin releases before the settle; a stored Math.round (V-y-rounded) makes the
+    // second event read 30.2 >= 30, the release never happens and the settle re-pins.
+    // Asserts behaviour only.
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    const scrollToEnd = vi.fn();
+    scroller.props.ref.current = { scrollToEnd };
+    const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
+    event(30.4, 97, 188);
+    event(30.2, 97, 188);
+    scroller.props.onContentSizeChange(369, 200);
+    expect(scrollToEnd).toHaveBeenCalledTimes(0);
+  });
+
+  it("a fractional height is stored unrounded: the changed-geometry echo after a fraction is not a user scroll (r16 N1-r16, D2-r4)", () => {
+    // Review-B finding N1-r16, heights half: at content 188.4 the store keeps the fraction, so the
+    // next event's 188 is CHANGED geometry and the lower echo 30.2 must NOT release (the pin
+    // survives the echo and the settle re-pins — one scrollToEnd). A stored Math.round
+    // (V-h-rounded) makes 188 read stable, the echo releases as a drag up and the settle has
+    // nothing to re-pin. Asserts behaviour only.
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    const scrollToEnd = vi.fn();
+    scroller.props.ref.current = { scrollToEnd };
+    const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
+    event(30.4, 97, 188.4);
+    event(30.2, 97, 188);
+    scroller.props.onContentSizeChange(369, 200);
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the pin through a content-only settle (R14 F2 one-axis variant)", () => {
