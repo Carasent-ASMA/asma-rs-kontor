@@ -1,8 +1,12 @@
 import { isValidElement } from "react";
-import { describe, expect, it, vi, type Mock } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { TAKEOVER_EFFECTS } from "../client/session-takeover";
 
-// The header and bar are hook-free; a session row keeps its own hooks, drawn on a fresh renderer per row.
+// The header is hook-free. The BAR carries hooks (the pin: pinnedToEnd, lastScrollY, heights), and
+// the deferred-react harness stores hook state in slots that persist across renders — so each
+// SelectionBar test resets to a real fresh mount (pinned, y 0, heights −1) via beforeEach below;
+// without that reset a test inherits whatever pin state the previous test left behind (r16b F1).
+// A session row likewise keeps its own hooks and resets per draw (harness.fresh() in its describe).
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])),
@@ -83,6 +87,11 @@ describe("SelectionHeader", () => {
 });
 
 describe("SelectionBar", () => {
+  // R16b F1: reset the deferred-react hook slots before EVERY test — without this, each bar test
+  // inherits the previous test's pin, lastY and heights (the r16 stable-y gate passed vacuously
+  // off the heights gate's released pin). A test that re-renders one mount inside its own body
+  // still keeps that mount across its renders; only the STARTING state is fresh.
+  beforeEach(() => harness.fresh());
   const bar = (count: number, takeover = control(), auto = control(), archive = control(), disclosure: string | null = null, hasLimits = true) => ({ takeover, auto, archive, tree: harness.current.render(() => walk(SelectionBar({ count, takeover, auto, archive, colors: COLORS, disclosure, hasLimits }))) });
   const ids = ["selection-takeover", "selection-takeover-auto", "selection-archive"];
   const buttons = (tree: Element[]) => ids.map((id) => tree.find((node) => node.type === "Pressable" && node.props.testID === id)!);
