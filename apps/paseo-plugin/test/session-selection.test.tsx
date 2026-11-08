@@ -463,7 +463,7 @@ describe("SelectionBar", () => {
     // THIRTEEN ruled equivalents pass it (R38-EQ-r16 ×3, R38-EQ-r16c ×3, R38-EQ-r16d ×4,
     // R38-EQ-r16f ×3).
     const SEED = 8539, TRACES = 2048, EVENTS = 10;
-    // r16h: 33 DIRECTED traces — the 21 of r16f (numbers copied programmatically from review-B
+    // r16h: 34 DIRECTED traces — the 21 of r16f (numbers copied programmatically from review-B
     // r16d's probes17.py, never retyped), review-B r16f's ten f-probes (numbers copied
     // programmatically from its probes-r16f.py PROBES, never retyped; 100 / 3 and 4 / 3 stay
     // full-precision expressions), and the two y-repeat traces the LSA ruled into this round
@@ -514,6 +514,7 @@ describe("SelectionBar", () => {
     ["f-small-content-full-precision", [[10, 20, 100 / 3], [5, 20, 100 / 3]], 0],
     ["f-tiny-clip-full-precision", [[30, 4 / 3, 188], [10, 4 / 3, 188]], 0],
     ["y-repeat-full-precision", [[5 / 3, 97, 188], [5 / 3, 97, 188]], 1],
+    ["f-tiny-content-full-precision", [[-5, 1, 4 / 3], [-7, 1, 4 / 3]], 0],
     ];
     const t0 = Date.now();
     for (const [traceName, traceEvents, expected] of DIRECTED) {
