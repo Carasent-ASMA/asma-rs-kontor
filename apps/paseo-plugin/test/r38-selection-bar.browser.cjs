@@ -667,6 +667,93 @@ async function activationPass() {
   }
 }
 
+// R12 RA-F2/B-F2: a held help must not survive its control's unmount. The Done control ends
+// selection with keyboard focus (no pointer press anywhere), the bar unmounts under the provider
+// (kontor-screen.tsx mounts the provider above the screen), and the panel must go with it.
+async function lifecyclePass() {
+  const name = 'unmount-forget-430x810-light';
+  scaleText = false;
+  const context = await browser.newContext({ viewport: { width: 430, height: 810 } });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${origin}/?scenario=baseline&theme=light&layout=compact&inflat=34&state=mywork`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
+    if (await hide.isVisible().catch(() => false)) await hide.click();
+    await page.getByTestId('session-actions-agt_lsa_99101').click();
+    await page.getByRole('dialog', { name: 'Session actions', exact: true }).getByTestId('session-action-select').click();
+    await page.waitForTimeout(600);
+    const gated = (label, condition, detail) => { report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail }); console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`); };
+    const limits = page.getByTestId('selection-limits');
+    await limits.waitFor({ timeout: 15000 });
+    // Open the held help the way a pointer user does: one activation click on the control.
+    const box = await limits.boundingBox();
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForTimeout(300);
+    gated('held-open-before-unmount', (await limits.getAttribute('aria-expanded')) === 'true' && (await page.getByTestId('control-help').count()) === 1,
+      `aria-expanded ${await limits.getAttribute('aria-expanded')}, panels ${await page.getByTestId('control-help').count()}`);
+    // End selection with the keyboard only: focus Done, press Enter. No pointer press — the outside
+    // press dismissal never runs, so only the unmounting control's own forget can close the panel.
+    await page.getByTestId('selection-done').focus();
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+    const bars = await page.getByTestId('selection-bar').count();
+    const panels = await page.getByTestId('control-help').count();
+    gated('help-forgotten-on-unmount', bars === 0 && panels === 0, `bars ${bars}, panels ${panels} after keyboard Done`);
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
+// R12 T3: the bar's re-pin must fire on its OWN height change, not only on content growth. The
+// pre-state is a short root where the bar scrolls (content 92 > clip) and rests pinned at its end;
+// a further viewport shrink changes the scroller's own box with the content size constant, so
+// without onLayout={repinToEnd} the scroll position stays where it was and the pinned end — the
+// Archive control's bottom edge — falls out of the clip.
+async function repinPass() {
+  const name = 'repin-shrink-1280';
+  scaleText = false;
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${origin}/?scenario=baseline&layout=wide&theme=light`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    const gated = (label, condition, detail) => { report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail }); console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`); };
+    await page.getByTestId('session-actions-agt_lsa_99101').click();
+    await page.getByRole('dialog', { name: 'Session actions', exact: true }).getByTestId('session-action-select').click();
+    await page.waitForTimeout(600);
+    const endState = () => page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+      const archive = document.querySelector('[data-testid="selection-archive"]');
+      if (!scroller || !archive) return null;
+      const s = scroller.getBoundingClientRect(); const a = archive.getBoundingClientRect();
+      return { scrollable: scroller.scrollHeight > scroller.clientHeight + 2,
+        atEnd: scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2,
+        archiveBottomInside: a.bottom <= s.bottom + 2 && a.bottom >= s.top,
+        clip: Math.round(s.height), scrollHeight: scroller.scrollHeight, scrollTop: Math.round(scroller.scrollTop) };
+    });
+    // First give the bar a short root: it scrolls and rests pinned at its end (the rest pin).
+    await page.setViewportSize({ width: 1280, height: 440 });
+    await page.waitForTimeout(700);
+    const rest = await endState();
+    gated('pinned-at-scrollable-rest', !!rest && rest.scrollable && rest.atEnd, JSON.stringify(rest));
+    // Then the bar's OWN height shrinks again (the content size is unchanged): the re-pin must fire.
+    await page.setViewportSize({ width: 1280, height: 400 });
+    await page.waitForTimeout(700);
+    const after = await endState();
+    // Still scrollable (the gate is not vacuous), still pinned at the end, Archive's bottom edge visible.
+    gated('repin-on-own-height-shrink', !!after && after.scrollable && after.atEnd && after.archiveBottomInside, JSON.stringify(after));
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
 // Simulated-inset fixture: the host inset enters only through SafeAreaView paddingBottom
 // (kontor-screen.tsx:354); drive it explicitly and verify the under-nav distance is inset + 6, once.
 async function insetPass(width, height) {
@@ -1019,6 +1106,10 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     await widePass(820, 1180);
     await activationPass();
     await helperFlowPass();
+    // R12 RA-F2/B-F2 + T3: the held help dies with its control on a keyboard Done, and the bar
+    // re-pins when its own height (not its content) changes.
+    await lifecyclePass();
+    await repinPass();
     // R38 V3 + F-SHEET: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the
     // panel text — and the at-rest button gates in both forms, the compact sheet also at text200.
     await switchSheetPass(1280, 800, 'popover');

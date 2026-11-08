@@ -87,6 +87,46 @@ describe("SelectionBar", () => {
   const ids = ["selection-takeover", "selection-takeover-auto", "selection-archive"];
   const buttons = (tree: Element[]) => ids.map((id) => tree.find((node) => node.type === "Pressable" && node.props.testID === id)!);
 
+  it("persists taps on the bar scroller so a keyboard-up first tap reaches the controls (R12 RA-F1/B-F1)", () => {
+    // RN 0.81.5 ScrollView defaults keyboardShouldPersistTaps to "never": its responder capture takes
+    // the first tap to dismiss the keyboard and the bar control never acts. The bar must behave like
+    // every other plugin scroller ("handled").
+    const scroller = bar(1).tree.find((node) => node.type === "ScrollView")!;
+    expect(scroller).toBeDefined();
+    expect(scroller.props.keyboardShouldPersistTaps).toBe("handled");
+  });
+
+  it("hides the off-screen label measurer from accessibility (R12 N1)", () => {
+    const measurer = byTestId(bar(2).tree, "selection-label-measure")!;
+    expect(measurer.props["aria-hidden"]).toBe(true);
+    expect(measurer.props.accessibilityElementsHidden).toBe(true);
+    expect(measurer.props.importantForAccessibility).toBe("no-hide-descendants");
+  });
+
+  it("re-pins on the scroller's OWN layout change under the same armed gate as content changes (R12 T3)", () => {
+    // R38-D2-r3: re-pins only on a content-size or own-height change. The web fixture cannot
+    // distinguish the two (RNW's content container tracks the scroller's box), so this pins the
+    // wiring itself: onLayout reaches repinToEnd under exactly the disarm/re-arm gate that
+    // onContentSizeChange obeys. The mutant drops exactly the onLayout prop.
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onLayout: () => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    expect(typeof scroller.props.onLayout).toBe("function");
+    const scrollToEnd = vi.fn();
+    (scroller.props.ref as { current: unknown }).current = { scrollToEnd };
+    // Armed (the pin starts true): an own-height layout change re-pins to the end.
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    expect(scrollToEnd.mock.calls[0]![0]).toMatchObject({ animated: false });
+    // A user scrolls up to read: the pin releases, and an own-height change must not fight them.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 0 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    // Back at the end, the pin re-arms and the next own-height change re-pins again.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 216 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  });
+
   it("labels Take over N, Auto and Archive N for the selection and runs each when allowed", () => {
     const b = bar(3);
     expect(buttons(b.tree).map((button) => texts(walk(button)).join(""))).toEqual(["Take over 3", "Auto", "Archive 3"]);

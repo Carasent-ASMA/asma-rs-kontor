@@ -907,6 +907,34 @@ describe("Start or switch sheet", () => {
       expect(byTestId(fallbackTree, "selection-bar")!.props.style).toMatchObject({ maxHeight: 374, flexShrink: 0 });
     }
   });
+
+  it("gives a host that states no takeover limits neither a Limits control nor a clamp, through the caller (R12 T2)", async () => {
+    // D1 / R38-D1-r1: "No limits: no control and no clamp". The operations factory derives hasLimits
+    // from the disclosure ("limits: disclosed.length > 0"), not from a constant.
+    model.rpc["sessions.navigator-capabilities"] = vi.fn(async () => ({ usageTotals: { supported: false, reason: "not read here" }, summaries: { supported: true }, draftAttach: { supported: true },
+      takeover: { supported: true }, takeoverBulk: { supported: true }, takeoverRoute: { supported: true } }));
+    recordVisit("host-a", "agent-a", Date.now() - 60_000);
+    const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, frameHeight: 330, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
+      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(() => ({ ok: true } as const)), onShowView: vi.fn(), onClose: vi.fn() };
+    const render = () => { model.cursor = 0; model.effect = 0; return useStartSwitch(all); };
+    let out = render();
+    const row = scoped([out.header, out.body], { live: true, visible: true }).map((entry) => entry.node)
+      .find((node) => (node.type as { name?: string }).name === "DenseSessionRow")!;
+    (row.props.onSelectStart as () => void)();
+    out = render();
+    expect(out.label).toBe("Select sessions");
+    // Flush the async capabilities read, then assert the caller's no-limits pass-through.
+    for (let flush = 0; flush < 6; flush++) { await Promise.resolve(); out = render(); }
+    expect(out.footer).toBeDefined();
+    expect((out.footer as { type: unknown }).type).toBe(SelectionBar);
+    expect((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props.hasLimits).toBe(false);
+    const barTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
+    // No Limits control beside the disclosure, and the disclosure line keeps no clamp.
+    expect(byTestId(barTree, "selection-limits")).toBeUndefined();
+    const line = byTestId(barTree, "selection-takeover-disclosure")!;
+    expect(line.props.numberOfLines).toBeUndefined();
+    expect(String(Array.isArray(line.props.children) ? (line.props.children as unknown[]).flat(Infinity).join("") : line.props.children)).toBe(`Take over: ${TAKEOVER_EFFECTS}`);
+  });
 });
 
 describe("Start or switch popover from the composer pill", () => {
