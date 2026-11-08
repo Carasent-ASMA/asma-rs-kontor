@@ -231,6 +231,10 @@ describe("SelectionBar", () => {
     // drag (stable geometry in truth) would read as a geometry change and KEEP the pin — the
     // settling content-size change would then re-pin over a user who scrolled up. Every event
     // stores both heights, so the drag releases and no re-pin fires. Asserts behaviour only.
+    // Kills (r16b results.json): NV-sf1-heights-only-at-end, M-r16-y-stableGeometry,
+    // M-r16-y-removed, M-r16-heights-stableGeometry, M-r16-heights-removed,
+    // M-r16-heights-content-kept, M-r16-heights-clip-kept, M-r16-y-above-rule, M-pin-always,
+    // M-drag-unpin-lost.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -244,11 +248,14 @@ describe("SelectionBar", () => {
   });
 
   it("a lower event after a higher stable-geometry event releases the pin: every event stores y (r16 SF1-r15, D2-r4)", () => {
-    // Review-B survivor probe (NV-sf1-only-changed-geometry) — and with it the whole store-on-a-
-    // condition family for y (atEnd-only, stableGeometry-only): any condition that skips a stable
-    // event's y leaves lastY stale (0 here), so the 50 and 30 drags read as same-direction and the
-    // pin never releases — the settle then re-pins over the user. With every event storing y the
-    // 30 < 50 release is real and the settle must not re-pin. Asserts behaviour only.
+    // Review-B survivor probe (NV-sf1-only-changed-geometry): a y-store condition that skips a
+    // stable event's y leaves lastY stale (0 here), so the 50 and 30 drags read as same-direction
+    // and the pin never releases — the settle then re-pins over the user. With every event storing
+    // y the 30 < 50 release is real and the settle must not re-pin. Asserts behaviour only.
+    // Kills (r16b results.json): NV-sf1-only-changed-geometry, NV-sf1-heights-only-at-end,
+    // M-rb-r14-lasty-only-at-end (the y-atEnd matrix cell), M-r16-y-removed,
+    // M-r16-heights-stableGeometry, M-r16-heights-removed, M-r16-heights-content-kept,
+    // M-r16-heights-clip-kept, M-r16-y-above-rule, M-pin-always, M-drag-unpin-lost.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -265,6 +272,10 @@ describe("SelectionBar", () => {
     // Matrix cell M-r16-y-notAtEnd (store y only on non-end events): re-arming at the end must
     // store the new offset, or the next stable down-move (70) is judged against the stale 50 and
     // keeps the pin — the settle re-pins over a user who scrolled up. Asserts behaviour only.
+    // Kills (r16b results.json): NV-sf1-only-changed-geometry, M-r16-y-notAtEnd, M-r16-y-removed,
+    // M-r16-heights-stableGeometry, M-r16-heights-removed, M-r16-heights-content-kept,
+    // M-r16-heights-clip-kept, M-r16-y-above-rule, M-pin-always, M-drag-unpin-lost. It is the sole
+    // killer of none of these.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -278,12 +289,14 @@ describe("SelectionBar", () => {
   });
 
   it("a geometry round trip restores the guard: the unstable event's heights are stored (r16 matrix, D2-r4)", () => {
-    // Matrix cell M-r16-heights-notStableGeometry (store the heights only when they changed): the
-    // 36/108/144 settle must still store its heights. Under the cell they stay at the original
-    // {188,97}, so the round-trip echo 30/97/188 — geometry EQUAL to the stale store — reads as a
-    // stable-geometry drag up (30 < 36) and releases the pin; the settle's re-pins then never fire
-    // (y rests at 30). Head stored {144,108} at the settle, so the echo is a geometry change and
-    // keeps the pin, and the settle re-pins the bar to its end. Asserts behaviour: y rests at 91.
+    // Guards that an UNSTABLE event stores its heights, so the guard stays correct across a
+    // geometry round trip: the 36/108/144 settle stores {144,108}, which makes the round-trip echo
+    // 30/97/188 a CHANGED-geometry event (not a stable drag up), so the pin survives it and the
+    // settle re-pins the bar to its end. (r16b correction: this gate does NOT kill
+    // M-r16-heights-notStableGeometry — that cell stores on every unstable event, including this
+    // settle, so it is an equivalence claim; its skip branch is exactly an identity write.)
+    // Kills (r16b results.json): M-r16-heights-above-stable, M-rb-repin-skips-own-height,
+    // M-r14-mirror-back, M-geom-ignored, M-r13-race-back, M-echo-unpins, M-bar-rest-top.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onLayout: () => void; onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: { scrollToEnd: (opts: { animated: boolean }) => void } } } } }).children;
     let y = 0; let clip = 97; let content = 188;

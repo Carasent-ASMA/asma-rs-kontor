@@ -195,7 +195,8 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // so the effect's mount run always happened under hasLimits=true. The variant adds a mount-only
   // effect (`useEffect(() => { if (!effects || !hasLimits) limits.dismiss(); }, []);` after the
   // presence effect) that fires exactly when the bar mounts with no Limits — dismiss() closes the
-  // whole controller, so another owner's already-open help must not go with it.
+  // whole controller, so another owner's already-open help must not go with it. This gate is the
+  // SOLE killer of NV-n2-dismiss-at-mount; it also kills M-rb-r14-presence-dismiss-any.
   it("stays open when the bar mounts on a host with no Limits", () => {
     let providerEl!: Element;
     const provider = () => { providerEl = ControlHelpProvider({ children: "screen", colors: {} as Parameters<typeof ControlHelpProvider>[0]["colors"] }) as Element; harness.controller = providerEl.props.value; };
