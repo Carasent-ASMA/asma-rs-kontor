@@ -328,6 +328,10 @@ describe("SelectionBar", () => {
     // against the fresh store) must release — a y or heights store skipped on the re-arm leaves the
     // stale 50 (V-y-wasPinned) or the stale {97,97}→changed geometry (V-h-wasPinned), the 60 reads
     // same-direction and the content-size settle re-pins over the user. Asserts behaviour only.
+    // Kills (r16c results.json): V-y-wasPinned, V-h-wasPinned (its own seeds, each killed ALONE
+    // too), and M-r16-y-notAtEnd, M-r16-y-stableGeometry, M-r16-y-removed, M-r16-heights-notAtEnd,
+    // M-r16-heights-stableGeometry, M-r16-heights-removed, M-r16-heights-content-kept,
+    // M-r16-heights-clip-kept, M-r16-y-above-rule, M-pin-always, M-drag-unpin-lost.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -347,6 +351,11 @@ describe("SelectionBar", () => {
     // high water (V-h-content-high-water, V-h-clip-high-water) reads every later event as changed
     // geometry, so the 10 < 30 release never happens and the content-size settle re-pins over the
     // user for as long as the height stays below its peak. Asserts behaviour only.
+    // Kills (r16c results.json): V-h-content-high-water, V-h-clip-high-water (its own seeds, each
+    // killed ALONE too), and NV-sf1-heights-only-at-end, M-rb-r14-lasty-only-at-end,
+    // M-r16-y-stableGeometry, M-r16-y-removed, M-r16-heights-stableGeometry, M-r16-heights-removed,
+    // M-r16-heights-content-kept, M-r16-heights-clip-kept, M-r16-y-above-rule, M-pin-always,
+    // M-drag-unpin-lost.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -364,6 +373,8 @@ describe("SelectionBar", () => {
     // is real and the pin releases before the settle; a stored Math.round (V-y-rounded) makes the
     // second event read 30.2 >= 30, the release never happens and the settle re-pins.
     // Asserts behaviour only.
+    // Kills (r16c results.json): V-y-rounded (its own seed, killed ALONE too), and
+    // NV-sf1-heights-only-at-end, M-rb-r14-lasty-only-at-end, M-r16-y-stableGeometry.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -381,6 +392,9 @@ describe("SelectionBar", () => {
     // survives the echo and the settle re-pins — one scrollToEnd). A stored Math.round
     // (V-h-rounded) makes 188 read stable, the echo releases as a drag up and the settle has
     // nothing to re-pin. Asserts behaviour only.
+    // Kills (r16c results.json): V-h-rounded (its own seed, killed ALONE too), and M-bar-rest-top,
+    // M-echo-unpins, M-geom-clip-only, M-geom-ignored, M-r13-race-back, M-r14-mirror-back,
+    // M-r16-heights-above-stable.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();

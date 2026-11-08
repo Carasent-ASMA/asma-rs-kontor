@@ -198,8 +198,11 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // whole controller, so another owner's already-open help must not go with it. r16c: run as an
   // it.each over ALL THREE presence combinations (review-B finding N2-r16 — the single set covered
   // one of three, so a mount effect limited to either other combination escaped): effects+no-Limits
-  // and no-effects+Limits alongside the original no-effects+no-Limits. This gate is the SOLE killer
-  // of NV-n2-dismiss-at-mount; it also kills M-rb-r14-presence-dismiss-any.
+  // and no-effects+Limits alongside the original no-effects+no-Limits. Kills (r16c results.json):
+  // V-n2-mount-effects-no-limits and V-n2-mount-no-effects-with-limits (their own seeds, each
+  // killed ALONE too — each fails exactly its own it.each case), NV-n2-dismiss-at-mount (this gate
+  // stays its SOLE killer — the variant now fails all three cases), and
+  // M-rb-r14-presence-dismiss-any.
   it.each([
     ["no effects, no Limits", null, false],
     ["effects, no Limits", "effects text", false],
