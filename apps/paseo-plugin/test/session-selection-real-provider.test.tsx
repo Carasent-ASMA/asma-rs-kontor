@@ -198,16 +198,21 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // whole controller, so another owner's already-open help must not go with it. r16c: run as an
   // it.each over ALL THREE presence combinations (review-B finding N2-r16 — the single set covered
   // one of three, so a mount effect limited to either other combination escaped): effects+no-Limits
-  // and no-effects+Limits alongside the original no-effects+no-Limits. Kills (r16c results.json):
-  // V-n2-mount-effects-no-limits and V-n2-mount-no-effects-with-limits (their own seeds, each
-  // killed ALONE too — each fails exactly its own it.each case), NV-n2-dismiss-at-mount (this gate
-  // stays its SOLE killer — the variant now fails all three cases), and
-  // M-rb-r14-presence-dismiss-any.
+  // and no-effects+Limits alongside the original no-effects+no-Limits. r16d (N2-r16c): the rows
+  // also carry the count and the Take over availability, adding count-zero and
+  // takeover-unavailable — a mount effect conditioned on `!count`, `none` or
+  // `takeover.unavailable` (N-m-no-count, N-m-none, N-m-takeover-unavailable) escapes the
+  // presence-only rows. Kills (r16c results.json): V-n2-mount-effects-no-limits and
+  // V-n2-mount-no-effects-with-limits (their own seeds, each killed ALONE too — each fails exactly
+  // its own it.each case), NV-n2-dismiss-at-mount (this gate stays its SOLE killer — the variant
+  // now fails all three cases), and M-rb-r14-presence-dismiss-any.
   it.each([
-    ["no effects, no Limits", null, false],
-    ["effects, no Limits", "effects text", false],
-    ["no effects, Limits", null, true],
-  ] as Array<[string, string | null, boolean]>)("stays open when the bar mounts: %s", (_name, disclosure, hasLimits) => {
+    ["no effects, no Limits", 1, null, false, () => control()],
+    ["effects, no Limits", 1, "effects text", false, () => control()],
+    ["no effects, Limits", 1, null, true, () => control()],
+    ["count-zero", 0, "effects text", true, () => control()],
+    ["takeover-unavailable", 1, "effects text", true, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+  ] as Array<[string, number, string | null, boolean, () => SelectionControl & { onPress: () => void }]>)("stays open when the bar mounts: %s", (_name, count, disclosure, hasLimits, takeover) => {
     let providerEl!: Element;
     const provider = () => { providerEl = ControlHelpProvider({ children: "screen", colors: {} as Parameters<typeof ControlHelpProvider>[0]["colors"] }) as Element; harness.controller = providerEl.props.value; };
     harness.current.render(provider);
@@ -215,7 +220,7 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
     (harness.controller as { show: (a: unknown, t: string, f: boolean, h: boolean) => void }).show({ current: measure(200, 200, 40, 40) }, "Help for another control", false, true);
     harness.current.render(provider); harness.current.render(provider); harness.current.render(provider);
     expect(all(providerEl).find((node) => node.props.role === "tooltip")).toBeDefined();
-    const props = { count: 1, takeover: control(), auto: control(), archive: control(), colors: COLORS, disclosure, hasLimits };
+    const props = { count, takeover: takeover(), auto: control(), archive: control(), colors: COLORS, disclosure, hasLimits };
     const renderAll = () => { provider(); all(SelectionBar(props)); };
     harness.current.render(renderAll); harness.current.render(renderAll); harness.current.render(renderAll);
     expect(all(providerEl).find((node) => node.props.role === "tooltip")).toBeDefined();

@@ -321,15 +321,24 @@ describe("SelectionBar", () => {
     expect(y).toBe(91);
   });
 
-  it("the re-arm event stores y and both heights: the first lower event after it releases the pin (r16 SF1-r16, D2-r4/D2-r3)", () => {
+  it.each([
+    ["rearm-geometry", [[91, 97, 188], [50, 97, 188], [78, 110, 188], [60, 110, 188]]],
+    ["rearm-stable-y", [[91, 97, 188], [50, 97, 188], [91, 97, 188], [70, 97, 188]]],
+    ["rearm-content-change", [[30, 97, 188], [10, 97, 188], [91, 110, 200], [60, 110, 200]]],
+  ] as Array<[string, Array<[number, number, number]>]>)("the re-arm event stores y and both heights: the first lower event after it releases the pin (%s, r16 SF1-r16c, D2-r4/D2-r3)", (_name, events) => {
     // Review-B finding SF1-r16: the nearest r16 gate ("the re-armed offset") was never released, so
-    // its at-end event was not a re-arm. Here the pin IS released (50), the at-end event (78 at
-    // changed geometry) re-arms AND stores, and the first lower event after the re-arm (60, stable
-    // against the fresh store) must release — a y store skipped on the re-arm leaves the stale 50
-    // (V-y-wasPinned) so the 60 reads same-direction; a heights store skipped on the re-arm leaves
-    // the 50 event's content 188 / clip 97 (V-h-wasPinned), so the 60 at clip 110 reads CHANGED
-    // geometry. Either way the pin holds through the 60 and the settle re-pins over the user.
-    // Asserts behaviour only.
+    // its at-end event was not a re-arm. r16c: three re-arm shapes. rearm-geometry: the pin IS
+    // released (50), the at-end event (78 at changed geometry) re-arms AND stores, and the first
+    // lower event after the re-arm (60, stable against the fresh store) must release — a y store
+    // skipped on the re-arm leaves the stale 50 (V-y-wasPinned) so the 60 reads same-direction; a
+    // heights store skipped on the re-arm leaves the 50 event's content 188 / clip 97
+    // (V-h-wasPinned), so the 60 at clip 110 reads CHANGED geometry. Either way the pin holds
+    // through the 60 and the settle re-pins over the user. rearm-stable-y (SF1-r16c): a re-arm at
+    // STABLE geometry (91 back at the end) must store too — a y store skipped there
+    // (N-y-skip-rearm-stable) leaves the stale 50 and the next lower 70 never releases.
+    // rearm-content-change (SF1-r16c): a re-arm that changes only the content must store it
+    // (N-h-content-kept-on-rearm keeps the old content, so the next lower event reads changed
+    // geometry and holds the pin). Asserts behaviour only.
     // Kills (r16c results.json): V-y-wasPinned, V-h-wasPinned (its own seeds, each killed ALONE
     // too), and M-r16-y-notAtEnd, M-r16-y-stableGeometry, M-r16-y-removed, M-r16-heights-notAtEnd,
     // M-r16-heights-stableGeometry, M-r16-heights-removed, M-r16-heights-content-kept,
@@ -339,20 +348,26 @@ describe("SelectionBar", () => {
     const scrollToEnd = vi.fn();
     scroller.props.ref.current = { scrollToEnd };
     const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
-    event(91, 97, 188);
-    event(50, 97, 188);
-    event(78, 110, 188);
-    event(60, 110, 188);
+    for (const [y, clip, content] of events) event(y, clip, content);
     scroller.props.onContentSizeChange(369, 200);
     expect(scrollToEnd).toHaveBeenCalledTimes(0);
   });
 
-  it("a height that shrinks and stays smaller is stored: the guard follows the real geometry (r16 SF2-r16, D2-r4/D2-r3)", () => {
-    // Review-B finding SF2-r16: no gate covered a shrink that STAYS. The clip shrinks 110→97 and
-    // the content 200→188, then the user drags down and back (30 then 10). A store kept at the old
-    // high water (V-h-content-high-water, V-h-clip-high-water) reads every later event as changed
-    // geometry, so the 10 < 30 release never happens and the content-size settle re-pins over the
-    // user for as long as the height stays below its peak. Asserts behaviour only.
+  it.each([
+    ["shrink-both-axes", [[10, 110, 200], [30, 97, 188], [10, 97, 188]]],
+    ["shrink-content-only", [[10, 97, 200], [30, 97, 188], [10, 97, 188]]],
+    ["shrink-clip-only", [[10, 110, 188], [30, 97, 188], [10, 97, 188]]],
+    ["shrink-content-at-end", [[10, 97, 200], [78, 110, 188], [10, 110, 188]]],
+    ["shrink-clip-at-end", [[10, 110, 188], [91, 97, 188], [10, 97, 188]]],
+  ] as Array<[string, Array<[number, number, number]>]>)("a height that shrinks and stays smaller is stored: the guard follows the real geometry (%s, r16 SF2-r16c, D2-r4/D2-r3)", (_name, events) => {
+    // Review-B finding SF2-r16: no gate covered a shrink that STAYS. r16c: five shrink shapes. A
+    // store kept at the old high water reads every later event as changed geometry, so the last
+    // drop never releases and the content-size settle re-pins over the user for as long as the
+    // height stays below its peak. The rows pin the single-axis shrinks (content-only
+    // [N-h-content-high-water-clip-same], clip-only [N-h-clip-high-water-content-same]) and the
+    // shrinks that land ON an at-end event (N-h-content-high-water-at-end,
+    // N-h-clip-high-water-at-end — the high water must not apply to the re-arm either). Asserts
+    // behaviour only.
     // Kills (r16c results.json): V-h-content-high-water, V-h-clip-high-water (its own seeds, each
     // killed ALONE too), and NV-sf1-heights-only-at-end, M-rb-r14-lasty-only-at-end,
     // M-r16-y-stableGeometry, M-r16-y-removed, M-r16-heights-stableGeometry, M-r16-heights-removed,
@@ -363,18 +378,23 @@ describe("SelectionBar", () => {
     const scrollToEnd = vi.fn();
     scroller.props.ref.current = { scrollToEnd };
     const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
-    event(10, 110, 200);
-    event(30, 97, 188);
-    event(10, 97, 188);
+    for (const [y, clip, content] of events) event(y, clip, content);
     scroller.props.onContentSizeChange(369, 200);
     expect(scrollToEnd).toHaveBeenCalledTimes(0);
   });
 
-  it("a fractional offset is stored unrounded: a sub-pixel drop still releases the pin (r16 N1-r16, D2-r4)", () => {
-    // Review-B finding N1-r16: every store gate used whole numbers. At y 30.4 then 30.2 the drop
-    // is real and the pin releases before the settle; a stored Math.round (V-y-rounded) makes the
-    // second event read 30.2 >= 30, the release never happens and the settle re-pins.
-    // Asserts behaviour only.
+  it.each([
+    ["fraction-drop", [[30.4, 97, 188], [30.2, 97, 188]], 0],
+    ["fraction-equal-y", [[30.2, 97, 188], [30.2, 97, 188]], 1],
+    ["fraction-hundredths-y", [[30.44, 97, 188], [30.42, 97, 188]], 0],
+  ] as Array<[string, Array<[number, number, number]>, number]>)("a fractional offset is stored unrounded: the pin judges the exact value (%s, r16 N1-r16c, D2-r4)", (_name, events, settles) => {
+    // Review-B finding N1-r16: every store gate used whole numbers; r16c adds the directions where
+    // rounding UP or to one decimal flips the result. An EQUAL fractional echo (30.2 twice) is not
+    // a user move: the pin holds through it and the settle re-pins once — a stored Math.ceil or
+    // Math.round (N-y-ceil, V-y-rounded) reads the echo as lower and releases where the head keeps.
+    // A drop in the hundredths (30.44 → 30.42) IS a user move: the pin releases — a store rounded
+    // to one decimal (N-y-toFixed1) makes both events read 30.4 and never releases. Asserts
+    // behaviour only.
     // Kills (r16c results.json): V-y-rounded (its own seed, killed ALONE too), and
     // NV-sf1-heights-only-at-end, M-rb-r14-lasty-only-at-end, M-r16-y-stableGeometry.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
@@ -382,18 +402,28 @@ describe("SelectionBar", () => {
     const scrollToEnd = vi.fn();
     scroller.props.ref.current = { scrollToEnd };
     const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
-    event(30.4, 97, 188);
-    event(30.2, 97, 188);
+    for (const [y, clip, content] of events) event(y, clip, content);
     scroller.props.onContentSizeChange(369, 200);
-    expect(scrollToEnd).toHaveBeenCalledTimes(0);
+    expect(scrollToEnd).toHaveBeenCalledTimes(settles);
   });
 
-  it("a fractional height is stored unrounded: the changed-geometry echo after a fraction is not a user scroll (r16 N1-r16, D2-r4)", () => {
-    // Review-B finding N1-r16, heights half: at content 188.4 the store keeps the fraction, so the
-    // next event's 188 is CHANGED geometry and the lower echo 30.2 must NOT release (the pin
-    // survives the echo and the settle re-pins — one scrollToEnd). A stored Math.round
-    // (V-h-rounded) makes 188 read stable, the echo releases as a drag up and the settle has
-    // nothing to re-pin. Asserts behaviour only.
+  it.each([
+    ["fraction-echo", [[30.4, 97, 188.4], [30.2, 97, 188]], 1],
+    ["fraction-content-stable", [[30.4, 97, 188.4], [30.2, 97, 188.4]], 0],
+    ["fraction-content-hundredths-stable", [[30.4, 97, 188.44], [30.2, 97, 188.44]], 0],
+    ["fraction-clip-echo", [[30.4, 97.4, 188], [30.2, 97, 188]], 1],
+  ] as Array<[string, Array<[number, number, number]>, number]>)("a fractional height is stored unrounded: the changed-geometry echo after a fraction is not a user scroll (%s, r16 N1-r16c, D2-r4)", (_name, events, settles) => {
+    // Review-B finding N1-r16, heights half: the store keeps the exact fraction, so "changed
+    // geometry" is judged on the real values. fraction-echo: at content 188.4 the next event's 188
+    // is CHANGED geometry — the lower echo 30.2 must NOT release, and the settle re-pins once. A
+    // stored Math.round/ceil on content (V-h-rounded, N-h-ceil, N-h-ceil-content-only) makes 188
+    // read STABLE, the echo releases as a drag up and the settle has nothing to re-pin.
+    // fraction-content-stable and its hundredths twin: a drop with the SAME fractional content is a
+    // real user move and releases (settles 0) — rounding up on content (N-h-ceil,
+    // N-h-ceil-content-only: 188.4 → 189 ≠ 188.4 keeps "changed" and holds the pin) flips it.
+    // fraction-clip-echo: a clip fraction (97.4 → 97) is also changed geometry; rounding the clip
+    // alone (N-h-round-clip-only) reads it stable and releases where the head keeps.
+    // Asserts behaviour only.
     // Kills (r16c results.json): V-h-rounded (its own seed, killed ALONE too), and M-bar-rest-top,
     // M-echo-unpins, M-geom-clip-only, M-geom-ignored, M-r13-race-back, M-r14-mirror-back,
     // M-r16-heights-above-stable.
@@ -402,10 +432,99 @@ describe("SelectionBar", () => {
     const scrollToEnd = vi.fn();
     scroller.props.ref.current = { scrollToEnd };
     const event = (y: number, clip: number, content: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
-    event(30.4, 97, 188.4);
-    event(30.2, 97, 188);
+    for (const [y, clip, content] of events) event(y, clip, content);
     scroller.props.onContentSizeChange(369, 200);
-    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    expect(scrollToEnd).toHaveBeenCalledTimes(settles);
+  });
+
+  it("matches a test-side D2-r4 model over seeded random traces from the union alphabet and the edge classes (R38-STOP-r16c)", () => {
+    // R38-STOP-r16c (LSA-adopted): near variants of the two store lines are closed by this gate, not
+    // by an ever-longer row list. The REAL component must agree, probe by probe, with a test-side
+    // model of the store rule. The model is written from the RULING TEXT of R38-D2-r4/D2-r3, NOT
+    // from session-selection.tsx, and the rule is named beside each model line. Deterministic:
+    // seed 8539, 512 traces x 10 events, every trace from a real fresh mount (the beforeEach reset
+    // plus harness.fresh() here). Alphabet: the union of review-B's five alphabets
+    // (model/store-diff.cjs:91-95, numbers verbatim) plus the LSA edge classes — the end band on
+    // BOTH sides of the boundary for every (clip, content) pair, overscroll past the end, a
+    // negative offset (top bounce), content shorter than clip, a height that shrinks and stays
+    // smaller and one that grows. Fractional values ride the fractional and hundredths alphabets;
+    // repeated stable geometry arises from repeated draws; the first event after mount (heights
+    // still −1) arises because every trace starts fresh. Determinism: the seed is fixed below.
+    const SEED = 8539, TRACES = 2048, EVENTS = 10;
+    let s = SEED;
+    const rnd = (n: number) => { s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff; return (s >>> 8) % n; };
+    const cross = (ys: number[], clips: number[], contents: number[]) => ys.flatMap((y) => clips.flatMap((l) => contents.map((c) => [y, l, c] as [number, number, number])));
+    const union: Array<[number, number, number]> = [
+      ...cross([10, 30, 40, 50, 60, 70, 78, 91, 103], [97, 110], [188, 200]),
+      ...cross([0, 36, 50, 60, 91], [86, 97, 108], [136, 144, 188]),
+      ...cross([30.2, 30.4, 60, 91, 91.4], [97, 97.4], [188, 188.4]),
+      ...cross([30.42, 30.44, 30.6, 60, 91], [97, 97.4], [188, 188.4]),
+      ...cross([30.2, 30.4, 60, 91], [97, 97.44], [188, 188.44]),
+    ];
+    // Edge classes. End band: for every (clip, content) pair the boundary itself (y + clip =
+    // content − 2, atEnd) and the first value outside it (content − clip − 3, not atEnd). Below
+    // the band: a five-step ladder (−4 … −12) of stable-geometry offsets, so a trace can draw the
+    // full same-geometry sequence a stable re-arm needs — release below the band, re-arm at the
+    // band, then a lower offset inside the window the skipped re-arm store would have filled.
+    const pairs = new Set(union.map(([, l, c]) => `${l}|${c}`));
+    for (const key of pairs) {
+      const [clip, content] = key.split("|").map(Number) as [number, number];
+      union.push([content - clip - 2, clip, content], [content - clip - 3, clip, content]);
+      for (const step of [4, 6, 8, 10, 12]) union.push([content - clip - step, clip, content]);
+    }
+    // Overscroll past the end; a negative offset (top bounce); content shorter than clip; a height
+    // that shrinks and stays smaller; one that grows.
+    union.push([120, 97, 188], [150, 110, 200], [-10, 97, 188], [-1, 110, 200], [0, 97, 80], [30, 110, 80], [60, 97, 80], [10, 97, 150], [10, 97, 250]);
+    // Sampler: every event is drawn from the union pool above, but the seeded draw prefers the
+    // previous event's (clip, content) 60% of the time, so traces exercise same-geometry
+    // sequences — the shape a stable re-arm store (and its skip variants) actually lives in. The
+    // bias changes which pool members are drawn, never which members exist.
+    const byGeo = new Map<string, Array<[number, number, number]>>();
+    for (const e of union) {
+      const k = `${e[1]}|${e[2]}`;
+      if (!byGeo.has(k)) byGeo.set(k, []);
+      byGeo.get(k)!.push(e);
+    }
+    const t0 = Date.now();
+    let geo: string | null = null;
+    for (let t = 0; t < TRACES; t++) {
+      geo = null;
+      harness.fresh();
+      const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+      const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+      // The probe's mock has NO side effects: repinToEnd reads pinnedToEnd and calls scrollToEnd,
+      // writing no ref, so it reveals the pin in every state and leaves every ref unchanged.
+      const scrollToEnd = vi.fn();
+      scroller.props.ref.current = { scrollToEnd };
+      // Model state — R38-D2-r4: the refs start at the fresh-mount values.
+      let pinned = true;                                    // D2-r4: the bar mounts pinned to the end
+      let lastY = 0, lastContent = -1, lastClip = -1;       // D2-r4: heights start at −1, so the first event can never unpin
+      const seen: Array<[number, number, number]> = [];
+      for (let i = 0; i < EVENTS; i++) {
+        const sameGeo: Array<[number, number, number]> | null = geo !== null && rnd(100) < 60 ? byGeo.get(geo)! : null;
+        const e: [number, number, number] = sameGeo ? sameGeo[rnd(sameGeo.length)]! : union[rnd(union.length)]!;
+        geo = `${e[1]}|${e[2]}`;
+        seen.push(e);
+        const [y, clip, content] = e;
+        scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
+        const atEnd = y + clip >= content - 2;              // D2-r4: atEnd — the end band, y + clip >= content − 2
+        const stable = lastContent === content && lastClip === clip; // D2-r4: stable geometry — both heights equal the previous scroll event's
+        // D2-r4: atEnd re-arms; the event unpins only when NOT at the end, moving up (y < lastY),
+        // AND stable — a lower offset under changed geometry is a settle artifact, not a user scroll.
+        const nextPinned: boolean = atEnd || (pinned && (y >= lastY || !stable));
+        lastY = y; lastContent = content; lastClip = clip;  // D2-r4: every event stores y and both heights
+        pinned = nextPinned;                                // D2-r4: no re-pin happens in onScroll
+        // R38-D2-r3: the probe (a content-size change) re-pins only while pinned — after a user
+        // scroll-up the bar must never scroll back over them.
+        const before = scrollToEnd.mock.calls.length;
+        scroller.props.onContentSizeChange(369, 200);
+        const fired = scrollToEnd.mock.calls.length > before;
+        if (fired !== pinned) {
+          throw new Error(`D2-r4 differential mismatch at trace ${t}, event ${i}: the model says ${pinned ? "PINNED (scrollToEnd expected)" : "RELEASED (no scrollToEnd)"}, the component ${fired ? "scrolled to the end" : "did not scroll"}. Events so far (y/clip/content): ${JSON.stringify(seen)}`);
+        }
+      }
+    }
+    console.log(`[r16d D2-r4 differential gate] seed ${SEED}, ${TRACES} traces x ${EVENTS} events, pool ${union.length} events, ${Date.now() - t0} ms`);
   });
 
   it("keeps the pin through a content-only settle (R14 F2 one-axis variant)", () => {
