@@ -60,8 +60,9 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 /** One render pass draws the provider first (its controller feeds useContext), then the bar. */
-function mount(disclosureText: string) {
-  const props = { count: 1, takeover: control(), auto: control(), archive: control(), colors: COLORS, disclosure: disclosureText, hasLimits: true };
+function mount(disclosureText: string | null, hasLimits = true, takeover: ReturnType<typeof control> = control()) {
+  const props: { count: number; takeover: ReturnType<typeof control>; auto: ReturnType<typeof control>; archive: ReturnType<typeof control>; colors: typeof COLORS; disclosure: string | null; hasLimits: boolean } =
+    { count: 1, takeover, auto: control(), archive: control(), colors: COLORS, disclosure: disclosureText, hasLimits };
   let providerEl!: Element; let barTree: Element[] = [];
   const renderAll = () => {
     providerEl = ControlHelpProvider({ children: "screen", colors: {} as Parameters<typeof ControlHelpProvider>[0]["colors"] }) as Element;
@@ -80,17 +81,46 @@ function mount(disclosureText: string) {
   // the outside-touch dismissal the Limits stop decision defends against.
   return {
     render,
-    limits: () => byTestId(barTree, "selection-limits")!,
+    setProps: (patch: Partial<typeof props>) => { Object.assign(props, patch); },
+    limits: () => byTestId(barTree, "selection-limits"),
     surface: () => all(providerEl).find((node) => node.type === "View")!,
     tooltip: () => all(providerEl).find((node) => node.props.role === "tooltip"),
   };
 }
 
+describe("R14 F1: the held help ends when the Limits control leaves while the bar stays mounted", () => {
+  const DISCLOSURE = "Host-stated limits beyond the fixed effects sentence.";
+  const boundaries: Array<[string, Parameters<typeof mount>[1] | null, Partial<{ disclosure: string | null; hasLimits: boolean; takeover: ReturnType<typeof control> }>]> = [
+    ["the host stops stating limits", null, { hasLimits: false }],
+    ["the disclosure drops (effects null)", null, { disclosure: null }],
+    ["Take over is refused", null, { takeover: { unavailable: "The host is offline.", onPress: vi.fn() } as never }],
+  ];
+  it.each(boundaries)("hold, then %s while the bar stays mounted: 0 panels (R14 F1/AUD-R13-F1)", (_label, _none, patch) => {
+    // AUD-R13-F1: useControlHelp belongs to SelectionBar, so removing only the Limits Pressable
+    // never runs the hook's unmount cleanup — the provider kept the held help for a dead anchor
+    // (1 bar, 0 controls, 1 panel). The presence-forget effect must end it on every path.
+    const s = mount(DISCLOSURE);
+    (s.limits()!.props.onPress as () => void)();
+    s.render(); s.render(); s.render();
+    expect(s.tooltip()).toBeDefined();
+    expect(s.limits()).toBeDefined();
+    // The control leaves; the bar stays. The held help must go with it.
+    s.setProps(patch);
+    s.render(); s.render(); s.render();
+    expect(s.limits()).toBeUndefined();
+    expect(s.tooltip()).toBeUndefined();
+    // Restoring the limits state must not resurrect the dismissed help.
+    s.setProps({ disclosure: DISCLOSURE, hasLimits: true, takeover: control() });
+    s.render(); s.render();
+    expect(s.tooltip()).toBeUndefined();
+  });
+});
+
 describe("R12 T1: the real provider's held flag drives the Limits stop decision (not a mirror of open)", () => {
   it("an unheld focus help does not stop the touch: the root dismissal runs and one press opens held", () => {
     const s = mount("Host-stated limits beyond the fixed effects sentence.");
     // Keyboard-focus help on the Limits control: open and NOT held.
-    (s.limits().props.onFocus as () => void)();
+    (s.limits()!.props.onFocus as () => void)();
     s.render(); s.render(); s.render();
     expect(s.tooltip()).toBeDefined();
     expect(s.limits().props["aria-expanded"]).toBe(true);

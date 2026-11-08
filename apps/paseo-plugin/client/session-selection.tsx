@@ -1,4 +1,4 @@
-import { useRef, useState, type ComponentRef, type Ref } from "react";
+import { useEffect, useRef, useState, type ComponentRef, type Ref } from "react";
 import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { spaceActivates, type Colors } from "./page-controls";
@@ -119,6 +119,12 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // control's text), so its own dismissals — Escape, an outside press, scroll, resize, back — close the
   // state too and the next press on this control opens it again.
   const limits = useControlHelp(effects ?? "");
+  // R14 (AUD-R13-F1): useControlHelp belongs to SelectionBar, so removing only the Limits Pressable
+  // (the host stops stating limits, the disclosure drops, Take over is refused) never runs the
+  // hook's unmount cleanup — the provider would keep the held help for a dead anchor over the list.
+  // Forget THIS anchor when its presence condition goes false; forget() dismisses only its own
+  // help, so another owner's help is untouched, and an ordinary rerender does nothing.
+  useEffect(() => { if (!effects || !hasLimits) limits.forget(); }, [effects, hasLimits]);
   // R38-D2-r3: when the bar's content does not fit, the bar starts scrolled to its END, so the buttons
   // row shows at rest (the text above scrolls up; the user reads it by scrolling the bar up). The pin
   // re-arms only when the scroller sits at the end, and re-pins only when the content size or the
@@ -126,6 +132,7 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   const scrollerRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
   const pinnedToEnd = useRef(true);
   const lastScrollY = useRef(0);
+  const lastScrollHeights = useRef<{ content: number; clip: number }>({ content: -1, clip: -1 });
   // R38-D1-r2: the Limits press needs NO state capture — one decision per activation, from live
   // state only. The capture existed only because, on native, the root's touch-start dismissal used
   // to close the held help before this control's onPress ran. Limits now stops that touch itself:
@@ -159,17 +166,21 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
     <ScrollView ref={scrollerRef} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }} scrollEventThrottle={16}
       onContentSizeChange={repinToEnd} onLayout={repinToEnd}
       onScroll={(event) => {
-        // R13 (QA r12 SHOULD-FIX): only a scroll that moves UP unpins. Our own scrollToEnd echoes
-        // can carry the offset they set for an intermediate layout against geometry that has
-        // already settled (the QA rest race: offset 50 set for a 136/86 clip, echoed against
-        // 188/97 — 50 + 97 < 186 — disarmed the pin before the settling handlers re-pinned, and
-        // the bar rested mid-content). A same-direction echo never unpins; a user drag up lowers
-        // the offset and does; dragging back to the end re-arms. R38-D2-r3 keeps the re-pin itself
-        // to content-size and own-height changes.
+        // R38-D2-r4: a scroll event unpins only when it is NOT at the end, moves up, AND carries
+        // the same contentSize.height and layoutMeasurement.height as the previous scroll event.
+        // A lower offset under changed geometry is a settle artifact — a clamp or our own echo
+        // measured while content and clip settle (the r13 echo race; the AUD r13 mirror pulse
+        // 91/97/188 → 36/108/144 → 0/97/136) — not a user scroll. atEnd still re-arms, and the
+        // geometry refs start at −1 so the first event can never unpin. Known limit, accepted:
+        // a full geometry round trip inside one scroll-event window leaves an offset drop with
+        // identical geometry that no event-based rule can tell from a one-frame user fling.
+        // No re-pin happens here; re-pins stay with the content-size and own-height callbacks.
         const d = event.nativeEvent;
         const atEnd = d.contentOffset.y + d.layoutMeasurement.height >= d.contentSize.height - 2;
-        pinnedToEnd.current = atEnd || (pinnedToEnd.current && d.contentOffset.y >= lastScrollY.current);
+        const stableGeometry = lastScrollHeights.current.content === d.contentSize.height && lastScrollHeights.current.clip === d.layoutMeasurement.height;
+        pinnedToEnd.current = atEnd || (pinnedToEnd.current && (d.contentOffset.y >= lastScrollY.current || !stableGeometry));
         lastScrollY.current = d.contentOffset.y;
+        lastScrollHeights.current = { content: d.contentSize.height, clip: d.layoutMeasurement.height };
       }}>
       {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
       {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
