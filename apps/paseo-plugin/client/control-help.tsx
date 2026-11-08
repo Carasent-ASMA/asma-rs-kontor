@@ -176,7 +176,15 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
   // Whether the open help for THIS anchor is held (R38-D1-r2): the Limits control uses it to stop
   // its own touch-start from reaching the provider root's dismissal while it holds the help.
   const [heldOpen, setHeldOpen] = useState(false);
-  useEffect(() => (controller ? controller.subscribe(anchor, (open, held) => { setOpen(open); setHeldOpen(held); }) : undefined), [controller]);
+  useEffect(() => {
+    if (!controller) return undefined;
+    const unsubscribe = controller.subscribe(anchor, (open, held) => { setOpen(open); setHeldOpen(held); });
+    // R12 (RA-F2/B-F2): an unmounting control forgets its anchor. forget() dismisses only when the
+    // open help belongs to THIS anchor, so a keyboard Done/Take over or a host refresh that
+    // unmounts the bar cannot leave its held popover over the list, and another control's help is
+    // untouched.
+    return () => { unsubscribe(); controller.forget(anchor); };
+  }, [controller]);
   return {
     heldOpen,
     bindings: {
@@ -200,7 +208,7 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
   };
 }
 
-/** Long-press discovery is opt-in for icon actions; ordinary row help has no cleanup effect. */
+/** Long-press discovery is opt-in for icon actions; row help inherits useControlHelp's unmount forget. */
 export function useActionHelp(text: string, forwarded?: Ref<View>) {
   const help = useControlHelp(text, forwarded);
   const gesture = useRef<{ x: number; y: number } | null>(null);
