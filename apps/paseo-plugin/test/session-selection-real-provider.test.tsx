@@ -206,18 +206,35 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // it.each table is the bounded mount alphabet): four more rows — nocount-nolimits,
   // unavailable-nolimits, nocount-unavailable and nocount-unavailable-nolimits — covering the four
   // reachable cells of the effects × hasLimits × count × Take over matrix that had no case.
-  // Kills (r16h results.json at 6eca4cbd): the mount gate is the SOLE killer of
-  // NV-n2-dismiss-at-mount (the variant fails ALL TEN cases) and the UNIQUE killer of
-  // V-n2-mount-effects-no-limits (its own case plus count-two-nolimits), F-m-count-gt1-nolimits
-  // (exactly the new count-two-nolimits case), R-cell-elcu, R-cell-elCU, R-cell-eLcU and
-  // R-cell-elcU (each fails exactly its own case); N-m-no-count and N-m-none die on count-zero
-  // plus the three nocount rows (count-two-nolimits triggers neither a !count nor a none
-  // condition); N-m-takeover-unavailable fails its own case, unavailable-nolimits,
-  // nocount-unavailable and nocount-unavailable-nolimits — not nocount-nolimits;
-  // V-n2-mount-no-effects-with-limits fails FOUR cases (its own, count-zero, takeover-unavailable
-  // and nocount-unavailable); R-m-nocount-nolimits, R-m-unavailable-nolimits and
-  // R-m-nocount-unavailable each fail their own case plus nocount-unavailable-nolimits; and
-  // M-rb-r14-presence-dismiss-any fails all ten mount cases and "stays open when Limits leaves".
+  // Cells (N1, msg 1b286dab): count classes {0, 1, >=2} on the product's plural; every class->=2
+  // cell samples 2, and exactly ONE cell also samples 3 (count-three-nolimits). The sixteen rows
+  // cover the sixteen reachable cells: at count 0 — nocount-nolimits, nocount-unavailable,
+  // nocount-unavailable-nolimits and count-zero; at count 1 — no effects, no Limits;
+  // effects, no Limits; no effects, Limits; effects, Limits (count-one-limits); effects, Limits
+  // with Take over refused (takeover-unavailable); and effects, no Limits with Take over refused
+  // (unavailable-nolimits); at count 2 — effects, no Limits (count-two-nolimits); no effects,
+  // no Limits; no effects, Limits; effects, Limits refused (count-two-unavailable); and effects,
+  // no Limits refused (count-two-unavailable-nolimits). Count two with effects AND Limits has no
+  // row: the "clamps the takeover disclosure to two lines with a Limits control..." test covers
+  // that cell. Kills (r16i results.json at 37d32e7e): the mount gate is the SOLE killer of
+  // NV-n2-dismiss-at-mount (the variant fails fifteen of the sixteen cases — every one except
+  // count-one-limits, where neither !effects nor !hasLimits holds) and the UNIQUE killer of
+  // V-n2-mount-effects-no-limits (its own case plus count-two-nolimits and count-three-nolimits),
+  // F-m-count-gt1-nolimits (the four count->=2 no-Limits rows), R-cell-elcu, R-cell-eLcU and
+  // R-cell-elcU (each fails exactly its own case), R-cell-elCU (unavailable-nolimits and
+  // count-two-unavailable-nolimits), and each H-m-c1-EL/H-m-c2-elu/H-m-c2-eLu/H-m-c2-lU/H-m-c2-LU
+  // row seed fails exactly its own row, H-m-c2-noeffects fails the four count-2 rows and
+  // H-m-c2-unavailable fails count-two-unavailable and count-two-unavailable-nolimits;
+  // N-m-no-count and N-m-none die on count-zero plus the three nocount rows; N-m-takeover-unavailable
+  // fails its own case plus every refused-Take-over row (unavailable-nolimits, nocount-unavailable,
+  // nocount-unavailable-nolimits, count-two-unavailable, count-two-unavailable-nolimits) — not
+  // nocount-nolimits; V-n2-mount-no-effects-with-limits fails SIX cases (its own, count-zero,
+  // takeover-unavailable, nocount-unavailable, count-two-noeffects-limits and count-two-unavailable);
+  // R-m-nocount-nolimits and R-m-nocount-unavailable each fail their own case plus
+  // nocount-unavailable-nolimits, R-m-unavailable-nolimits fails its own case plus
+  // nocount-unavailable-nolimits and count-two-unavailable-nolimits; and M-rb-r14-presence-dismiss-any
+  // fails fifteen of the sixteen mount cases (every one except count-one-limits) and "stays open
+  // when Limits leaves".
   it.each([
     ["no effects, no Limits", 1, null, false, () => control()],
     ["effects, no Limits", 1, "effects text", false, () => control()],
