@@ -229,6 +229,12 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
     ["unavailable-nolimits", 1, "effects text", false, () => ({ unavailable: "Busy", onPress: vi.fn() })],
     ["nocount-unavailable", 0, "effects text", true, () => ({ unavailable: "Busy", onPress: vi.fn() })],
     ["nocount-unavailable-nolimits", 0, "effects text", false, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+    ["count-one-limits", 1, "effects text", true, () => control()],
+    ["count-two-noeffects-nolimits", 2, null, false, () => control()],
+    ["count-two-noeffects-limits", 2, null, true, () => control()],
+    ["count-two-unavailable", 2, "effects text", true, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+    ["count-two-unavailable-nolimits", 2, "effects text", false, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+    ["count-three-nolimits", 3, "effects text", false, () => control()],
   ] as Array<[string, number, string | null, boolean, () => SelectionControl & { onPress: () => void }]>)("stays open when the bar mounts: %s", (_name, count, disclosure, hasLimits, takeover) => {
     let providerEl!: Element;
     const provider = () => { providerEl = ControlHelpProvider({ children: "screen", colors: {} as Parameters<typeof ControlHelpProvider>[0]["colors"] }) as Element; harness.controller = providerEl.props.value; };
