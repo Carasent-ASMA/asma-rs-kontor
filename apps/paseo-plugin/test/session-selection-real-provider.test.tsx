@@ -206,14 +206,18 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // it.each table is the bounded mount alphabet): four more rows — nocount-nolimits,
   // unavailable-nolimits, nocount-unavailable and nocount-unavailable-nolimits — covering the four
   // reachable cells of the effects × hasLimits × count × Take over matrix that had no case.
-  // Kills (r16f results.json): the mount gate is the SOLE killer of NV-n2-dismiss-at-mount (the
-  // variant now fails all NINE cases) and the UNIQUE killer of V-n2-mount-effects-no-limits,
-  // R-cell-elcu, R-cell-elCU, R-cell-eLcU and R-cell-elcU (each fails exactly its own case);
-  // N-m-no-count, N-m-none and N-m-takeover-unavailable die on their own case plus the new
-  // nocount rows; V-n2-mount-no-effects-with-limits fails FOUR cases (its own, count-zero,
-  // takeover-unavailable and nocount-unavailable); R-m-nocount-nolimits, R-m-unavailable-nolimits
-  // and R-m-nocount-unavailable each fail their own case plus nocount-unavailable-nolimits; and
-  // M-rb-r14-presence-dismiss-any.
+  // Kills (r16h results.json at 6eca4cbd): the mount gate is the SOLE killer of
+  // NV-n2-dismiss-at-mount (the variant fails ALL TEN cases) and the UNIQUE killer of
+  // V-n2-mount-effects-no-limits (its own case plus count-two-nolimits), F-m-count-gt1-nolimits
+  // (exactly the new count-two-nolimits case), R-cell-elcu, R-cell-elCU, R-cell-eLcU and
+  // R-cell-elcU (each fails exactly its own case); N-m-no-count and N-m-none die on count-zero
+  // plus the three nocount rows (count-two-nolimits triggers neither a !count nor a none
+  // condition); N-m-takeover-unavailable fails its own case, unavailable-nolimits,
+  // nocount-unavailable and nocount-unavailable-nolimits — not nocount-nolimits;
+  // V-n2-mount-no-effects-with-limits fails FOUR cases (its own, count-zero, takeover-unavailable
+  // and nocount-unavailable); R-m-nocount-nolimits, R-m-unavailable-nolimits and
+  // R-m-nocount-unavailable each fail their own case plus nocount-unavailable-nolimits; and
+  // M-rb-r14-presence-dismiss-any fails all ten mount cases and "stays open when Limits leaves".
   it.each([
     ["no effects, no Limits", 1, null, false, () => control()],
     ["effects, no Limits", 1, "effects text", false, () => control()],
