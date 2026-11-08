@@ -444,7 +444,7 @@ describe("SelectionBar", () => {
     // by an ever-longer row list. The REAL component must agree, probe by probe, with a test-side
     // model of the store rule. The model is written from the RULING TEXT of R38-D2-r4/D2-r3, NOT
     // from session-selection.tsx, and the rule is named beside each model line. Deterministic:
-    // seed 8539, 512 traces x 10 events, every trace from a real fresh mount (the beforeEach reset
+    // seed 8539, 2048 traces x 10 events, every trace from a real fresh mount (the beforeEach reset
     // plus harness.fresh() here). Alphabet: the union of review-B's five alphabets
     // (model/store-diff.cjs:91-95, numbers verbatim) plus the LSA edge classes — the end band on
     // BOTH sides of the boundary for every (clip, content) pair, overscroll past the end, a
