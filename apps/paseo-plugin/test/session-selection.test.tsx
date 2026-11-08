@@ -117,7 +117,10 @@ describe("SelectionBar", () => {
     scroller.props.onLayout();
     expect(scrollToEnd).toHaveBeenCalledTimes(1);
     expect(scrollToEnd.mock.calls[0]![0]).toMatchObject({ animated: false });
-    // A user scrolls up to read: the pin releases, and an own-height change must not fight them.
+    // The echo of that programmatic scroll, at the end: armed, and the offset is remembered (R13).
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 216 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    // A user scrolls up to read: the offset DECREASES, the pin releases, and an own-height change
+    // must not fight them.
     scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 0 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
     scroller.props.onLayout();
     expect(scrollToEnd).toHaveBeenCalledTimes(1);
@@ -125,6 +128,63 @@ describe("SelectionBar", () => {
     scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 216 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
     scroller.props.onLayout();
     expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the rest pin across our own scroll echo measuring settled layout (R13 race, QA r12)", () => {
+    // The QA r12 failure at 393x420 text200, replayed in the logged order: content and clip settle
+    // together while the echo of our own scrollToEnd — the offset it set for the intermediate
+    // 136/86 layout — arrives against the settled 97/188: 50 + 97 < 188 − 2. The old rule read that
+    // echo as "the user scrolled away" and disarmed the pin, so the settling content-size and
+    // own-height changes skipped their re-pin and the bar rested at 50 of end 91. Only a scroll
+    // that moves UP (a user drag, or a clamp after one) unpins.
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onLayout: () => void; onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    const scrollToEnd = vi.fn();
+    (scroller.props.ref as { current: unknown }).current = { scrollToEnd };
+    // The intermediate settle, exactly as the log shows it: content 136 in a clip 86, both repins
+    // fire, and the echo of the second lands at its end (50 + 86 = 136).
+    scroller.props.onContentSizeChange(369, 136);
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(2);
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 50 }, layoutMeasurement: { height: 86 }, contentSize: { height: 136 } } });
+    // The next echo carries the same offset against the settled geometry (97/188) — same
+    // direction, no user input: the pin survives it.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 50 }, layoutMeasurement: { height: 97 }, contentSize: { height: 188 } } });
+    // The settling content-size and own-height changes must still re-pin.
+    scroller.props.onContentSizeChange(369, 188);
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(4);
+    expect(scrollToEnd.mock.calls[3]![0]).toMatchObject({ animated: false });
+    // At the end the pin stays armed for the next change.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 91 }, layoutMeasurement: { height: 97 }, contentSize: { height: 188 } } });
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(5);
+  });
+
+  it("unpins only on an upward scroll and re-arms at the end: a drag up never gets fought (R13/D2-r3)", () => {
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onLayout: () => void; onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+    const scrollToEnd = vi.fn();
+    (scroller.props.ref as { current: unknown }).current = { scrollToEnd };
+    scroller.props.onContentSizeChange(369, 136);
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(2);
+    // The echo of the mount pin, at its end: armed, offset remembered.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 50 }, layoutMeasurement: { height: 86 }, contentSize: { height: 136 } } });
+    // A user drag UP: the offset decreases while not at the end — the pin releases, and no layout
+    // change fights the user.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 20 }, layoutMeasurement: { height: 97 }, contentSize: { height: 188 } } });
+    scroller.props.onContentSizeChange(369, 188);
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(2);
+    // A further downward-but-not-at-end scroll (reading back) stays released.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 60 }, layoutMeasurement: { height: 97 }, contentSize: { height: 188 } } });
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(2);
+    // Dragging back to the end re-arms, and the next own-height change re-pins.
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 91 }, layoutMeasurement: { height: 97 }, contentSize: { height: 188 } } });
+    scroller.props.onLayout();
+    expect(scrollToEnd).toHaveBeenCalledTimes(3);
   });
 
   it("labels Take over N, Auto and Archive N for the selection and runs each when allowed", () => {
@@ -365,7 +425,9 @@ describe("SelectionBar", () => {
     scroller.props.onContentSizeChange(360, 300);
     expect(scrollToEnd).toHaveBeenCalledTimes(1);
     expect(scrollToEnd.mock.calls[0]![0]).toMatchObject({ animated: false });
-    // A user scrolls up to read: the pin releases...
+    // The echo of that programmatic scroll, at the end for the 84 pt clip: the pin stays armed (R13).
+    scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 216 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
+    // A user scrolls up to read: the offset DECREASES, the pin releases...
     scroller.props.onScroll({ nativeEvent: { contentOffset: { y: 0 }, layoutMeasurement: { height: 84 }, contentSize: { height: 300 } } });
     // ...so further content changes (a refetch, a label width settling) do not re-pin.
     scroller.props.onContentSizeChange(360, 300);

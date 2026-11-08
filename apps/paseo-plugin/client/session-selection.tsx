@@ -125,6 +125,7 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
   // bar's own height changes — it never fights a user who has scrolled up.
   const scrollerRef = useRef<ComponentRef<typeof ScrollView> | null>(null);
   const pinnedToEnd = useRef(true);
+  const lastScrollY = useRef(0);
   // R38-D1-r2: the Limits press needs NO state capture — one decision per activation, from live
   // state only. The capture existed only because, on native, the root's touch-start dismissal used
   // to close the held help before this control's onPress ran. Limits now stops that touch itself:
@@ -157,7 +158,19 @@ export function SelectionBar({ count, takeover, auto, archive, colors, archiveRe
       control act at once, like every other plugin scroller. */}
     <ScrollView ref={scrollerRef} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 4 }} scrollEventThrottle={16}
       onContentSizeChange={repinToEnd} onLayout={repinToEnd}
-      onScroll={(event) => { const d = event.nativeEvent; pinnedToEnd.current = d.contentOffset.y + d.layoutMeasurement.height >= d.contentSize.height - 2; }}>
+      onScroll={(event) => {
+        // R13 (QA r12 SHOULD-FIX): only a scroll that moves UP unpins. Our own scrollToEnd echoes
+        // can carry the offset they set for an intermediate layout against geometry that has
+        // already settled (the QA rest race: offset 50 set for a 136/86 clip, echoed against
+        // 188/97 — 50 + 97 < 186 — disarmed the pin before the settling handlers re-pinned, and
+        // the bar rested mid-content). A same-direction echo never unpins; a user drag up lowers
+        // the offset and does; dragging back to the end re-arms. R38-D2-r3 keeps the re-pin itself
+        // to content-size and own-height changes.
+        const d = event.nativeEvent;
+        const atEnd = d.contentOffset.y + d.layoutMeasurement.height >= d.contentSize.height - 2;
+        pinnedToEnd.current = atEnd || (pinnedToEnd.current && d.contentOffset.y >= lastScrollY.current);
+        lastScrollY.current = d.contentOffset.y;
+      }}>
       {/* Today's distinct reason set, in today's order: the takeover group, then Archive. Each clamps to one line; the full reason stays on its control's accessibilityHint. */}
       {reasons.map((reason) => <Text key={reason} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{reason}</Text>)}
       {effects ? <View testID="selection-takeover-effects" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>

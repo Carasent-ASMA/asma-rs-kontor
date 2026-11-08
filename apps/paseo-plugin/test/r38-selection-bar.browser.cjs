@@ -39,6 +39,15 @@ const scale = page => page.evaluate(() => {
 // attributed to the source that owns it. The list is [data-testid="sessions-list"], the bar is
 // [data-testid="selection-bar"] (its PARENT is the Sessions screen root View, which owns the
 // compact paddingBottom), and the compact nav is the [role="tablist"] labelled Kontor views.
+// R13: the rest-pin race is timing-dependent, so a run can reproduce it under CPU throttling.
+// R13_CPU_THROTTLE=<rate> (default off) applies Emulation.setCPUThrottlingRate to every page.
+const cpuThrottle = Number(process.env.R13_CPU_THROTTLE || '1');
+async function newThrottledPage(context) {
+  const page = await context.newPage();
+  if (cpuThrottle > 1) { const cdp = await context.newCDPSession(page); await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle }); }
+  return page;
+}
+
 async function measure(page) {
   return page.evaluate(() => {
     const box = id => document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect() ?? null;
@@ -234,7 +243,7 @@ async function pass(width, height, theme, largeText, extra = {}) {
   scaleText = largeText;
   const name = `${width}x${height}-${theme}${largeText ? '-text200' : ''}${extra.inflat ? '-inset34' : ''}${extra.state ? '-mywork' : ''}`;
   const context = await browser.newContext({ viewport: { width, height }, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   const gated = (label, condition, detail) => {
@@ -572,7 +581,7 @@ async function helperFlowPass() {
   const name = 'helper-flow-430x810-light';
   scaleText = false;
   const context = await browser.newContext({ viewport: { width: 430, height: 810 } });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   try {
     await page.goto(`${origin}/?scenario=baseline&theme=light&layout=compact&inflat=34&state=mywork`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
@@ -617,7 +626,7 @@ async function activationPass() {
   const name = 'activation-1280x800-light';
   scaleText = false;
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   try {
     await page.goto(`${origin}/?scenario=baseline&layout=wide&theme=light`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
@@ -674,7 +683,7 @@ async function lifecyclePass() {
   const name = 'unmount-forget-430x810-light';
   scaleText = false;
   const context = await browser.newContext({ viewport: { width: 430, height: 810 } });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   try {
     await page.goto(`${origin}/?scenario=baseline&theme=light&layout=compact&inflat=34&state=mywork`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
@@ -717,7 +726,7 @@ async function repinPass() {
   const name = 'repin-shrink-1280';
   scaleText = false;
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   try {
     await page.goto(`${origin}/?scenario=baseline&layout=wide&theme=light`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
@@ -759,7 +768,7 @@ async function repinPass() {
 async function insetPass(width, height) {
   const name = `${width}x${height}-inset34`;
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: true, isMobile: true });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   try {
     await page.goto(`${origin}/?scenario=baseline&theme=light&layout=compact&inflat=34`);
     await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
@@ -803,7 +812,7 @@ async function widePass(width, height) {
   const name = `${width}x${height}-light`;
   scaleText = false;
   const context = await browser.newContext({ viewport: { width, height } });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   try {
@@ -882,7 +891,7 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
   scaleText = false;
   let gateRecorded = false;
   const context = await browser.newContext({ viewport: { width, height }, ...(compact ? { hasTouch: true, isMobile: true } : {}) });
-  const page = await context.newPage();
+  const page = await newThrottledPage(context);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   try {
