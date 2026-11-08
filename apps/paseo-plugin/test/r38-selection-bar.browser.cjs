@@ -763,6 +763,101 @@ async function repinPass() {
   }
 }
 
+// R14 F2 (R38-D2-r4), r14b item 2: the grow-then-shrink pulse committed as a browser gate. The
+// pulse doubles every row text on a 420px root (content grows past the clip; the bar pins at its
+// end), holds the halved text for an echo window, then restores it. The settle echoes of the
+// shrink/grow carry LOWER scroll offsets under CHANGED geometry; the direction-only r13 rule read
+// them as a user scroll up and released the pin with no user input, so the bar rested mid-content
+// with the Archive control outside the clip (AUD r13: 91/97/188 -> 36/108/144 -> 0/97/136 -> settled
+// 0/97/188). Under D2-r4 the pin survives them. Each round reloads fresh (like the per-setting
+// proof), and the gate also asserts the pulse captured zero user input. Timing-sensitive: the
+// failure reproduced at CPU rate 12 with a 48 ms echo window, so R38_PULSE_THROTTLE=<rate>
+// (default off) throttles THIS pass's CPU, gated by env exactly like R13_CPU_THROTTLE.
+const pulseThrottle = Number(process.env.R38_PULSE_THROTTLE || '1');
+async function mirrorPulsePass() {
+  const name = 'mirror-pulse-pass';
+  const context = await browser.newContext({ viewport: { width: 393, height: 700 } });
+  const page = await context.newPage();
+  const pulseCdp = pulseThrottle > 1 ? await context.newCDPSession(page) : null;
+  if (pulseCdp) await pulseCdp.send('Emulation.setCPUThrottlingRate', { rate: pulseThrottle });
+  try {
+    const gated = (label, condition, detail) => { report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail }); console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`); };
+    const restState = () => page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="selection-bar"]')?.querySelector('div');
+      const archive = document.querySelector('[data-testid="selection-archive"]');
+      if (!scroller || !archive) return null;
+      const s = scroller.getBoundingClientRect(), a = archive.getBoundingClientRect();
+      return { scrollable: scroller.scrollHeight > scroller.clientHeight + 2,
+        atEnd: scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2,
+        archiveInside: a.bottom <= s.bottom + 2 && a.bottom >= s.top,
+        scrollTop: Math.round(scroller.scrollTop), clip: Math.round(scroller.clientHeight), content: scroller.scrollHeight };
+    });
+    // The settle settings and echo windows of the per-setting pulse proof, covering the combinations
+    // that reproduced the race on the pre-fix bundle (beba1fc8: 4x/24 ms failed at settle 400, and
+    // 12x/48 ms failed at settle 1500 — runs/pulse-beba-*/ in the r14b evidence).
+    const rounds = [
+      { settle: 400, delay: 24 }, { settle: 1500, delay: 48 }, { settle: 400, delay: 96 },
+      { settle: 1500, delay: 48 }, { settle: 400, delay: 24 }, { settle: 1500, delay: 96 },
+    ];
+    for (const [index, round] of rounds.entries()) {
+      const label = `round${index + 1}`;
+      await page.goto(`${origin}/?scenario=baseline&layout=compact&short=1`);
+      await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+      const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
+      if (await hide.isVisible().catch(() => false)) await hide.click();
+      await page.getByTestId('session-actions-agt_lsa_99101').click();
+      await page.getByRole('dialog', { name: 'Session actions', exact: true }).getByTestId('session-action-select').click();
+      await page.waitForTimeout(300);
+      // Grow: the 420px root with every row text doubled. The bar must be scrollable, rest pinned
+      // at its end, and hold the Archive control inside itself.
+      await page.evaluate(() => {
+        document.querySelector('#root').style.height = '420px';
+        for (const node of document.querySelectorAll('[dir="auto"]:not([data-scaled])')) {
+          const style = getComputedStyle(node);
+          node.style.fontSize = `${parseFloat(style.fontSize) * 2}px`;
+          if (style.lineHeight !== 'normal') node.style.lineHeight = `${parseFloat(style.lineHeight) * 2}px`;
+          node.setAttribute('data-scaled', '');
+        }
+      });
+      await page.waitForTimeout(round.settle);
+      const grown = await restState();
+      gated(`${label}-grown-pinned`, !!grown && grown.scrollable && grown.atEnd && grown.archiveInside, `settle ${round.settle} -> ${JSON.stringify(grown)}`);
+      // The pulse: shrink for the echo window, then grow back. No real user input may occur — the
+      // pin must survive the settle echoes on its own.
+      await page.evaluate(() => { window.__pulseInputs = []; for (const kind of ['wheel', 'touchstart', 'pointerdown']) document.addEventListener(kind, event => window.__pulseInputs.push(event.type), true); });
+      await page.evaluate(async delay => {
+        const texts = [...document.querySelectorAll('[dir="auto"][data-scaled]')];
+        for (const node of texts) {
+          const style = getComputedStyle(node);
+          node.style.fontSize = `${parseFloat(style.fontSize) / 2}px`;
+          if (style.lineHeight !== 'normal') node.style.lineHeight = `${parseFloat(style.lineHeight) / 2}px`;
+        }
+        document.querySelector('#root').getBoundingClientRect();
+        await new Promise(resolve => setTimeout(resolve, delay));
+        for (const node of texts) {
+          const style = getComputedStyle(node);
+          node.style.fontSize = `${parseFloat(style.fontSize) * 2}px`;
+          if (style.lineHeight !== 'normal') node.style.lineHeight = `${parseFloat(style.lineHeight) * 2}px`;
+        }
+      }, round.delay);
+      // Three samples like the per-setting proof's stable-failure check: the last two must both
+      // rest pinned with Archive inside, under zero captured user input.
+      const samples = [];
+      for (const ms of [800, 1500, 2000]) { await page.waitForTimeout(ms); samples.push(await restState()); }
+      const inputs = await page.evaluate(() => window.__pulseInputs);
+      const ok = samples.slice(-2).every(x => x && x.atEnd && x.archiveInside) && inputs.length === 0;
+      gated(`${label}-rests-pinned-after-pulse`, ok,
+        `settle ${round.settle}, echo ${round.delay} ms -> ${JSON.stringify(samples)}, user input ${JSON.stringify(inputs)}`);
+      if (!ok) await shot(page, `${name}-${label}-fail`);
+    }
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
 // Simulated-inset fixture: the host inset enters only through SafeAreaView paddingBottom
 // (kontor-screen.tsx:354); drive it explicitly and verify the under-nav distance is inset + 6, once.
 async function insetPass(width, height) {
@@ -1119,6 +1214,9 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     // re-pins when its own height (not its content) changes.
     await lifecyclePass();
     await repinPass();
+    // R14 F2 (R38-D2-r4), r14b item 2: the grow-then-shrink mirror pulse must leave the bar pinned
+    // at its end with Archive inside, with zero user input, at both settle settings.
+    await mirrorPulsePass();
     // R38 V3 + F-SHEET: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the
     // panel text — and the at-rest button gates in both forms, the compact sheet also at text200.
     await switchSheetPass(1280, 800, 'popover');
