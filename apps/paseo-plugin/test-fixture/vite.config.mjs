@@ -9,8 +9,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const worktree = path.resolve(process.env.R38_WORKTREE);
-if (!worktree) throw new Error("R38_WORKTREE must name the worktree root");
+// R16 (LSA msg 1769618a): check the env BEFORE resolving — path.resolve never returns an empty
+// string, so an unset R38_WORKTREE previously slipped past the guard and failed later, deeper in
+// the config. Throw on unset or empty first, then resolve.
+const worktreeEnv = process.env.R38_WORKTREE;
+if (!worktreeEnv) throw new Error("R38_WORKTREE must name the worktree root");
+const worktree = path.resolve(worktreeEnv);
 const prototype = path.join(worktree, "apps/kontor-prototype");
 const plugin = path.join(worktree, "apps/paseo-plugin");
 const fromPlugin = createRequire(path.join(plugin, "package.json"));

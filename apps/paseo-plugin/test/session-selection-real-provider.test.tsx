@@ -188,3 +188,25 @@ describe("R15 N2: another owner's help survives the presence drop", () => {
     expect(s.tooltip()).toBeDefined();
   });
 });
+
+describe("R16: another owner's help survives the bar MOUNTING with no Limits", () => {
+  // Review-B survivor probe (NV-n2-dismiss-at-mount), the mount half of N2 that the r15 gate could
+  // not reach: the r15 N2 gate mounts the bar WITH Limits present and then flips a presence path,
+  // so the effect's mount run always happened under hasLimits=true. The variant adds a mount-only
+  // effect (`useEffect(() => { if (!effects || !hasLimits) limits.dismiss(); }, []);` after the
+  // presence effect) that fires exactly when the bar mounts with no Limits — dismiss() closes the
+  // whole controller, so another owner's already-open help must not go with it.
+  it("stays open when the bar mounts on a host with no Limits", () => {
+    let providerEl!: Element;
+    const provider = () => { providerEl = ControlHelpProvider({ children: "screen", colors: {} as Parameters<typeof ControlHelpProvider>[0]["colors"] }) as Element; harness.controller = providerEl.props.value; };
+    harness.current.render(provider);
+    (all(providerEl).find((node) => node.type === "View")!.props.ref as { current: unknown }).current = measure(0, 0, 390, 320);
+    (harness.controller as { show: (a: unknown, t: string, f: boolean, h: boolean) => void }).show({ current: measure(200, 200, 40, 40) }, "Help for another control", false, true);
+    harness.current.render(provider); harness.current.render(provider); harness.current.render(provider);
+    expect(all(providerEl).find((node) => node.props.role === "tooltip")).toBeDefined();
+    const props = { count: 1, takeover: control(), auto: control(), archive: control(), colors: COLORS, disclosure: null, hasLimits: false };
+    const renderAll = () => { provider(); all(SelectionBar(props)); };
+    harness.current.render(renderAll); harness.current.render(renderAll); harness.current.render(renderAll);
+    expect(all(providerEl).find((node) => node.props.role === "tooltip")).toBeDefined();
+  });
+});
