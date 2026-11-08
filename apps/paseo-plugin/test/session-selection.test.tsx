@@ -325,9 +325,11 @@ describe("SelectionBar", () => {
     // Review-B finding SF1-r16: the nearest r16 gate ("the re-armed offset") was never released, so
     // its at-end event was not a re-arm. Here the pin IS released (50), the at-end event (78 at
     // changed geometry) re-arms AND stores, and the first lower event after the re-arm (60, stable
-    // against the fresh store) must release — a y or heights store skipped on the re-arm leaves the
-    // stale 50 (V-y-wasPinned) or the stale {97,97}→changed geometry (V-h-wasPinned), the 60 reads
-    // same-direction and the content-size settle re-pins over the user. Asserts behaviour only.
+    // against the fresh store) must release — a y store skipped on the re-arm leaves the stale 50
+    // (V-y-wasPinned) so the 60 reads same-direction; a heights store skipped on the re-arm leaves
+    // the 50 event's content 188 / clip 97 (V-h-wasPinned), so the 60 at clip 110 reads CHANGED
+    // geometry. Either way the pin holds through the 60 and the settle re-pins over the user.
+    // Asserts behaviour only.
     // Kills (r16c results.json): V-y-wasPinned, V-h-wasPinned (its own seeds, each killed ALONE
     // too), and M-r16-y-notAtEnd, M-r16-y-stableGeometry, M-r16-y-removed, M-r16-heights-notAtEnd,
     // M-r16-heights-stableGeometry, M-r16-heights-removed, M-r16-heights-content-kept,
