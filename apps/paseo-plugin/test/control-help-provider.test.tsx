@@ -264,3 +264,26 @@ describe("R12 RA-F2/B-F2: an unmounting control forgets its own anchor", () => {
     expect(s.tooltip()).toBeUndefined();
   });
 });
+
+describe("R14: an ordinary rerender's ref replacement must not forget open help", () => {
+  it("ref(null) then ref(node) — React's replacement sequence — keeps the held help open", () => {
+    hooks.slots = []; hooks.cursor = 0; hooks.effects = []; hooks.controller = null;
+    let tree: ReactNode;
+    const render = () => { hooks.cursor = 0; tree = ControlHelpProvider({ children: "screen", colors }); return tree; };
+    render();
+    const root = all(tree).find((e) => e.type === "View")!;
+    (root.props.ref as { current: unknown }).current = measure(0, 0, 390, 320);
+    hooks.controller = (tree as Element).props.value;
+    cleanup.push(...hooks.effects.map((fn) => fn()).filter((fn): fn is () => void => typeof fn === "function"));
+    const control = useControlHelp("Effects with limits.");
+    control.bindings.ref(measure(20, 30, 100, 30) as unknown as View);
+    control.hold(); render();
+    expect(all(tree).find((e) => e.props.role === "tooltip")).toBeDefined();
+    // An ordinary rerender replaces the ref function: React commits old(null) then new(node).
+    // Nothing about the anchor changed, so the held help must survive both calls.
+    control.bindings.ref(null);
+    control.bindings.ref(measure(20, 30, 100, 30) as unknown as View);
+    render();
+    expect(all(tree).find((e) => e.props.role === "tooltip")).toBeDefined();
+  });
+});
