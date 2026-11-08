@@ -202,8 +202,7 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // also carry the count and the Take over availability, adding count-zero and
   // takeover-unavailable — a mount effect conditioned on `!count`, `none` or
   // `takeover.unavailable` (N-m-no-count, N-m-none, N-m-takeover-unavailable) escapes the
-  // presence-only rows. r16d (N2-r16c): the rows also carry the count and the Take over
-  // availability, adding count-zero and takeover-unavailable. r16f (SF4-r16d, LSA-CONFIRMED: the
+  // presence-only rows. r16f (SF4-r16d, LSA-CONFIRMED: the
   // it.each table is the bounded mount alphabet): four more rows — nocount-nolimits,
   // unavailable-nolimits, nocount-unavailable and nocount-unavailable-nolimits — covering the four
   // reachable cells of the effects × hasLimits × count × Take over matrix that had no case.
@@ -221,6 +220,7 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
     ["no effects, Limits", 1, null, true, () => control()],
     ["count-zero", 0, "effects text", true, () => control()],
     ["takeover-unavailable", 1, "effects text", true, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+    ["count-two-nolimits", 2, "effects text", false, () => control()],
     ["nocount-nolimits", 0, "effects text", false, () => control()],
     ["unavailable-nolimits", 1, "effects text", false, () => ({ unavailable: "Busy", onPress: vi.fn() })],
     ["nocount-unavailable", 0, "effects text", true, () => ({ unavailable: "Busy", onPress: vi.fn() })],
