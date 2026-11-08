@@ -211,14 +211,16 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // cover FIFTEEN reachable cells, and the "clamps the takeover disclosure to two lines with a
   // Limits control..." test (T1) covers the sixteenth — the cells: at count 0 — nocount-nolimits,
   // nocount-unavailable, nocount-unavailable-nolimits and count-zero; at count 1 — no effects, no
-  // Limits; effects, no Limits; no effects, Limits; effects, Limits (count-one-limits); effects,
-  // Limits with Take over refused (takeover-unavailable; client:100 sets effects to null whenever
-  // Take over is unavailable, so the refused cells are no-effects cells — N2-r16i labels them by
-  // disclosure, and the row's disclosure text is inert there); effects, no Limits with Take over
-  // refused (unavailable-nolimits); at count 2 — effects, no Limits (count-two-nolimits); no
-  // effects, no Limits; no effects, Limits; Limits refused (count-two-unavailable); and
-  // disclosure-effects refused (count-two-unavailable-nolimits; likewise a no-effects cell).
-  // Count two with effects AND Limits has no row: the clamps test covers that cell. Kills (r16j results.json at c98e6a6d): the mount gate is the SOLE killer of
+  // Limits; effects, no Limits; no effects, Limits; effects, Limits (count-one-limits);
+  // disclosure, Limits, Take over refused (takeover-unavailable); and disclosure, no Limits, Take
+  // over refused (unavailable-nolimits); at count 2 — effects, no Limits (count-two-nolimits); no
+  // effects, no Limits; no effects, Limits; disclosure, Limits, Take over refused
+  // (count-two-unavailable); and disclosure, no Limits, Take over refused
+  // (count-two-unavailable-nolimits). client:100 sets effects to null whenever Take over is
+  // unavailable, so the disclosure is inert in these four cells (the only consumer of disclosure
+  // in the client is :100). Count two with effects AND Limits has no row: the clamps test covers
+  // that cell.
+  // Kills (r16j results.json at c98e6a6d): the mount gate is the SOLE killer of
   // NV-n2-dismiss-at-mount (the variant fails fifteen of the sixteen cases — every one except
   // count-one-limits, where neither !effects nor !hasLimits holds) and the UNIQUE killer of
   // V-n2-mount-effects-no-limits (its own case plus count-two-nolimits and count-three-nolimits),

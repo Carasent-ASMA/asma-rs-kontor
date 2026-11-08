@@ -340,10 +340,11 @@ describe("SelectionBar", () => {
     // (N-h-content-kept-on-rearm keeps the old content, so the next lower event reads changed
     // geometry and holds the pin). Asserts behaviour only.
     // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept, M-r16-heights-content-kept,
-    // M-r16-heights-notAtEnd, M-r16-heights-removed, M-r16-heights-stableGeometry, M-r16-y-above-rule,
-    // M-r16-y-notAtEnd, M-r16-y-removed, M-r16-y-stableGeometry, N-h-content-kept-on-rearm, N-y-skip-
-    // rearm-stable, V-h-wasPinned, V-y-wasPinned Unique killer of none (the D2-r4 differential gate also kills its seeds).
+    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept,
+    // M-r16-heights-content-kept, M-r16-heights-notAtEnd, M-r16-heights-removed,
+    // M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-notAtEnd, M-r16-y-removed,
+    // M-r16-y-stableGeometry, N-h-content-kept-on-rearm, N-y-skip-rearm-stable, V-h-wasPinned,
+    // V-y-wasPinned. Unique killer of none (the D2-r4 differential gate also kills its seeds).
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -370,11 +371,13 @@ describe("SelectionBar", () => {
     // N-h-clip-high-water-at-end — the high water must not apply to the re-arm either). Asserts
     // behaviour only.
     // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept, M-r16-heights-content-kept,
-    // M-r16-heights-notAtEnd, M-r16-heights-removed, M-r16-heights-stableGeometry, M-r16-y-above-rule,
-    // M-r16-y-notAtEnd, M-r16-y-removed, M-r16-y-stableGeometry, M-rb-r14-lasty-only-at-end, N-h-clip-
-    // high-water-at-end, N-h-clip-high-water-content-same, N-h-content-high-water-at-end, N-h-content-
-    // high-water-clip-same, NV-sf1-heights-only-at-end, V-h-clip-high-water, V-h-content-high-water Unique killer of none.
+    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept,
+    // M-r16-heights-content-kept, M-r16-heights-notAtEnd, M-r16-heights-removed,
+    // M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-notAtEnd, M-r16-y-removed,
+    // M-r16-y-stableGeometry, M-rb-r14-lasty-only-at-end, N-h-clip-high-water-at-end,
+    // N-h-clip-high-water-content-same, N-h-content-high-water-at-end,
+    // N-h-content-high-water-clip-same, NV-sf1-heights-only-at-end, V-h-clip-high-water,
+    // V-h-content-high-water. Unique killer of none.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -398,10 +401,11 @@ describe("SelectionBar", () => {
     // to one decimal (N-y-toFixed1) makes both events read 30.4 and never releases. Asserts
     // behaviour only.
     // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-pin-always, M-r13-race-back, M-r16-heights-
-    // clip-kept, M-r16-heights-content-kept, M-r16-heights-removed, M-r16-heights-stableGeometry,
-    // M-r16-y-above-rule, M-r16-y-removed, M-r16-y-stableGeometry, M-rb-r14-lasty-only-at-end, N-y-
-    // ceil, N-y-toFixed1, NV-sf1-heights-only-at-end, V-y-rounded Unique killer of none.
+    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-pin-always,
+    // M-r13-race-back, M-r16-heights-clip-kept, M-r16-heights-content-kept, M-r16-heights-removed,
+    // M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-removed, M-r16-y-stableGeometry,
+    // M-rb-r14-lasty-only-at-end, N-y-ceil, N-y-toFixed1, NV-sf1-heights-only-at-end, V-y-rounded.
+    // Unique killer of none.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -430,12 +434,13 @@ describe("SelectionBar", () => {
     // alone (N-h-round-clip-only) reads it stable and releases where the head keeps.
     // Asserts behaviour only.
     // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-geom-clip-only, M-geom-content-only, M-geom-
-    // ignored, M-pin-always, M-r13-race-back, M-r14-mirror-back, M-r16-heights-above-stable,
-    // M-r16-heights-clip-kept, M-r16-heights-content-kept, M-r16-heights-removed, M-r16-heights-
-    // stableGeometry, M-r16-y-above-rule, M-r16-y-removed, M-r16-y-stableGeometry, M-rb-r14-lasty-
-    // only-at-end, N-h-ceil, N-h-ceil-content-only, N-h-round-clip-only, N-h-toFixed1, NV-sf1-heights-
-    // only-at-end, V-h-rounded, V-y-rounded Unique killer of none.
+    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-geom-clip-only,
+    // M-geom-content-only, M-geom-ignored, M-pin-always, M-r13-race-back, M-r14-mirror-back,
+    // M-r16-heights-above-stable, M-r16-heights-clip-kept, M-r16-heights-content-kept,
+    // M-r16-heights-removed, M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-removed,
+    // M-r16-y-stableGeometry, M-rb-r14-lasty-only-at-end, N-h-ceil, N-h-ceil-content-only,
+    // N-h-round-clip-only, N-h-toFixed1, NV-sf1-heights-only-at-end, V-h-rounded, V-y-rounded. Unique
+    // killer of none.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -489,7 +494,8 @@ describe("SelectionBar", () => {
     // D = 7..15 in the r16i ladder log — while floor and trunc round 5 / 3 DOWN: floor dies on the
     // h-y-repeat-floorD-noise traces, and trunc dies on h-y-repeat-negative-thirds, since
     // trunc(−4/3, D) > −4/3 for every D = 1..15 — truncation toward zero of a negative value, so
-    // it holds by construction at every D, not by float noise. The full-precision heights are 97 + 1/3, 188 + 1/3, 100 / 3 and 4 / 3, and
+    // it holds by construction at every D, not by float noise. The full-precision heights are
+    // 97 + 1/3, 188 + 1/3, 100 / 3 and 4 / 3, and
     // the seeds kill the heights stores' toFixed at 14 decimals (F-h-toFixed14, F-h-toFixed14-clip,
     // F-h-toFixed14-content) and 15 (F-h-toFixed15) at them. R38-PREC-r16f as corrected (msg
     // 1b286dab): every rounding form {toFixed, round, floor, ceil, trunc} at D <= 15 counts, and
