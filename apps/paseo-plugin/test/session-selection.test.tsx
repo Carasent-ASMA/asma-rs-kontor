@@ -464,6 +464,68 @@ describe("SelectionBar", () => {
     // round evidence at runs/differential-directions.json. Unique killer of none of the 92's
     // seeds: every kill here is shared with a named row gate.
     const SEED = 8539, TRACES = 2048, EVENTS = 10;
+    // r16f: 21 DIRECTED traces from review-B r16d (the 20 PROBES traces, numbers copied
+    // programmatically from its probes17.py into this file, never retyped) plus one
+    // full-precision heights trace: 97 + 1/3 and 188 + 1/3 carry full binary precision, so a
+    // heights store rounded to ANY number of decimals reads changed geometry on the second event
+    // and keeps the pin where the head releases (expected 0). Each trace is replayed through the
+    // same loop, model and probe as the random traces — a fresh mount per trace and a comparison
+    // after every event — BEFORE the random phase; the PRNG draws nothing for them. The expected
+    // final settle count sits beside each trace, and the model must reach it, so a mis-copied
+    // trace fails the expectation instead of testing nothing.
+    const DIRECTED: Array<[string, Array<[number, number, number]>, number]> = [
+    ["band-interior", [[30, 97, 188], [10, 97, 188], [88.995, 97, 188]], 0],
+    ["band-round-content", [[30, 97, 188.4], [10, 97, 188.4], [89.2, 97, 188.4]], 0],
+    ["band-negative-even", [[0, 97, 97], [-5, 97, 97]], 0],
+    ["stable-near-content", [[30, 97, 188], [10, 97, 188.005]], 1],
+    ["stable-near-clip", [[30, 97, 188], [10, 97.005, 188]], 1],
+    ["stable-near-3dp", [[30, 97, 188.001], [10, 97, 188.004]], 1],
+    ["stable-near-4dp", [[30, 97, 188.0001], [10, 97, 188.0004]], 1],
+    ["rule-near-y", [[30, 97, 188], [29.995, 97, 188]], 0],
+    ["y-near-3dp", [[30.444, 97, 188], [30.442, 97, 188]], 0],
+    ["y-near-4dp", [[30.4444, 97, 188], [30.4442, 97, 188]], 0],
+    ["y-near-7dp", [[30.4444444, 97, 188], [30.4444442, 97, 188]], 0],
+    ["h-content-3dp", [[30, 97, 188.444], [10, 97, 188.444]], 0],
+    ["h-clip-3dp", [[30, 97.444, 188], [10, 97.444, 188]], 0],
+    ["h-content-4dp", [[30, 97, 188.4444], [10, 97, 188.4444]], 0],
+    ["h-content-7dp", [[30, 97, 188.4444444], [10, 97, 188.4444444]], 0],
+    ["y-store-short", [[-30, 97, 188], [0, 97, 80], [-20, 97, 80]], 0],
+    ["h-store-short", [[30, 97, 188], [60, 97, 80], [30, 97, 188]], 1],
+    ["h-store-negative", [[30, 97, 188], [-5, 110, 200], [-10, 110, 200]], 0],
+    ["h-content-below-clip", [[60, 97, 80], [-30, 97, 80]], 0],
+    ["first-event-zero-box", [[-5, 0, 0]], 1],
+    ["full-precision-heights", [[30, 97 + 1 / 3, 188 + 1 / 3], [10, 97 + 1 / 3, 188 + 1 / 3]], 0],
+    ];
+    for (const [traceName, traceEvents, expected] of DIRECTED) {
+      harness.fresh();
+      const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+      const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
+      const scrollToEnd = vi.fn();
+      scroller.props.ref.current = { scrollToEnd };
+      let pinned = true;                                    // D2-r4: the bar mounts pinned to the end
+      let lastY = 0, lastContent = -1, lastClip = -1;       // D2-r4: heights start at −1, so the first event can never unpin
+      for (let i = 0; i < traceEvents.length; i++) {
+        const [y, clip, content] = traceEvents[i]!;
+        const before = scrollToEnd.mock.calls.length;       // N1-r16d: read BEFORE onScroll
+        scroller.props.onScroll({ nativeEvent: { contentOffset: { y }, layoutMeasurement: { height: clip }, contentSize: { height: content } } });
+        if (scrollToEnd.mock.calls.length !== before) {     // N1-r16d: no re-pin happens in onScroll
+          throw new Error(`D2-r4 violation in trace ${traceName}, event ${i}: onScroll itself scrolled to the end (a re-pin inside onScroll)`);
+        }
+        const atEnd = y + clip >= content - 2;              // D2-r4: atEnd — the end band, y + clip >= content − 2
+        const stable = lastContent === content && lastClip === clip; // D2-r4: stable geometry — both heights equal the previous scroll event's
+        pinned = atEnd || (pinned && (y >= lastY || !stable)); // D2-r4: atEnd re-arms; unpin only if !atEnd && y < lastY && stable
+        lastY = y; lastContent = content; lastClip = clip;  // D2-r4: every event stores y and both heights
+        scroller.props.onContentSizeChange(369, 200);       // the probe (D2-r3): re-pins only while pinned, changes no ref
+        const fired = scrollToEnd.mock.calls.length > before;
+        if (fired !== pinned) {
+          throw new Error(`D2-r4 differential mismatch in directed trace ${traceName}, event ${i}: the model says ${pinned ? "PINNED (scrollToEnd expected)" : "RELEASED (no scrollToEnd)"}, the component ${fired ? "scrolled to the end" : "did not scroll"}. Events so far (y/clip/content): ${JSON.stringify(traceEvents.slice(0, i + 1))}`);
+        }
+      }
+      const modelSettles = pinned ? 1 : 0;                  // one final settle fires iff the model ends pinned
+      if (expected !== modelSettles) {
+        throw new Error(`Directed trace ${traceName} does not test what it claims: its expected final settle count is ${expected}, but the model ends ${pinned ? "PINNED (settle 1)" : "RELEASED (settle 0)"}`);
+      }
+    }
     let s = SEED;
     const rnd = (n: number) => { s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff; return (s >>> 8) % n; };
     const cross = (ys: number[], clips: number[], contents: number[]) => ys.flatMap((y) => clips.flatMap((l) => contents.map((c) => [y, l, c] as [number, number, number])));
@@ -474,20 +536,23 @@ describe("SelectionBar", () => {
       ...cross([30.42, 30.44, 30.6, 60, 91], [97, 97.4], [188, 188.4]),
       ...cross([30.2, 30.4, 60, 91], [97, 97.44], [188, 188.44]),
     ];
-    // Edge classes. End band: for every (clip, content) pair the boundary itself (y + clip =
-    // content − 2, atEnd) and the first value outside it (content − clip − 3, not atEnd). Below
-    // the band: a five-step ladder (−4 … −12) of stable-geometry offsets, so a trace can draw the
-    // full same-geometry sequence a stable re-arm needs — release below the band, re-arm at the
-    // band, then a lower offset inside the window the skipped re-arm store would have filled.
+    // Overscroll past the end; a negative offset (top bounce); content shorter than clip; a height
+    // that shrinks and stays smaller; one that grows. (r16f N2: pushed BEFORE the band loop, so
+    // the four edge geometries 97|80, 110|80, 97|150 and 97|250 get their own end-band and ladder
+    // members below — the band loop below now really covers every (clip, content) pair.)
+    union.push([120, 97, 188], [150, 110, 200], [-10, 97, 188], [-1, 110, 200], [0, 97, 80], [30, 110, 80], [60, 97, 80], [10, 97, 150], [10, 97, 250]);
+    // Edge classes. End band: for every (clip, content) pair — including the four edge geometries
+    // above — the boundary itself (y + clip = content − 2, atEnd) and the first value outside it
+    // (content − clip − 3, not atEnd). Below the band: a five-step ladder (−4 … −12) of
+    // stable-geometry offsets, so a trace can draw the full same-geometry sequence a stable re-arm
+    // needs — release below the band, re-arm at the band, then a lower offset inside the window
+    // the skipped re-arm store would have filled.
     const pairs = new Set(union.map(([, l, c]) => `${l}|${c}`));
     for (const key of pairs) {
       const [clip, content] = key.split("|").map(Number) as [number, number];
       union.push([content - clip - 2, clip, content], [content - clip - 3, clip, content]);
       for (const step of [4, 6, 8, 10, 12]) union.push([content - clip - step, clip, content]);
     }
-    // Overscroll past the end; a negative offset (top bounce); content shorter than clip; a height
-    // that shrinks and stays smaller; one that grows.
-    union.push([120, 97, 188], [150, 110, 200], [-10, 97, 188], [-1, 110, 200], [0, 97, 80], [30, 110, 80], [60, 97, 80], [10, 97, 150], [10, 97, 250]);
     // Sampler: every event is drawn from the union pool above, but the seeded draw prefers the
     // previous event's (clip, content) 60% of the time, so traces exercise same-geometry
     // sequences — the shape a stable re-arm store (and its skip variants) actually lives in. The

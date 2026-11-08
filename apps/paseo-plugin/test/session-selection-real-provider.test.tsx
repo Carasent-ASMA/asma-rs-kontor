@@ -202,7 +202,13 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // also carry the count and the Take over availability, adding count-zero and
   // takeover-unavailable — a mount effect conditioned on `!count`, `none` or
   // `takeover.unavailable` (N-m-no-count, N-m-none, N-m-takeover-unavailable) escapes the
-  // presence-only rows. Kills (r16d results.json): V-n2-mount-effects-no-limits,
+  // presence-only rows. r16d (N2-r16c): the rows also carry the count and the Take over
+  // availability, adding count-zero and takeover-unavailable. r16f (SF4-r16d, LSA-CONFIRMED: the
+  // it.each table is the bounded mount alphabet): four more rows — nocount-nolimits,
+  // unavailable-nolimits, nocount-unavailable and nocount-unavailable-nolimits — covering the four
+  // reachable cells of the effects × hasLimits × count × Take over matrix that had no case.
+  // Kills: named in this comment's kill list below, from the round's results.json.
+  // Kills (r16d results.json): V-n2-mount-effects-no-limits,
   // V-n2-mount-no-effects-with-limits (each fails exactly its own it.each case — the gate is the
   // UNIQUE killer of V-n2-mount-effects-no-limits), N-m-no-count, N-m-none,
   // N-m-takeover-unavailable (each fails exactly its own new case — unique kills),
@@ -214,6 +220,10 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
     ["no effects, Limits", 1, null, true, () => control()],
     ["count-zero", 0, "effects text", true, () => control()],
     ["takeover-unavailable", 1, "effects text", true, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+    ["nocount-nolimits", 0, "effects text", false, () => control()],
+    ["unavailable-nolimits", 1, "effects text", false, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+    ["nocount-unavailable", 0, "effects text", true, () => ({ unavailable: "Busy", onPress: vi.fn() })],
+    ["nocount-unavailable-nolimits", 0, "effects text", false, () => ({ unavailable: "Busy", onPress: vi.fn() })],
   ] as Array<[string, number, string | null, boolean, () => SelectionControl & { onPress: () => void }]>)("stays open when the bar mounts: %s", (_name, count, disclosure, hasLimits, takeover) => {
     let providerEl!: Element;
     const provider = () => { providerEl = ControlHelpProvider({ children: "screen", colors: {} as Parameters<typeof ControlHelpProvider>[0]["colors"] }) as Element; harness.controller = providerEl.props.value; };
