@@ -1184,6 +1184,67 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
   }
 }
 
+// R15 (LSA disposition on the AUD r14 evidence): the fixture-only full-screen host-offline gate,
+// committed. The fixture exposes window.__r38SetHostStatus (apps/paseo-plugin/test-fixture/
+// main.tsx ONLY — never in the shipped client bundle; the bundle-identity check greps the built
+// output for this name and requires an empty result). The transition is the real one: the host
+// goes offline, Take over is refused and the host stops stating limits, so the Limits control
+// leaves the bar while the bar stays mounted. The presence effect must forget THIS anchor
+// (0 help panels) — the gate goes red under M-r14-presence-no-forget, which removes the effect.
+// A second round checks the same transition does not dismiss ANOTHER owner's open help: the
+// dismissal distinction is killed in unit space (R15 N2); the browser only shows the full screen
+// can hold such help across the transition (row action controls exist in browse mode).
+async function hostOfflinePass() {
+  const name = 'host-offline-1280x800';
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await newThrottledPage(context);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    const gated = (label, condition, detail) => { report.cases.push({ name: `${name}-gate-${label}`, status: condition ? 'PASS' : 'FAIL', detail }); console.log(`${name}-gate-${label}: ${condition ? 'PASS' : 'FAIL'} ${detail ?? ''}`); };
+    // Round 1: the Limits help is held open when the host goes offline — the anchor dies with its
+    // control and the help must go with it (the AUD's observed flow, exactly).
+    await page.goto(`${origin}/?scenario=baseline&layout=wide`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    await page.getByTestId('session-actions-agt_lsa_99101').click();
+    await page.getByRole('dialog', { name: 'Session actions', exact: true }).getByTestId('session-action-select').click();
+    await page.waitForTimeout(500);
+    await page.getByTestId('selection-limits').click();
+    await page.getByTestId('control-help').waitFor({ timeout: 15000 });
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.__r38SetHostStatus('offline'));
+    await page.waitForTimeout(1000);
+    const state = await page.evaluate(() => ({
+      bars: document.querySelectorAll('[data-testid="selection-bar"]').length,
+      limits: document.querySelectorAll('[data-testid="selection-limits"]').length,
+      panels: document.querySelectorAll('[data-testid="control-help"]').length,
+      takeoverDisabled: document.querySelector('[data-testid="selection-takeover"]')?.getAttribute('aria-disabled'),
+    }));
+    gated('limits-help-forgets-when-host-offlines', state.bars === 1 && state.limits === 0 && state.panels === 0,
+      `bars ${state.bars}, Limits controls ${state.limits}, help panels ${state.panels} (takeover aria-disabled ${state.takeoverDisabled}); page errors ${JSON.stringify(errors)}`);
+    if (!(state.bars === 1 && state.limits === 0 && state.panels === 0)) await shot(page, `${name}-limits-fail`);
+    // Round 2 (fresh page resets the host): another owner's help is open when the host goes
+    // offline — the transition must not dismiss it.
+    await page.goto(`${origin}/?scenario=baseline&layout=wide`);
+    await page.getByTestId('sessions-list').waitFor({ timeout: 15000 });
+    const action = page.getByTestId('session-actions-agt_lsa_99101');
+    await action.hover();
+    await page.waitForTimeout(300);
+    const before = await page.getByTestId('control-help').count();
+    await page.evaluate(() => window.__r38SetHostStatus('offline'));
+    await page.waitForTimeout(1000);
+    const after = await page.getByTestId('control-help').count();
+    gated('another-owners-help-survives', before === 1 && after === 1,
+      `row action help panels before ${before}, after the host offline transition ${after}`);
+    if (!(before === 1 && after === 1)) await shot(page, `${name}-other-fail`);
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack ?? String(error) });
+    console.log(`${name}: FAIL ${error.message}`);
+  } finally {
+    await context.close();
+  }
+}
+
 (async () => {
   browser = await chromium.launch({ headless: true });
   report.browser = browser.version();
@@ -1217,6 +1278,9 @@ async function switchSheetPass(width, height, form, largeText = false, shortShee
     // R14 F2 (R38-D2-r4), r14b item 2: the grow-then-shrink mirror pulse must leave the bar pinned
     // at its end with Archive inside, with zero user input, at both settle settings.
     await mirrorPulsePass();
+    // R15 (LSA disposition): the committed fixture-only host-offline gate — the Limits help dies
+    // with its control when the host goes offline; another owner's help survives the transition.
+    await hostOfflinePass();
     // R38 V3 + F-SHEET: the Limits popover above the switch sheet, in BOTH forms, hit-tested on the
     // panel text — and the at-rest button gates in both forms, the compact sheet also at text200.
     await switchSheetPass(1280, 800, 'popover');

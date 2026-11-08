@@ -143,3 +143,48 @@ describe("R12 T1: the real provider's held flag drives the Limits stop decision 
     expect(stopHeld.mock.calls.length).toBe(1);
   });
 });
+
+// R15 gates for the review-B survivors (N1/N2), on the committed real-provider harness. Both probe
+// the SelectionBar PRESENCE effect — the control leaves while the bar stays mounted — which the
+// round-12 unmount-cleanup gate never exercises: that gate runs the provider's cleanup path with
+// two controls and opens help through the control's own hold, so forget() and dismiss() are
+// indistinguishable in it (only the Limits help is open, and both close exactly that help).
+const RB_DISCLOSURE = "Host-stated limits beyond the fixed effects sentence.";
+const rbFlip: Array<[string, Partial<{ hasLimits: boolean; disclosure: string | null; takeover: ReturnType<typeof control> }>]> = [
+  ["hasLimits false", { hasLimits: false }],
+  ["disclosure null", { disclosure: null }],
+  ["takeover refused", { takeover: { unavailable: "The host is offline.", onPress: vi.fn() } as never }],
+];
+
+describe("R15 N1: UNHELD help on Limits ends when the control leaves", () => {
+  // M-rb-r14-presence-held-only gates the forget on heldOpen: hover- or focus-opened help is not
+  // held, so under the mutant it outlives its control. Each presence path must end it.
+  for (const kind of ["onHoverIn", "onFocus"] as const)
+    it.each(rbFlip)(`${kind} help closes when Limits leaves: %s`, (_label, patch) => {
+      const s = mount(RB_DISCLOSURE);
+      (s.limits()!.props[kind] as () => void)();
+      s.render(); s.render(); s.render();
+      expect(s.tooltip()).toBeDefined();
+      s.setProps(patch as never);
+      s.render(); s.render(); s.render();
+      expect(s.limits()).toBeUndefined();
+      expect(s.tooltip()).toBeUndefined();
+    });
+});
+
+describe("R15 N2: another owner's help survives the presence drop", () => {
+  // M-rb-r14-presence-dismiss-any swaps forget() for the controller-wide dismiss(): whatever help
+  // is open would close with the Limits anchor. forget() is anchor-scoped, so another owner's help
+  // survives every presence path — and the bar mounting on a host whose Limits then leave.
+  it.each(rbFlip)("stays open when Limits leaves: %s", (_label, patch) => {
+    const s = mount(RB_DISCLOSURE);
+    const other = { current: measure(200, 200, 40, 40) };
+    (harness.controller as { show: (a: unknown, t: string, f: boolean, h: boolean) => void }).show(other, "Help for another control", false, true);
+    s.render(); s.render(); s.render();
+    expect(s.tooltip()).toBeDefined();
+    s.setProps(patch as never);
+    s.render(); s.render(); s.render();
+    expect(s.limits()).toBeUndefined();
+    expect(s.tooltip()).toBeDefined();
+  });
+});

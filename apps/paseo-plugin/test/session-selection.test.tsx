@@ -189,6 +189,33 @@ describe("SelectionBar", () => {
     expect(scrollToEnd).toHaveBeenCalledTimes(5);
   });
 
+  it("an equal-offset echo after a lower event under changed geometry keeps the pin: every event stores y (r15 SF1, D2-r4)", () => {
+    // Review-B survivor probe (M-rb-r14-lasty-only-at-end): if only at-end events stored y, the
+    // stale end offset (91) would judge the repeated 60/110/188 echo (60 < 91, geometry now
+    // stable) a user scroll up and release the pin with no input — the settling content-size
+    // change would then skip its re-pin and the bar would rest mid-content. D2-r4 stores y on
+    // EVERY event, so the repeat is judged against 60 and stays same-direction. The gate asserts
+    // behaviour — the offset rests at the end after the change — never the ref value.
+    const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: { scrollToEnd: (opts: { animated: boolean }) => void } } } } }).children;
+    let y = 0; let clip = 97; let content = 188;
+    const scrollToEnd = vi.fn(() => { y = content - clip; });
+    scroller.props.ref.current = { scrollToEnd };
+    const event = (offset: number, clipHeight: number, contentHeight: number) => scroller.props.onScroll({ nativeEvent: { contentOffset: { y: offset }, layoutMeasurement: { height: clipHeight }, contentSize: { height: contentHeight } } });
+    // The pin echo, at its end: armed, y stored.
+    event(91, 97, 188);
+    // A lower offset under CHANGED geometry: a settle artifact, not a user scroll — the pin holds
+    // and this event's y (60) is stored too.
+    event(60, 110, 188);
+    // The same offset again under the now-stable geometry: same-direction, the pin holds.
+    event(60, 110, 188);
+    // The settle: still armed, so the content-size change re-pins and the bar rests at its end.
+    content = 200; clip = 110;
+    scroller.props.onContentSizeChange(369, content);
+    expect(scrollToEnd).toHaveBeenCalledTimes(1);
+    expect(y + clip).toBeGreaterThanOrEqual(content - 2);
+  });
+
   it("keeps the pin through a content-only settle (R14 F2 one-axis variant)", () => {
     // One-axis replay: the clip never changes; only contentSize.height moves under the echo.
     // M-geom-clip-only (guarding on the clip alone) reads stable geometry and releases here.
