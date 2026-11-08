@@ -276,7 +276,7 @@ describe("SelectionBar", () => {
     // (y rests at 30). Head stored {144,108} at the settle, so the echo is a geometry change and
     // keeps the pin, and the settle re-pins the bar to its end. Asserts behaviour: y rests at 91.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
-    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: { scrollToEnd: (opts: { animated: boolean }) => void } } } } }).children;
+    const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onLayout: () => void; onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: { scrollToEnd: (opts: { animated: boolean }) => void } } } } }).children;
     let y = 0; let clip = 97; let content = 188;
     const scrollToEnd = vi.fn(() => { y = content - clip; });
     scroller.props.ref.current = { scrollToEnd };
