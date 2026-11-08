@@ -202,10 +202,12 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // also carry the count and the Take over availability, adding count-zero and
   // takeover-unavailable — a mount effect conditioned on `!count`, `none` or
   // `takeover.unavailable` (N-m-no-count, N-m-none, N-m-takeover-unavailable) escapes the
-  // presence-only rows. Kills (r16c results.json): V-n2-mount-effects-no-limits and
-  // V-n2-mount-no-effects-with-limits (their own seeds, each killed ALONE too — each fails exactly
-  // its own it.each case), NV-n2-dismiss-at-mount (this gate stays its SOLE killer — the variant
-  // now fails all three cases), and M-rb-r14-presence-dismiss-any.
+  // presence-only rows. Kills (r16d results.json): V-n2-mount-effects-no-limits,
+  // V-n2-mount-no-effects-with-limits (each fails exactly its own it.each case — the gate is the
+  // UNIQUE killer of V-n2-mount-effects-no-limits), N-m-no-count, N-m-none,
+  // N-m-takeover-unavailable (each fails exactly its own new case — unique kills),
+  // NV-n2-dismiss-at-mount (this gate stays its SOLE killer — the variant now fails five cases),
+  // and M-rb-r14-presence-dismiss-any.
   it.each([
     ["no effects, no Limits", 1, null, false, () => control()],
     ["effects, no Limits", 1, "effects text", false, () => control()],
