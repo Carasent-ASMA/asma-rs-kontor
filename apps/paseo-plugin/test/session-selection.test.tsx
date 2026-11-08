@@ -339,11 +339,11 @@ describe("SelectionBar", () => {
     // rearm-content-change (SF1-r16c): a re-arm that changes only the content must store it
     // (N-h-content-kept-on-rearm keeps the old content, so the next lower event reads changed
     // geometry and holds the pin). Asserts behaviour only.
-    // Kills (r16d results.json): N-y-skip-rearm-stable, N-h-content-kept-on-rearm (its own r16c
-    // seeds), V-y-wasPinned, V-h-wasPinned, M-r16-y-notAtEnd, M-r16-y-stableGeometry,
-    // M-r16-y-removed, M-r16-heights-notAtEnd, M-r16-heights-stableGeometry, M-r16-heights-removed,
-    // M-r16-heights-content-kept, M-r16-heights-clip-kept, M-r16-y-above-rule, M-pin-always,
-    // M-drag-unpin-lost. Unique killer of none (the D2-r4 differential gate also kills its seeds).
+    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
+    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept, M-r16-heights-content-kept,
+    // M-r16-heights-notAtEnd, M-r16-heights-removed, M-r16-heights-stableGeometry, M-r16-y-above-rule,
+    // M-r16-y-notAtEnd, M-r16-y-removed, M-r16-y-stableGeometry, N-h-content-kept-on-rearm, N-y-skip-
+    // rearm-stable, V-h-wasPinned, V-y-wasPinned Unique killer of none (the D2-r4 differential gate also kills its seeds).
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -369,10 +369,12 @@ describe("SelectionBar", () => {
     // shrinks that land ON an at-end event (N-h-content-high-water-at-end,
     // N-h-clip-high-water-at-end — the high water must not apply to the re-arm either). Asserts
     // behaviour only.
-    // Kills (r16d results.json): N-h-content-high-water-clip-same, N-h-clip-high-water-content-same,
-    // N-h-content-high-water-at-end, N-h-clip-high-water-at-end (its own r16c seeds), V-h-content-high-water,
-    // V-h-clip-high-water, NV-sf1-heights-only-at-end, M-rb-r14-lasty-only-at-end,
-    // M-r16-y-stableGeometry, M-r16-y-notAtEnd, M-r16-heights-notAtEnd. Unique killer of none.
+    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
+    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept, M-r16-heights-content-kept,
+    // M-r16-heights-notAtEnd, M-r16-heights-removed, M-r16-heights-stableGeometry, M-r16-y-above-rule,
+    // M-r16-y-notAtEnd, M-r16-y-removed, M-r16-y-stableGeometry, M-rb-r14-lasty-only-at-end, N-h-clip-
+    // high-water-at-end, N-h-clip-high-water-content-same, N-h-content-high-water-at-end, N-h-content-
+    // high-water-clip-same, NV-sf1-heights-only-at-end, V-h-clip-high-water, V-h-content-high-water Unique killer of none.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -395,9 +397,11 @@ describe("SelectionBar", () => {
     // A drop in the hundredths (30.44 → 30.42) IS a user move: the pin releases — a store rounded
     // to one decimal (N-y-toFixed1) makes both events read 30.4 and never releases. Asserts
     // behaviour only.
-    // Kills (r16d results.json): N-y-ceil, N-y-toFixed1 (its own r16c seeds), V-y-rounded,
-    // NV-sf1-heights-only-at-end, M-rb-r14-lasty-only-at-end, M-bar-rest-top, M-echo-unpins,
-    // M-r13-race-back. Unique killer of none.
+    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
+    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-pin-always, M-r13-race-back, M-r16-heights-
+    // clip-kept, M-r16-heights-content-kept, M-r16-heights-removed, M-r16-heights-stableGeometry,
+    // M-r16-y-above-rule, M-r16-y-removed, M-r16-y-stableGeometry, M-rb-r14-lasty-only-at-end, N-y-
+    // ceil, N-y-toFixed1, NV-sf1-heights-only-at-end, V-y-rounded Unique killer of none.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -425,10 +429,13 @@ describe("SelectionBar", () => {
     // fraction-clip-echo: a clip fraction (97.4 → 97) is also changed geometry; rounding the clip
     // alone (N-h-round-clip-only) reads it stable and releases where the head keeps.
     // Asserts behaviour only.
-    // Kills (r16d results.json): N-h-ceil, N-h-ceil-content-only, N-h-toFixed1,
-    // N-h-round-clip-only (its own r16c seeds), V-h-rounded, V-y-rounded, M-r16-heights-above-stable,
-    // M-r14-mirror-back, M-geom-ignored, M-geom-content-only, M-geom-clip-only, M-r13-race-back,
-    // M-echo-unpins. Unique killer of none.
+    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
+    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-geom-clip-only, M-geom-content-only, M-geom-
+    // ignored, M-pin-always, M-r13-race-back, M-r14-mirror-back, M-r16-heights-above-stable,
+    // M-r16-heights-clip-kept, M-r16-heights-content-kept, M-r16-heights-removed, M-r16-heights-
+    // stableGeometry, M-r16-y-above-rule, M-r16-y-removed, M-r16-y-stableGeometry, M-rb-r14-lasty-
+    // only-at-end, N-h-ceil, N-h-ceil-content-only, N-h-round-clip-only, N-h-toFixed1, NV-sf1-heights-
+    // only-at-end, V-h-rounded, V-y-rounded Unique killer of none.
     const { tree } = bar(2, control(), control(), control(), `Take over: ${TAKEOVER_EFFECTS}`);
     const scroller = (byTestId(tree, "selection-bar")!.props as { children: { props: { onContentSizeChange: (w: number, h: number) => void; onScroll: (event: unknown) => void; ref: { current: unknown } } } }).children;
     const scrollToEnd = vi.fn();
@@ -452,12 +459,12 @@ describe("SelectionBar", () => {
     // smaller and one that grows. Fractional values ride the fractional and hundredths alphabets;
     // repeated stable geometry arises from repeated draws; the first event after mount (heights
     // still −1) arises because every trace starts fresh. Determinism: the seed is fixed below.
-    // Kills (r16i results.json at 37d32e7e — 156 seeds, failing_tests kept UNCAPPED): 89 seeds
-    // are attributed to this gate in the full battery, 49 of them UNIQUE — the 30 SF1–SF3
+    // Kills (r16j results.json at c98e6a6d — 165 seeds, failing_tests kept UNCAPPED): 98 seeds
+    // are attributed to this gate in the full battery, 58 of them UNIQUE — the 30 SF1–SF3
     // store-line and fresh-mount seeds of review B r16d, the 14 store-line seeds of review B
-    // r16f and the five y-store seeds of review B r16h die only here (the full per-gate and
-    // per-seed lists are runs/gate-kill-lists.json in the r16i evidence, generated by script
-    // from results.json).
+    // r16f, the five y-store seeds of review B r16h and the nine SHOULD-FIX seeds of review B
+    // r16i die only here (the full per-gate and per-seed lists are runs/gate-kill-lists.json in
+    // the r16j evidence, generated by script from results.json).
     // Direction (b) (runs/direction-b-selection.json in the r16j evidence): the gate alone kills
     // 92 of 92 — every seed whose diff touches session-selection.tsx:178-183 (91: the 86 of r16i
     // plus the five :182 seeds of review B r16i) plus R-init-h-0, selected by script (apply each
