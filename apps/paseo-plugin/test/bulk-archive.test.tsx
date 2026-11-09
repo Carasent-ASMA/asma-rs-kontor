@@ -4,10 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Each test gets a fresh renderer: a dialog's refs and state must never carry over from another test.
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])) }));
-vi.mock("react-native", () => ({ Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), Pressable: "Pressable", Text: "Text", View: "View", ScrollView: "ScrollView" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon", Modal: Object.assign(function Modal() { return null; }, { Content: "Modal.Content" }) }));
 vi.mock("../client/anchored-menu", () => ({ AnchoredMenu: "AnchoredMenu" }));
-vi.mock("../client/control-help", () => ({ useActionHelp: () => ({ bindings: {}, dismiss() {} }) }));
+vi.mock("../client/control-help", () => ({ useActionHelp: () => ({ bindings: {}, dismiss() {} }), useControlHelp: () => ({ bindings: {}, hold() {}, dismiss() {} }) }));
 
 import { ArchiveRowFeedback, BulkArchiveDialog, BulkArchiveToolbar, archiveIssue, useArchiveSelection } from "../client/bulk-archive";
 import type { useSessionLifecycle } from "../client/use-session-lifecycle";
@@ -109,6 +109,11 @@ describe("bulk archive selection accessibility", () => {
     const control = (unavailable: string | null = null) => ({ unavailable, onPress: vi.fn() });
     const bar = (count: number, takeover = control(), auto = control(), archive = control()) => SelectionBar({ count, takeover, auto, archive, colors: dark as unknown as PluginTheme["colors"] }) as Element;
     const buttons = (tree: Element) => walk(tree).filter((element) => typeof element.props.label === "string").map((element) => draw(element));
+    // The bar's off-screen intrinsic-width measurer (R38-D3-r1) repeats the button labels as inert
+    // texts; the bar's visible text is everything outside that measurer.
+    const outsideMeasurer = (node: unknown): Element[] => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(outsideMeasurer)
+      : (node as Element).props.testID === "selection-label-measure" ? [] : [node as Element, ...outsideMeasurer((node as Element).props.children)];
+    const barTexts = (tree: Element) => outsideMeasurer(tree).filter((element) => element.type === "Text").map((element) => [element.props.children].flat().join(""));
     const archive = control(), takeover = control(), tree = bar(2, takeover, control(), archive);
     expect(buttons(tree).map((button) => [button.props.testID, button.props.accessibilityLabel])).toEqual([["selection-takeover", "Take over 2 selected sessions on each seat's chain"],
       ["selection-takeover-auto", "Choose a model for taking over 2 selected sessions"], ["selection-archive", "Review archive of 2 selected sessions"]]);
@@ -116,16 +121,16 @@ describe("bulk archive selection accessibility", () => {
     for (const button of buttons(tree)) { expect(button.props.accessibilityState).toEqual({ disabled: false }); expect(styleOf(button)).toMatchObject({ minHeight: 44 }); }
     (buttons(tree)[2]!.props.onPress as () => void)(); (buttons(tree)[0]!.props.onPress as () => void)();
     expect(archive.onPress).toHaveBeenCalledTimes(1); expect(takeover.onPress).toHaveBeenCalledTimes(1);
-    expect(texts(tree)).toEqual([]);
+    expect(barTexts(tree)).toEqual([]);
     // Nothing selected refuses every action with one reason; a refused press does nothing.
     const none = bar(0, takeover, control(), archive);
     for (const button of buttons(none)) { expect(button.props).toMatchObject({ accessibilityHint: "Select sessions first.", accessibilityState: { disabled: true } }); (button.props.onPress as () => void)(); }
     expect(archive.onPress).toHaveBeenCalledTimes(1); expect(takeover.onPress).toHaveBeenCalledTimes(1);
-    expect(texts(none)).toEqual(["Select sessions first."]);
+    expect(barTexts(none)).toEqual(["Select sessions first."]);
     const busy = "A takeover is running; wait for its results.", waits = "Archive waits for the host and any running archive.", route = "Choosing a model for one takeover is not supported on this fixture host.";
-    expect(texts(bar(1, control(busy), control(route), control(waits)))).toEqual([busy, waits]);
+    expect(barTexts(bar(1, control(busy), control(route), control(waits)))).toEqual([busy, waits]);
     const free = bar(1, control(), control(route), control());
-    expect(texts(free)).toEqual([route]); expect(buttons(free).map((button) => button.props.accessibilityHint)).toEqual([undefined, route, undefined]);
+    expect(barTexts(free)).toEqual([route]); expect(buttons(free).map((button) => button.props.accessibilityHint)).toEqual([undefined, route, undefined]);
   });
   it("leaves selecting to D1 and shows only a batch's progress, Stop and one polite announcement", () => {
     const selection = { selecting: true, selected: ["a"], remove: vi.fn() } as unknown as ReturnType<typeof useArchiveSelection>;

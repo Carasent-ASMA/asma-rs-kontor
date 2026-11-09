@@ -155,6 +155,18 @@ function listRowKey(row: ListRow): string {
 
 /** A row's height before any row has been measured at the list's width. */
 const ESTIMATED_ROW_HEIGHT = 96;
+/** While selecting on a compact screen the list keeps the larger of this share of the screen root and 3 full rows (R38 D2). */
+const SELECTING_LIST_MIN_SHARE = 0.4;
+const SELECTING_LIST_MIN_ROWS = 3;
+/** The room the selecting bar needs for its buttons row alone — single-line or stacked (96 pt) plus the
+ * bar's own chrome (R38 F3). The bar's text may scroll away on a short root; the buttons may not. */
+const SELECTING_BAR_BUTTONS_RESERVE = 112;
+const selectingListFloor = (rootHeight: number, listTop: number) => {
+  const floor = Math.max(rootHeight * SELECTING_LIST_MIN_SHARE, SELECTING_LIST_MIN_ROWS * ESTIMATED_ROW_HEIGHT);
+  // A short root cannot afford both the floor and the bar's buttons: the floor yields first (R38 F3) —
+  // 4 pt is the compact screen's own bottom breath above the nav.
+  return Math.min(floor, Math.max(0, rootHeight - listTop - 4 - SELECTING_BAR_BUTTONS_RESERVE));
+};
 /** A reader this close to an end of the list is at that end. */
 const LIST_EDGE = 1;
 /** Scroll events this close together are one gesture; the list holds no place for the reader during it. */
@@ -1597,6 +1609,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const [orderSelection, setOrderSelection] = useState<string | null>(null);
   const [optionMenu, setOptionMenu] = useState<"grouping" | "sort" | "person" | "workingAs" | null>(null);
   const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
+  // Where the list starts in the root column (R38 F3): the floor's short-root cap is measured, not assumed.
+  const [listTop, setListTop] = useState(0);
   const rootRef = useRef<View | null>(null);
   const groupingRef = useRef<View | null>(null);
   const sortRef = useRef<View | null>(null);
@@ -3483,7 +3497,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         backgroundColor: colors.surface0,
         paddingTop: compact ? 12 : WIDE_SCREEN_PADDING,
         paddingHorizontal: compact ? 12 : 18,
-        paddingBottom: compact ? 20 : WIDE_SCREEN_PADDING,
+        // R38 D3, measured: the bar's last line sits this padding above the nav's top border, so compact
+        // keeps only a 4 pt breath instead of the old 20 pt of dead space. Wide is unchanged.
+        paddingBottom: compact ? 4 : WIDE_SCREEN_PADDING,
         gap: TOOLBAR_LAYOUT_GAP,
       }}
     >
@@ -3528,6 +3544,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         onLayout={(event) => {
           viewportHeightRef.current = event.nativeEvent.layout.height;
           resizedRef.current();
+          // R38 F3: the floor yields to the bar's buttons on a short root, and the yield is measured from
+          // where the list actually starts in the root column (chrome + header above it).
+          const { y } = event.nativeEvent.layout;
+          if (compact && y !== listTop) setListTop(y);
           if (compact) handleListLayout(event);
         }}
         onScroll={handleListScroll}
@@ -3546,7 +3566,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         keyboardShouldPersistTaps={compact ? "handled" : undefined}
         // No platform anchoring: it follows the first visible row, so a live re-sort of that row jumps the list.
         // The screen keeps the reader's place itself; see createRowLayout.
-        style={pageDocument() ? NO_SCROLL_ANCHOR : undefined}
+        // While selecting, the list takes its room as flex (basis 0) on EVERY layout (R38 V1): with the
+        // bar mounted, the list's content-sized basis overflows the column on paper and Yoga shrinks the
+        // bar below its own content, hiding the effects line and Limits inside the bar's scroll. On
+        // compact the list additionally keeps its floor (R38 D2); on wide/desktop the floor does not apply.
+        style={[bulkSelection.selecting ? (compact ? { minHeight: selectingListFloor(rootSize.height, listTop), flex: 1 } : { flex: 1 }) : null, pageDocument() ? NO_SCROLL_ANCHOR : null]}
         scrollEventThrottle={16}
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader === null ? null : <View onLayout={rowLayout.onHeaderLayout}>{listHeader}</View>}
@@ -3615,7 +3639,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       />
       {/* Board D1's sticky bar: the frozen selection's two actions; otherwise an unfinished takeover's way back to its results. */}
       {bulkSelection.selecting ? null : ops.notice}
-      {bulkSelection.selecting ? <SelectionBar count={bulkSelection.selected.length} colors={colors} archiveRef={bulkReviewRef} disclosure={ops.takeover(selectedSeats).disclosure}
+      {bulkSelection.selecting ? <SelectionBar count={bulkSelection.selected.length} colors={colors} archiveRef={bulkReviewRef} disclosure={ops.takeover(selectedSeats).disclosure} hasLimits={ops.takeover(selectedSeats).limits}
         takeover={{ unavailable: ops.takeover(selectedSeats).unavailable, onPress: ops.takeover(selectedSeats).start }}
         auto={{ unavailable: ops.takeover(selectedSeats).auto, onPress: ops.takeover(selectedSeats).choose }}
         archive={{ unavailable: !canStart ? "Archive waits for the host and any running archive." : bulkOpen ? "The archive review is open." : includeArchived ? "Leave Archived to archive sessions." : null,

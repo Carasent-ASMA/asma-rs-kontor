@@ -60,6 +60,8 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: 
 
 import { SessionPulseContext } from "../client/session-state-marker";
 import { createAvailability, popoverBodyHeight, StartSwitchPopover, StartSwitchSheet, switchList, switchRows, useStartSwitch } from "../client/start-switch-sheet";
+import { SelectionBar } from "../client/session-selection";
+import { TAKEOVER_EFFECTS } from "../client/session-takeover";
 import { NewLsaForm } from "../client/new-lsa-form";
 import { DenseSessionRow } from "../client/dense-session-row";
 import { OrganizationRowView } from "../client/organization-row";
@@ -842,6 +844,97 @@ describe("Start or switch sheet", () => {
     expect(byTestId(within(s.tree, "session-row-agent-a"), "session-row-body")?.props.role).toBe("button");
     expect((byTestId(s.tree, "session-actions-agent-a")!.props.style as (state: { pressed: boolean }) => object)({ pressed: false })).toMatchObject({ minHeight: 44 });
   });
+
+  it("draws the same bounded selection bar in the sheet: the disclosure clamped to two lines with Limits, never the inline wall (R38 D1)", async () => {
+    // A host whose takeover states production-length limits, as the installed server answers.
+    const hostLimit = `${TAKEOVER_EFFECTS} A wall of host limits long enough to wrap past two lines on a phone, `.repeat(4);
+    model.rpc["sessions.navigator-capabilities"] = vi.fn(async () => ({ usageTotals: { supported: false, reason: "not read here" }, summaries: { supported: true }, draftAttach: { supported: true },
+      takeover: { supported: true, limits: [hostLimit] }, takeoverBulk: { supported: true }, takeoverRoute: { supported: true } }));
+    recordVisit("host-a", "agent-a", Date.now() - 60_000);
+    const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, frameHeight: 330, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
+      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(() => ({ ok: true } as const)), onShowView: vi.fn(), onClose: vi.fn() };
+    const render = () => { model.cursor = 0; model.effect = 0; return useStartSwitch(all); };
+    let out = render();
+    // Start selecting the way a row does.
+    const row = scoped([out.header, out.body], { live: true, visible: true }).map((entry) => entry.node)
+      .find((node) => (node.type as { name?: string }).name === "DenseSessionRow")!;
+    (row.props.onSelectStart as () => void)();
+    out = render();
+    expect(out.label).toBe("Select sessions");
+    // R38 F-SHEET: the sheet sets yields={false} — the bar does NOT shrink in the sheet (its list
+    // absorbs the squeeze), so the bar keeps its buttons at rest in both forms.
+    const listNode = scoped([out.body], { live: true, visible: true }).map((entry) => entry.node)
+      .find((node) => node.props.testID === "kontor-switch-list")!;
+    expect(listNode).toBeDefined();
+    expect((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props.yields).toBe(false);
+    // The capabilities read is async: flush its microtasks, then draw with the disclosure in hand.
+    for (let flush = 0; flush < 6; flush++) { await Promise.resolve(); out = render(); }
+    expect(out.footer).toBeDefined();
+    // The sheet's own raw tree never carries the limits inline: the full text only rides the shared bar's props.
+    const rawTexts = scoped([out.header, out.body, out.footer], { live: true, visible: true }).map((entry) => entry.node)
+      .filter((node) => node.type === "Text").map((node) => String(node.props.children as string[] | string));
+    expect(rawTexts.join("\n")).not.toContain("A wall of host limits");
+    // The footer IS the shared bounded bar: capped at 60% with an inner scroller, the disclosure on two
+    // lines and a collapsed Limits control beside it.
+    expect((out.footer as { type: unknown }).type).toBe(SelectionBar);
+    const barTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
+    const barRoot = byTestId(barTree, "selection-bar")!;
+    // In the sheet the bar does not yield (F-SHEET) and carries a DEFINITE pixel bound (F-SHEET-SHORT,
+    // R6-F1: the MEASURED root height − 12, × 0.45 — the cover frame's own formula; StartSwitchSheet
+    // passes rootSize.height as frameHeight, because the keyboard shrinks the root while the window
+    // height stays). This mock's frame is 330 pt (window 844) → round(318 × 0.45) = 143.
+    expect(barRoot.props.style).toMatchObject({ maxHeight: 143, flexShrink: 0 });
+    expect((barRoot.props.children as { type: unknown }).type).toBe("ScrollView");
+    const line = byTestId(barTree, "selection-takeover-disclosure")!;
+    const inline = line.props.children as string[] | string;
+    // R38 V2: the line is EXACTLY "Take over: " + the effects sentence — no host limit rides inline;
+    // the full disclosure (effects + limits) stays only in the Limits popover's hook text.
+    expect(String(Array.isArray(inline) ? inline.flat(Infinity).join("") : inline)).toBe(`Take over: ${TAKEOVER_EFFECTS}`);
+    expect(line.props.numberOfLines).toBe(2);
+    // The sheet passes the host's limits state through, so the Limits control renders here.
+    expect((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props.hasLimits).toBe(true);
+    expect(byTestId(barTree, "selection-limits")!.props.accessibilityState).toMatchObject({ expanded: false });
+    expect(byTestId(barTree, "selection-limits")!.props.accessibilityRole).toBe("button");
+    // R8 (QA SHOULD-FIX): the fallback must keep the bound DEFINITE without a measured root —
+    // frameHeight omitted (the composer popover's path: StartSwitchPopover never passes it) and the
+    // unmeasured {0,0} root (0) both fall back to the window height. Mock window 390×844 →
+    // round(832 × 0.45) = 374.
+    for (const fallback of ["omitted", 0] as const) {
+      if (fallback === "omitted") delete (all as { frameHeight?: number }).frameHeight;
+      else all.frameHeight = fallback;
+      out = render();
+      const fallbackTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
+      expect(byTestId(fallbackTree, "selection-bar")!.props.style).toMatchObject({ maxHeight: 374, flexShrink: 0 });
+    }
+  });
+
+  it("gives a host that states no takeover limits neither a Limits control nor a clamp, through the caller (R12 T2)", async () => {
+    // D1 / R38-D1-r1: "No limits: no control and no clamp". The operations factory derives hasLimits
+    // from the disclosure ("limits: disclosed.length > 0"), not from a constant.
+    model.rpc["sessions.navigator-capabilities"] = vi.fn(async () => ({ usageTotals: { supported: false, reason: "not read here" }, summaries: { supported: true }, draftAttach: { supported: true },
+      takeover: { supported: true }, takeoverBulk: { supported: true }, takeoverRoute: { supported: true } }));
+    recordVisit("host-a", "agent-a", Date.now() - 60_000);
+    const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, frameHeight: 330, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
+      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(() => ({ ok: true } as const)), onShowView: vi.fn(), onClose: vi.fn() };
+    const render = () => { model.cursor = 0; model.effect = 0; return useStartSwitch(all); };
+    let out = render();
+    const row = scoped([out.header, out.body], { live: true, visible: true }).map((entry) => entry.node)
+      .find((node) => (node.type as { name?: string }).name === "DenseSessionRow")!;
+    (row.props.onSelectStart as () => void)();
+    out = render();
+    expect(out.label).toBe("Select sessions");
+    // Flush the async capabilities read, then assert the caller's no-limits pass-through.
+    for (let flush = 0; flush < 6; flush++) { await Promise.resolve(); out = render(); }
+    expect(out.footer).toBeDefined();
+    expect((out.footer as { type: unknown }).type).toBe(SelectionBar);
+    expect((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props.hasLimits).toBe(false);
+    const barTree = elements(SelectionBar((out.footer as { props: Parameters<typeof SelectionBar>[0] }).props));
+    // No Limits control beside the disclosure, and the disclosure line keeps no clamp.
+    expect(byTestId(barTree, "selection-limits")).toBeUndefined();
+    const line = byTestId(barTree, "selection-takeover-disclosure")!;
+    expect(line.props.numberOfLines).toBeUndefined();
+    expect(String(Array.isArray(line.props.children) ? (line.props.children as unknown[]).flat(Infinity).join("") : line.props.children)).toBe(`Take over: ${TAKEOVER_EFFECTS}`);
+  });
 });
 
 describe("Start or switch popover from the composer pill", () => {
@@ -1048,4 +1141,5 @@ describe("Start or switch popover from the composer pill", () => {
     expect(byTestId(p.tree, "kontor-switch-freshness")).toBeDefined();
     expect(rowIds(p.tree)).toEqual(["agent-a"]);
   });
+
 });

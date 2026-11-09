@@ -288,4 +288,42 @@ describe.each(["full", "slim", "compact"] as const)("bulk archive on the %s Sess
     expect(feedback("b")?.props.row).toBeUndefined();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-execute-item").map(([, input]) => input.agentId)).toEqual(["a", "b", "b"]);
   });
+
+  it("keeps the selecting list at its floor and the compact screen's bottom padding at the measured breath (R38 D2/D3)", () => {
+    mount(); start();
+    const screenRoot = () => all().filter((element) => element.props.tabIndex === -1).at(-1)!;
+    /** The list reports where it starts in the root column (R38 F3); 0 before any layout, as on first paint. */
+    const listLayout = (y: number, height = 400) => (list().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y, width: 393, height } } });
+    // At a 900 pt root the share term wins: 0.4 × 900 = 360 (a 0.2 share would fall back to the 288 pt 3-row floor).
+    (screenRoot().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 393, height: 900 } } });
+    harness.flush();
+    if (layout === "compact") {
+      expect(list().props.style).toEqual(expect.arrayContaining([{ minHeight: 360, flex: 1 }]));
+    } else {
+      // R38 V1/D2-r1: on wide the list still takes its room as flex with basis 0 while selecting —
+      // with the bar mounted, the list's content-sized basis would overflow the column and Yoga would
+      // shrink the BAR below its own content. The floor stays compact-only: no minHeight here.
+      expect(list().props.style).toEqual(expect.arrayContaining([{ flex: 1 }]));
+      expect(JSON.stringify(list().props.style)).not.toContain('"minHeight"');
+    }
+    // At a 666 pt root the 3-row floor wins: 3 × ESTIMATED_ROW_HEIGHT 96 = 288 (dropping the row term would give 266).
+    (screenRoot().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 393, height: 666 } } });
+    harness.flush();
+    if (layout === "compact") {
+      expect(list().props.style).toEqual(expect.arrayContaining([{ minHeight: 288, flex: 1 }]));
+      // R38 F3: a short root cannot afford the floor and the bar's buttons — the floor yields to the
+      // measured list top: 330 − 190 (chrome + header above the list) − 4 breath − 112 button reserve.
+      (screenRoot().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 393, height: 330 } } });
+      listLayout(190);
+      harness.flush();
+      expect(list().props.style).toEqual(expect.arrayContaining([{ minHeight: 24, flex: 1 }]));
+      // Without the measured list top the cap falls back to the full root; the 666 pt floor holds again.
+      (screenRoot().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 393, height: 666 } } });
+      listLayout(0);
+      harness.flush();
+      expect(list().props.style).toEqual(expect.arrayContaining([{ minHeight: 288, flex: 1 }]));
+    }
+    // D3, measured: compact keeps a 4 pt breath above the nav's top border (was 20); wide keeps 16.
+    expect(screenRoot().props.style).toMatchObject({ paddingBottom: layout === "compact" ? 4 : 16 });
+  });
 });

@@ -149,3 +149,141 @@ describe("hover and focus help", () => {
     screen.control.bindings.onHoverIn(); screen.render(); handlers.get("resize")!({} as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
   });
 });
+
+describe("R10 R9-F2: the press exception covers only the anchor that holds the popover", () => {
+  it("dismisses unheld help on a root press at its own source, and preserves the held one", () => {
+    const child = { kind: "child HostInstance" };
+    const anchor = { current: Object.assign(measure(100, 200, 44, 44), { contains: (target: unknown) => target === child }) as unknown as View };
+    const screen = mount(390, 320, false, "unused");
+    const controller = hooks.controller as { show(anchor: unknown, text: string, focused: boolean, held: boolean): void };
+    // Unheld (hover) help on this anchor: a root press landing on its own child STILL dismisses —
+    // the exception covers only the anchor that HOLDS the popover (QA seed 7 regression).
+    controller.show(anchor, "Hover explanation", false, false);
+    screen.render();
+    expect(screen.tooltip()).toBeDefined();
+    handlers.get("pointerdown")?.({ pointerType: "mouse", target: child, clientX: 120, clientY: 220 } as never);
+    screen.render();
+    expect(screen.tooltip()).toBeUndefined();
+    // The help that is HELD on the same anchor survives the same root press at its child: one
+    // toggle decision belongs to the holding control's own activation.
+    controller.show(anchor, "Held explanation", false, true);
+    screen.render();
+    expect(screen.tooltip()).toBeDefined();
+    handlers.get("pointerdown")?.({ pointerType: "mouse", target: child, clientX: 120, clientY: 220 } as never);
+    screen.render();
+    expect(screen.tooltip()).toBeDefined();
+  });
+});
+
+describe("R12 T1: subscribe notifies (open, held) — held is the provider's own flag, not a mirror of open", () => {
+  it("unheld help gives (true, false), held help (true, true), closed (false, false)", () => {
+    hooks.slots = []; hooks.cursor = 0; hooks.effects = []; hooks.controller = null;
+    let tree: ReactNode;
+    const render = () => { hooks.cursor = 0; tree = ControlHelpProvider({ children: "screen", colors }); return tree; };
+    render();
+    const controller = (tree as Element).props.value as { subscribe(anchor: unknown, listener: (open: boolean, held: boolean) => void): () => void; show(anchor: unknown, text: string, focused?: boolean, held?: boolean): void; dismiss(): void };
+    const root = all(tree).find((e) => e.type === "View")!;
+    (root.props.ref as { current: unknown }).current = measure(0, 0, 390, 320);
+    cleanup.push(...hooks.effects.map((fn) => fn()).filter((fn): fn is () => void => typeof fn === "function"));
+    const anchor = { current: measure(20, 30, 100, 30) as View };
+    const seen: Array<[boolean, boolean]> = [];
+    controller.subscribe(anchor, (open, held) => seen.push([open, held]));
+    // The notification loop is the provider's own effect and this harness registers effects once;
+    // re-arm it (drop its slot so the next render re-registers with the fresh help) per step.
+    const rearm = (act: () => void) => {
+      const slot = hooks.slots.findIndex((s) => s === true);
+      expect(slot).toBeGreaterThanOrEqual(0);
+      delete hooks.slots[slot];
+      act(); render();
+      hooks.effects.at(-1)!();
+    };
+    // Hover help: open and NOT held — held is the provider's flag, not a mirror of open.
+    rearm(() => controller.show(anchor, "Hover explanation", false, false));
+    expect(seen.at(-1)).toEqual([true, false]);
+    // The same anchor held: (true, true) — the flag the Limits touch-stop reads.
+    rearm(() => controller.show(anchor, "Held explanation", false, true));
+    expect(seen.at(-1)).toEqual([true, true]);
+    // Closed: (false, false) — never (false, true).
+    rearm(() => controller.dismiss());
+    expect(seen.at(-1)).toEqual([false, false]);
+    expect(seen).toEqual([[true, false], [true, true], [false, false]]);
+  });
+});
+
+describe("R12 RA-F2/B-F2: an unmounting control forgets its own anchor", () => {
+  function mountTwo(textA: string, textB: string) {
+    let tree: ReactNode;
+    const render = () => { hooks.cursor = 0; tree = ControlHelpProvider({ children: "screen", colors }); return tree; };
+    render();
+    hooks.controller = (tree as Element).props.value;
+    // The provider root must be measured or place() drops every help: give it a 390x320 window.
+    const root = all(tree).find((e) => e.type === "View")!;
+    (root.props.ref as { current: unknown }).current = measure(0, 0, 390, 320);
+    // Per-control effect isolation: the subscribe effect each hook registers is the newly pushed
+    // tail; splicing keeps B's registration separate from A's. The provider's own effects (the
+    // document listeners and root measurement) run first, as mount() does.
+    const before = hooks.effects.length;
+    const controlA = useControlHelp(textA);
+    const aEffects = hooks.effects.splice(before);
+    const controlB = useControlHelp(textB);
+    const bEffects = hooks.effects.splice(before);
+    cleanup.push(...hooks.effects.map((fn) => fn()).filter((fn): fn is () => void => typeof fn === "function"));
+    controlA.bindings.ref(measure(20, 30, 100, 30) as unknown as View);
+    controlB.bindings.ref(measure(200, 30, 100, 30) as unknown as View);
+    const run = (effects: (() => void | (() => void))[]) => effects.map((fn) => fn()).filter((fn): fn is () => void => typeof fn === "function");
+    const aCleanup = run(aEffects);
+    const bCleanup = run(bEffects);
+    cleanup.push(...aCleanup, ...bCleanup);
+    return { controlA, controlB, aCleanup, bCleanup, render, tooltip: () => all(tree).find((e) => e.props.role === "tooltip") };
+  }
+
+  it("hold, then unmount without any pointer press: 0 panels; a fresh control starts collapsed", () => {
+    const s = mountTwo("Effects A with limits.", "Effects B with limits.");
+    s.controlA.hold(); s.render();
+    expect(s.tooltip()).toBeDefined();
+    // The bar unmounts (selection ends via keyboard Done/Take over — no pointer press anywhere).
+    for (const fn of s.aCleanup) fn();
+    s.render();
+    expect(s.tooltip()).toBeUndefined();
+    // Selecting again: the fresh control reports collapsed — the old help was forgotten, not kept.
+    const fresh = useControlHelp("Effects A with limits.");
+    fresh.bindings.ref(measure(20, 30, 100, 30) as unknown as View);
+    s.render();
+    expect(s.tooltip()).toBeUndefined();
+  });
+
+  it("another control's open help survives the unmount of an anchor that does not own it", () => {
+    const s = mountTwo("Effects A with limits.", "Effects B with limits.");
+    s.controlA.hold(); s.render();
+    expect(s.tooltip()).toBeDefined();
+    // A DIFFERENT control unmounts: forget() dismisses only the help that belongs to that anchor.
+    for (const fn of s.bCleanup) fn();
+    s.render();
+    expect(s.tooltip()).toBeDefined();
+    s.controlA.dismiss(); s.render();
+    expect(s.tooltip()).toBeUndefined();
+  });
+});
+
+describe("R14: an ordinary rerender's ref replacement must not forget open help", () => {
+  it("ref(null) then ref(node) — React's replacement sequence — keeps the held help open", () => {
+    hooks.slots = []; hooks.cursor = 0; hooks.effects = []; hooks.controller = null;
+    let tree: ReactNode;
+    const render = () => { hooks.cursor = 0; tree = ControlHelpProvider({ children: "screen", colors }); return tree; };
+    render();
+    const root = all(tree).find((e) => e.type === "View")!;
+    (root.props.ref as { current: unknown }).current = measure(0, 0, 390, 320);
+    hooks.controller = (tree as Element).props.value;
+    cleanup.push(...hooks.effects.map((fn) => fn()).filter((fn): fn is () => void => typeof fn === "function"));
+    const control = useControlHelp("Effects with limits.");
+    control.bindings.ref(measure(20, 30, 100, 30) as unknown as View);
+    control.hold(); render();
+    expect(all(tree).find((e) => e.props.role === "tooltip")).toBeDefined();
+    // An ordinary rerender replaces the ref function: React commits old(null) then new(node).
+    // Nothing about the anchor changed, so the held help must survive both calls.
+    control.bindings.ref(null);
+    control.bindings.ref(measure(20, 30, 100, 30) as unknown as View);
+    render();
+    expect(all(tree).find((e) => e.props.role === "tooltip")).toBeDefined();
+  });
+});
