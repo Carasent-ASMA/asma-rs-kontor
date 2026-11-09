@@ -1,17 +1,22 @@
 // ASMA-8851 desktop reproduction and measurement of D1-D5 over the kontor-prototype preview, which
 // renders the real plugin (index.client.tsx) in the prototype host shell. Supply PREVIEW_ORIGIN (a
-// served `vite build` of apps/kontor-prototype from the tree under test), PLAYWRIGHT_MODULE and
-// EVIDENCE_DIR; RUN_LABEL names the run and its screenshots (<Jira attachment>-<label>.png, for the
-// report's 66841..66846). Every request other than a GET to the origin is aborted.
+// served `vite build` of apps/kontor-prototype from the tree under test, http on 127.0.0.1, ::1 or
+// localhost only), PLAYWRIGHT_MODULE and EVIDENCE_DIR; RUN_LABEL names the run and its screenshots
+// (<Jira attachment>-<label>.png, for the report's 66841..66846). Every request other than a GET to
+// the origin is aborted.
 // ASMA8851_ASSERT=1 fails the run unless every item meets its acceptance; without it the run only
 // records (a base tree). Desktop only, 1280x800 at DPR 1, fine pointer. "200%" is the R38 CSS text
 // doubling; no native-device, screen-reader or Dynamic Type claim.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const output = process.env.EVIDENCE_DIR, label = process.env.RUN_LABEL || 'run';
+assert.ok(process.env.PREVIEW_ORIGIN && output, 'Supply the preview origin and evidence directory');
+// A loopback http preview only, refused before Playwright loads, so another origin never reaches a browser.
+const preview = new URL(process.env.PREVIEW_ORIGIN);
+assert.ok(preview.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(preview.hostname), `PREVIEW_ORIGIN must be http on 127.0.0.1, ::1 or localhost, not ${preview.href}`);
+const origin = preview.origin;
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const origin = process.env.PREVIEW_ORIGIN, output = process.env.EVIDENCE_DIR, label = process.env.RUN_LABEL || 'run';
-assert.ok(origin && output, 'Supply the preview origin and evidence directory');
 fs.mkdirSync(output, { recursive: true });
 const HOVER_DELAY_MS = 650;
 // D1 moves the displayed-state paragraph from group help to the Legend; read it from the client source.
@@ -128,12 +133,61 @@ async function d1(context) {
   const legendText = await page.getByTestId('sessions-legend').innerText();
   const legend = { displayedStateHelp: legendText.includes(DISPLAYED_STATE_HELP), denominator: legendText.includes('The denominator counts'), helpLeavesDenominator: !dwell.text?.includes('denominator') };
   await page.close();
+  const focused = { plain: await focusedScroll(context, 'plain'), 'focus-driven': await focusedScroll(context, 'focus-driven') };
   const result = {
-    rows: rows.length, rowFrames: rows.slice(index - 1, index + 2), sweep: { perRowMs: 100, openings: sweep.filter((entry) => entry.open).length, events: sweep, parkedOn: parked }, dwell, legend,
+    rows: rows.length, rowFrames: rows.slice(index - 1, index + 2), sweep: { perRowMs: 100, openings: sweep.filter((entry) => entry.open).length, events: sweep, parkedOn: parked }, dwell, legend, focused,
   };
   result.pass = result.sweep.openings === 0 && dwell.panels === 1 && dwell.delayMs >= HOVER_DELAY_MS && dwell.lines <= 2
     && dwell.overlapsRowsAboveSelfBelow?.every((overlap) => !overlap) && dwell.underPointer === false && dwell.hitTestPassesThrough === true
-    && legend.displayedStateHelp && legend.denominator && legend.helpLeavesDenominator;
+    && legend.displayedStateHelp && legend.denominator && legend.helpLeavesDenominator && Object.values(focused).every((entry) => entry.pass);
+  return result;
+}
+
+// D1 keyboard (PC-1): a keyboard-focused group row keeps row help after its list scrolls, by a plain scroll
+// of the list or by the scroll that focus makes to bring a row below the fold into view.
+async function focusedScroll(context, kind) {
+  const page = await open(context, 'baseline', 'sessions-filter-all');
+  await page.getByTestId('sessions-filter-all').click();
+  await page.getByTestId('organization-state-counts').first().waitFor();
+  await page.waitForTimeout(400);
+  const index = await page.evaluate((kind) => {
+    const list = document.querySelector('[data-testid="sessions-list"]'), seen = new Set();
+    const rows = [...document.querySelectorAll('[data-testid="organization-state-counts"]')].map((counts) => counts.closest('[aria-expanded]')).filter((row) => row && !seen.has(row) && seen.add(row));
+    rows.forEach((row, at) => row.setAttribute('data-d1-row', String(at)));
+    window.listScrolls = 0; window.listStart = list.scrollTop; list.addEventListener('scroll', () => { window.listScrolls += 1; });
+    // The third row for a plain scroll; for a focus-driven one, the first row wholly below the list.
+    return kind === 'plain' ? 2 : rows.findIndex((row) => row.getBoundingClientRect().top >= list.getBoundingClientRect().bottom);
+  }, kind);
+  // The filter click put the provider in pointer mode; a key press returns it to keyboard mode.
+  await page.keyboard.press('Tab');
+  await page.locator(`[data-d1-row="${index}"]`).focus();
+  await page.waitForTimeout(300);
+  const before = await page.evaluate(() => ({ start: window.listStart, scrollTop: document.querySelector('[data-testid="sessions-list"]').scrollTop, panels: document.querySelectorAll('[data-testid="control-help"]').length }));
+  if (kind === 'plain') await page.evaluate(() => { document.querySelector('[data-testid="sessions-list"]').scrollTop += 88; });
+  await page.waitForTimeout(400);
+  const after = await page.evaluate((index) => {
+    const frame = (node) => { const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, w: box.width, h: box.height }; };
+    const panels = [...document.querySelectorAll('[data-testid="control-help"]')];
+    const panel = panels[0], layer = document.querySelector('[data-testid="control-help-layer"]');
+    const text = panel ? [...panel.querySelectorAll('[dir="auto"]')].pop() : null;
+    const box = panel ? frame(panel) : null;
+    const hit = box ? document.elementFromPoint(box.x + box.w / 2, box.y + box.h / 2) : null;
+    const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const rowFrames = [index - 1, index, index + 1].map((at) => frame(document.querySelector(`[data-d1-row="${at}"]`)));
+    return {
+      scrollTop: document.querySelector('[data-testid="sessions-list"]').scrollTop, listScrolls: window.listScrolls,
+      focusOnRow: document.activeElement === document.querySelector(`[data-d1-row="${index}"]`), panels: panels.length, text: panel?.textContent ?? null, frame: box, rowFrames,
+      lines: text ? Math.round(text.getBoundingClientRect().height / parseFloat(getComputedStyle(text).lineHeight)) : null,
+      layerPointerEvents: layer ? getComputedStyle(layer).pointerEvents : null, hitTestPassesThrough: hit ? !hit.closest('[data-testid="control-help"]') : null,
+      overlapsRowsAboveSelfBelow: box ? rowFrames.map((row) => overlaps(box, row)) : null,
+    };
+  }, index);
+  await page.close();
+  const result = { kind, row: index, before, after };
+  // Plain: help is open before the list moves and focus itself scrolled nothing. Focus-driven: focus scrolled the list.
+  result.pass = index > 0 && after.listScrolls > 0 && after.scrollTop > before.start && (kind === 'plain' ? before.panels === 1 && before.scrollTop === before.start : before.scrollTop > before.start)
+    && after.focusOnRow && after.panels === 1 && after.layerPointerEvents === 'none' && after.hitTestPassesThrough === true && after.lines <= 2
+    && after.overlapsRowsAboveSelfBelow?.every((overlap) => !overlap);
   return result;
 }
 

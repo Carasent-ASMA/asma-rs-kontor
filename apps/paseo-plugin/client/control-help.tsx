@@ -154,7 +154,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     const scroll = (event: KeyEvent) => {
       if ((panel.current as Contains | null)?.contains?.(event.target)) return;
       const value = current.current;
-      if (value?.focused) controller.show(value.anchor, value.text, true);
+      if (value?.focused) controller.show(value.anchor, value.text, true, value.held, value.row);
       else controller.dismiss();
     };
     const moved = () => controller.dismiss();

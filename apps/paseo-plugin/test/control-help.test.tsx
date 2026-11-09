@@ -248,6 +248,12 @@ describe("ASMA-8851-D1 row help", () => {
   };
   const layer = (screen: ReturnType<typeof mount>) => all(screen.render()).find(e => e.props.testID === "control-help-layer");
   const lines = (screen: ReturnType<typeof mount>) => all(screen.tooltip()).find(e => e.type === "Text")!.props.numberOfLines;
+  // The panel's extent stays outside the rows above, at and below the row at root-relative `y`.
+  const clearOf = (screen: ReturnType<typeof mount>, y: number) => {
+    const style = screen.tooltip()!.props.style as { top?: number; bottom?: number; maxHeight: number };
+    const [top, bottom] = "top" in style ? [style.top!, style.top! + style.maxHeight] : [320 - style.bottom! - style.maxHeight, 320 - style.bottom!];
+    return bottom <= y - 44 || top >= y + 88;
+  };
   it("opens a row's hover help only after the hover delay, and never when the pointer leaves first", () => {
     expect(HELP_HOVER_DELAY_MS).toBeGreaterThanOrEqual(600);
     const screen = mount(); const help = row();
@@ -272,9 +278,21 @@ describe("ASMA-8851-D1 row help", () => {
     help.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
     expect(layer(screen)!.props.pointerEvents).toBe("none");
     expect(lines(screen)).toBe(2);
-    const style = screen.tooltip()!.props.style as { top?: number; bottom?: number; maxHeight: number };
-    const [top, bottom] = "top" in style ? [style.top!, style.top! + style.maxHeight] : [320 - style.bottom! - style.maxHeight, 320 - style.bottom!];
-    expect(bottom <= y - 44 || top >= y + 88).toBe(true);
+    expect(clearOf(screen, y)).toBe(true);
+  });
+  // ASMA-8851 PC-1: a scroll re-shows focused help with its stored flags, so a focused row keeps row help where its row moved.
+  it.each(["plain", "focus-driven"])("keeps a focused row's help pointer-transparent, within two lines and clear of the row and both neighbours after a %s scroll", (kind) => {
+    const screen = mount(); const help = row(230);
+    help.bindings.onFocus(); screen.render();
+    const layout = () => { (screen.tooltip()!.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { width: 200, height: 40 } } }); screen.render(); };
+    // A plain scroll moves the list under help already laid out; focus scrolls its row into view before the first layout.
+    if (kind === "plain") layout();
+    help.bindings.ref(measure(20, 30 + 120, 300, 44) as View);
+    handlers.get("scroll")!({ target: {} } as never); screen.render();
+    if (kind === "focus-driven") layout();
+    expect(layer(screen)!.props.pointerEvents).toBe("none");
+    expect(lines(screen)).toBe(2);
+    expect(clearOf(screen, 120)).toBe(true);
   });
   it("leaves every other help as it was: hover opens at once on a pointer-enabled panel with no line cap", () => {
     const screen = mount(); screen.control.bindings.onHoverIn(); screen.render();
