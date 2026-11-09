@@ -560,6 +560,10 @@ describe("SelectionBar", () => {
     ["first-event-bounce-188-97", [[-100, 188, 97]], 1],
     ["first-event-bounce-1e9", [[-5, 1e9, 1e9]], 1],
     ["y-top-bounce-deeper-than-clip", [[-90, 20, 188], [-85, 20, 188]], 1],
+    ["first-event-bounce-300-100", [[-5, 100, 300]], 1],
+    ["y-skip-down-at-floor-then-repeat", [[0.05, 97, 188], [0, 97, 189], [0, 97, 189]], 1],
+    ["y-top-bounce-empty-content", [[-200, 97, 0], [-150, 97, 0]], 1],
+    ["y-top-bounce-zero-clip", [[-200, 0, 188], [-150, 0, 188]], 1],
     ];
     const t0 = Date.now();
     for (const [traceName, traceEvents, expected] of DIRECTED) {
