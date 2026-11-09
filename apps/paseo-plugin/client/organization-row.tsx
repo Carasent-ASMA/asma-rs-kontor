@@ -30,8 +30,11 @@ export function groupStateScopeHelp(contextual: boolean): string {
   return "The denominator counts descendant sessions matching the current search and filters, including collapsed branches.";
 }
 
+/** How a group's state counts are taken: the row's accessible hint and the Sessions Legend both read it. */
+export const DISPLAYED_STATE_HELP = "Each session has one displayed state, in priority order: Needs input, Error, Running, Attention, Starting, Idle, Closed. Native lifecycle and attention signals can overlap; for example a running session that needs input is counted as Needs input here. These are displayed-state counts, not counts of every attention signal.";
+
 export function groupStateHelp(aggregate: OrganizationAggregate, contextual = false): string {
-  return `${groupStateSummary(aggregate)}. ${groupStateScopeHelp(contextual)} Each session has one displayed state, in priority order: Needs input, Error, Running, Attention, Starting, Idle, Closed. Native lifecycle and attention signals can overlap; for example a running session that needs input is counted as Needs input here. These are displayed-state counts, not counts of every attention signal. ${nativeCounts(aggregate)}`;
+  return `${groupStateSummary(aggregate)}. ${groupStateScopeHelp(contextual)} ${DISPLAYED_STATE_HELP} ${nativeCounts(aggregate)}`;
 }
 
 /** One primary state and its share, at every depth and width; the row owns focus and full help. */
@@ -93,7 +96,8 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
 }) {
   // R1: callers pass their not-live condition — on the sessions screen the same state.live its rows
   // gate on; undefined defers to the surrounding SessionPulseContext liveness.
-  const help = useControlHelp(row.kind === "group" ? `${stale ? "Last known. " : ""}${groupStateHelp(row.group.aggregate, contextual)}` : "");
+  // ASMA-8851-D1: hover shows the state counts only; the full explanation stays in the accessible hint and the Legend.
+  const help = useControlHelp(row.kind === "group" ? `${stale ? "Last known: " : ""}${groupStateSummary(row.group.aggregate)}` : "", undefined, { row: true });
   if (row.kind === "empty") {
     return <View style={{ minHeight: compact ? 36 : 30, justifyContent: "center", paddingLeft: indentOf(row.depth, compact) + 8 }}>
       <Guides depth={row.depth} compact={compact} colors={colors} />

@@ -5,7 +5,7 @@ import { sourceReadPending, type ReadSourceSummary, type SourceRead } from "../s
 import type { DirectoryEntry } from "./session-directory";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { SourceDetails } from "./source-details";
-import { Action, Copy, type Colors } from "./page-controls";
+import { Action, ChoosePlanButton, Copy, type Colors } from "./page-controls";
 import { FormattedPlanBlock, headingAnchor, planBlocks, tableRowAt, taskDeclaration } from "./plan-document";
 import { readTime } from "./page-data";
 
@@ -110,7 +110,7 @@ export function PlanReader(props: Props) {
     {props.sourceError ? <Copy colors={colors}>{props.sourceError}</Copy> : null}
     <Text selectable testID="plan-empty" accessibilityLabel={`${empty} Select a configured plan in the top context picker. Conversation prose and titles do not create links.`}
       style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{empty}</Text>
-    {props.onChooseSource ? <View style={{ alignSelf: "flex-start" }}><Action label="Choose plan" colors={colors} onPress={props.onChooseSource} /></View> : null}
+    {props.onChooseSource ? <View style={{ alignSelf: "flex-start" }}><ChoosePlanButton colors={colors} compact={!!props.compact} onPress={props.onChooseSource} /></View> : null}
   </ScrollView>;
   const key = selected.graph?.epic.jira ?? selected.source.epic;
   const lines = content?.split("\n") ?? [];

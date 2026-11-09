@@ -92,19 +92,24 @@ const stateGlyph = (choice: StatusFilter, colors: Colors, size = 18) => choice =
  * tiles as fit, Last visited first, with a chosen state past them in the last tile; More and the caller's trailing action
  * keep their own room at the end. Nothing scrolls or wraps, and More reaches every state.
  */
-export function StateToolbar({ testID, stateTestID, colors, status, counts, onStatus, more, trailing }: {
+export function StateToolbar({ testID, stateTestID, colors, status, counts, onStatus, more, trailing, chosenRef }: {
   testID: string; stateTestID: string; colors: Colors; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>;
   onStatus(status: StatusFilter): void; more: Utility; trailing: Utility;
+  /** The tile showing `status`, so a caller can return focus to it. */
+  chosenRef?: Ref<View>;
 }) {
   const { fontScale } = useWindowDimensions();
   const [width, setWidth] = useState(0);
   const target = Math.max(44, Math.ceil(36 * fontScale));
   // Until the row is measured, the narrowest supported phone row stands in, so the first frame never overflows.
   const choices = visibleQuickFilters(width || 296, status, target, GAP);
+  // ASMA-8851-D3: the tiles ask their container for no more than that phone row holds, so the measured width never props
+  // itself up: a shrink-to-fit popover widened by its open grid returns to compact once the grid closes. Wider rows still fill.
+  const held = Math.min(choices.length, visibleQuickFilters(296, status, target, GAP).length);
   return <View testID={testID} role="toolbar" accessibilityLabel="Session states" onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
     style={{ flexDirection: "row", alignItems: "center", gap: GAP }}>
-    <View style={{ flex: 1, minWidth: 0, flexDirection: "row", gap: GAP }}>
-      {choices.map((choice) => <QuickToolbarButton key={choice} testID={`${stateTestID}${choice}`} icon={QUICK_FILTER_ICONS[choice]} iconNode={stateGlyph(choice, colors)} iconColor={sessionStatusInk(choice, colors)} colors={colors} target={target}
+    <View style={{ flex: 1, width: 0, minWidth: Math.max(0, held * (target + GAP) - GAP), flexDirection: "row", gap: GAP }}>
+      {choices.map((choice) => <QuickToolbarButton key={choice} ref={choice === status ? chosenRef : undefined} testID={`${stateTestID}${choice}`} icon={QUICK_FILTER_ICONS[choice]} iconNode={stateGlyph(choice, colors)} iconColor={sessionStatusInk(choice, colors)} colors={colors} target={target}
         label={`${quickFilterLabel(choice)}, ${counts[choice].label}`} help={`${quickFilterLabel(choice)}. ${counts[choice].label}. ${QUICK_FILTER_MEANINGS[choice]}`} count={counts[choice]} selected={status === choice} onPress={() => onStatus(choice)} />)}
     </View>
     <QuickToolbarButton {...more} colors={colors} target={target} />

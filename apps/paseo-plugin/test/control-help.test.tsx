@@ -12,7 +12,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("../client/anchored-menu", async (original) => ({ ...await original<typeof import("../client/anchored-menu")>(), anchoredPanelOpen: () => hooks.panelOpen }));
 vi.mock("react-native", () => ({ Platform: { OS: "web" }, Pressable: "Pressable", View: "View", Text: "Text", ScrollView: "ScrollView", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
-import { ControlHelpProvider, useControlHelp } from "../client/control-help";
+import { ControlHelpProvider, HELP_HOVER_DELAY_MS, useControlHelp } from "../client/control-help";
 import { compactUsage } from "../client/session-usage-density";
 import { Action } from "../client/page-controls";
 type Element = ReactElement<Record<string, unknown>>;
@@ -236,6 +236,51 @@ describe("hover and focus help", () => {
     const onPress = vi.fn(); const button = Action({ label: "Copy Markdown", icon: "Copy", iconOnly: true, colors, onPress }) as Element;
     expect(all(button).some(e => e.props.children === "Copy Markdown")).toBe(true);
     (button.props.onPress as () => void)(); expect(onPress).toHaveBeenCalledOnce();
+  });
+});
+describe("ASMA-8851-D1 row help", () => {
+  // A 44-high tree row in the 390x320 screen root at (20, 30); `y` is root-relative.
+  const row = (y = 120, text = "Attention: 20 of 20 sessions") => {
+    hooks.cursor = 1000;
+    const help = useControlHelp(text, undefined, { row: true });
+    help.bindings.ref(measure(20, 30 + y, 300, 44) as View);
+    return help;
+  };
+  const layer = (screen: ReturnType<typeof mount>) => all(screen.render()).find(e => e.props.testID === "control-help-layer");
+  const lines = (screen: ReturnType<typeof mount>) => all(screen.tooltip()).find(e => e.type === "Text")!.props.numberOfLines;
+  it("opens a row's hover help only after the hover delay, and never when the pointer leaves first", () => {
+    expect(HELP_HOVER_DELAY_MS).toBeGreaterThanOrEqual(600);
+    const screen = mount(); const help = row();
+    help.bindings.onHoverIn(); vi.advanceTimersByTime(HELP_HOVER_DELAY_MS - 1); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    vi.advanceTimersByTime(1); screen.render(); expect(screen.tooltip()).toBeDefined();
+    help.bindings.onHoverOut(); vi.advanceTimersByTime(160); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    help.bindings.onHoverIn(); vi.advanceTimersByTime(300); help.bindings.onHoverOut();
+    vi.advanceTimersByTime(HELP_HOVER_DELAY_MS); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it.each(["pointerdown", "scroll", "Escape", "touch"])("drops a row hover still waiting to open on %s", (event) => {
+    const screen = mount(); const help = row();
+    help.bindings.onHoverIn();
+    if (event === "pointerdown") handlers.get("pointerdown")!({ pointerType: "mouse", target: {} } as never);
+    else if (event === "scroll") handlers.get("scroll")!({ target: {} } as never);
+    else if (event === "Escape") handlers.get("keydown")!({ key: "Escape", preventDefault() {}, stopPropagation() {} } as never);
+    // A touch never opens hover help, also on the hover a touch emulates after it.
+    else { (screen.root.props.onTouchStart as () => void)(); help.bindings.onHoverIn(); }
+    vi.advanceTimersByTime(HELP_HOVER_DELAY_MS * 2); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it.each([120, 230])("keeps row help at y=%s off the pointer, within two lines, and clear of the row and both neighbours", (y) => {
+    const screen = mount(); const help = row(y);
+    help.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
+    expect(layer(screen)!.props.pointerEvents).toBe("none");
+    expect(lines(screen)).toBe(2);
+    const style = screen.tooltip()!.props.style as { top?: number; bottom?: number; maxHeight: number };
+    const [top, bottom] = "top" in style ? [style.top!, style.top! + style.maxHeight] : [320 - style.bottom! - style.maxHeight, 320 - style.bottom!];
+    expect(bottom <= y - 44 || top >= y + 88).toBe(true);
+  });
+  it("leaves every other help as it was: hover opens at once on a pointer-enabled panel with no line cap", () => {
+    const screen = mount(); screen.control.bindings.onHoverIn(); screen.render();
+    expect(screen.tooltip()).toBeDefined();
+    expect(layer(screen)!.props.pointerEvents).toBe("box-none");
+    expect(lines(screen)).toBeUndefined();
   });
 });
 describe("compact metadata", () => {

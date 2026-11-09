@@ -116,7 +116,7 @@ import { cancelDelayedOpen, DenseSessionRow, type DenseRowMode } from "./dense-s
 import { sessionWork, totalsDetail } from "./session-row-format";
 import { copySessionId, SessionActionsMenu, type SessionAction } from "./session-actions-menu";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
+import { Action, COARSE_POINTER, Disclosure, DisclosureChevron } from "./page-controls";
 import { SessionsLegend } from "./sessions-legend";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { readTime } from "./page-data";
@@ -473,10 +473,6 @@ export const FILTERS_TOUCH_TARGET = 44;
 
 export function filtersAccessibilityLabel(activeCount: number): string {
   return activeCount > 0 ? `Filters and view, ${activeCount} active` : "Filters and view";
-}
-
-export function filtersDisclosureGlyph(expanded: boolean): string {
-  return expanded ? "⌃" : "⌄";
 }
 
 export const HIDE_FILTERS_TEST_ID = "sessions-hide-filters";
@@ -913,17 +909,8 @@ export function FiltersButton({
           </Text>
         </View>
       ) : null}
-      <Text
-        accessibilityElementsHidden
-        importantForAccessibility="no"
-        style={{
-          color: colors.foregroundMuted,
-          fontSize: 14,
-          lineHeight: 16,
-        }}
-      >
-        {filtersDisclosureGlyph(expanded)}
-      </Text>
+      {/* ASMA-8851-D4: the shared chevron keeps the arrow centred on the label at any text size. */}
+      <DisclosureChevron open={expanded} colors={colors} />
     </Pressable>
   );
 }

@@ -1,6 +1,6 @@
 import { Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { groupStateScopeHelp, KIND_ICONS, KIND_NAMES, WORKSPACE_KINDS } from "./organization-row";
+import { DISPLAYED_STATE_HELP, groupStateScopeHelp, KIND_ICONS, KIND_NAMES, WORKSPACE_KINDS } from "./organization-row";
 import { Disclosure, type Colors } from "./page-controls";
 import { deskIcon } from "./desk-icon";
 import { SESSION_SHORTCUTS } from "./session-scope-chip";
@@ -35,7 +35,7 @@ export function SessionsLegend({ colors, compact, open, onToggle, contextual = f
           </View>
           <Text style={text}>{choice.label}: {choice.help}</Text>
         </View>)}
-        <Text style={text}>Scope counts are before search and other filters. {groupStateScopeHelp(contextual)} Each session has one displayed state; native lifecycle and attention signals can overlap.</Text>
+        <Text style={text}>Scope counts are before search and other filters. {groupStateScopeHelp(contextual)} {DISPLAYED_STATE_HELP}</Text>
       </View>
       <View style={section}>
         <Text accessibilityRole="header" style={heading}>Desk icons</Text>

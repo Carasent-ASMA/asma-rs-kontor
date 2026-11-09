@@ -31,6 +31,7 @@ vi.mock("@getpaseo/plugin/client", () => ({
 
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
   FlatList: () => null,
+  Icon: "Icon",
   TextInput: () => null,
   useToast: () => ({ show: () => undefined, error: () => undefined }),
 }));
@@ -42,11 +43,11 @@ import {
   FILTERS_TOUCH_TARGET,
   FiltersButton,
   filtersAccessibilityLabel,
-  filtersDisclosureGlyph,
   indicatorColor,
   SlimActionButton,
   SlimToolbar,
 } from "../client/sessions-screen";
+import { DisclosureChevron } from "../client/page-controls";
 import {
   clearSessionViews,
   patchSessionView,
@@ -97,6 +98,11 @@ function styleOf(element: ElementLike): Record<string, unknown> {
   return element.props.style as Record<string, unknown>;
 }
 
+function chevronGlyph(chevron: ElementLike): unknown {
+  const glyph = DisclosureChevron(chevron.props as Parameters<typeof DisclosureChevron>[0]);
+  return (glyph.props.children as ElementLike).props.name;
+}
+
 function findAll(
   node: unknown,
   predicate: (element: ElementLike) => boolean,
@@ -144,7 +150,12 @@ describe("Kontor filters affordance", () => {
     );
     expect(styleOf(element).minWidth).toBeGreaterThanOrEqual(FILTERS_TOUCH_TARGET);
     expect(collectText(element)).toContain("Filters");
-    expect(collectText(element)).toContain(filtersDisclosureGlyph(false));
+    // ASMA-8851-D4: the disclosure chevron is the shared, centre-aligned icon glyph.
+    const chevrons = findAll(element, (node) => (node as { type?: unknown }).type === DisclosureChevron);
+    expect(chevrons).toHaveLength(1);
+    expect(chevronGlyph(chevrons[0]!)).toBe("ChevronDown");
+    // The glyph sits in a fixed box centred on both axes, so it stays on the label's centre line.
+    expect(DisclosureChevron({ open: false, colors }).props.style).toMatchObject({ height: 18, alignItems: "center", justifyContent: "center" });
     expect(collectText(element)).not.toContain("Clear filters");
   });
 
@@ -164,7 +175,9 @@ describe("Kontor filters affordance", () => {
     expect(element.props.accessibilityLabel).toContain("2 active");
     expect(collectText(element)).toContain("Filters");
     expect(collectText(element)).toContain("2");
-    expect(collectText(element)).toContain(filtersDisclosureGlyph(true));
+    const chevrons = findAll(element, (node) => (node as { type?: unknown }).type === DisclosureChevron);
+    expect(chevrons).toHaveLength(1);
+    expect(chevronGlyph(chevrons[0]!)).toBe("ChevronUp");
   });
 
   it("keeps Clear filters separate and gives it its own touch target", () => {

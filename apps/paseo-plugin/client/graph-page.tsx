@@ -8,7 +8,7 @@ import { PlanGraph, createPlanGraphStore, planGraphViewKey, type PlanGraphStore 
 import { validatePlanGraph } from "./plan-graph/contract";
 import { SourceDetails } from "./source-details";
 import { historicalPlanProgress } from "./page-data";
-import { Action, COARSE_POINTER, Copy, type Colors } from "./page-controls";
+import { Action, ChoosePlanButton, COARSE_POINTER, Copy, type Colors } from "./page-controls";
 import { directSession, sessionsLive, TaskSessionsChooser, TaskSessionsControl, type BoardSessions } from "./board-sessions";
 import { taskSessions, type TaskLink } from "./session-results";
 import type { SessionTaskFilter } from "./session-view-store";
@@ -138,7 +138,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const toggle = <Action colors={colors} small={!compact} label="Source details" icon="Info" iconOnly expanded={evidenceOpen} onPress={() => setEvidenceOpen(!evidenceOpen)} />;
   const actions = <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
     {read ? <Action colors={colors} small={!compact} label="Open source plan" onPress={() => onPlan(read.source.id)} /> : null}
-    {!read && onChooseSource ? <Action colors={colors} small={!compact} label="Choose plan" onPress={onChooseSource} /> : null}
+    {!read && onChooseSource ? <ChoosePlanButton colors={colors} compact={compact} onPress={onChooseSource} /> : null}
     {mode === "Graph" && onBoard && epic ? <Action colors={colors} small={!compact} label="Inspect captured tasks" onPress={onBoard} /> : null}
     {read || jiraReads.length ? toggle : null}
   </View>;

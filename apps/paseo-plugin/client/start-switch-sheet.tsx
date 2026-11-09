@@ -133,15 +133,15 @@ export function persistenceNote(persistence: RecentState["persistence"]): string
 const COVERAGE = "Opened from Kontor · this host and app profile only. Native sidebar opens and other devices are not included.";
 const stateHelp = (status: StatusFilter, count: SessionStateCount | undefined) => `${quickFilterLabel(status)} · ${count?.label ?? "count unknown"}. ${QUICK_FILTER_MEANINGS[status]}`;
 
-/** Kontor's state toolbar, with Kontor at the end in place of Filters; More holds every state and shows one chosen there. */
-function SwitchStrip({ colors, status, counts, more, onStatus, onMore, onKontor }: {
+/** Kontor's state toolbar, with Kontor at the end in place of Filters; Filter holds every state and shows one chosen there (ASMA-8851-D2). */
+function SwitchStrip({ colors, status, counts, more, onStatus, onMore, onKontor, chosenRef }: {
   colors: Colors; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>; more: boolean;
-  onStatus(status: StatusFilter): void; onMore(): void; onKontor(): void;
+  onStatus(status: StatusFilter): void; onMore(): void; onKontor(): void; chosenRef: RefObject<View | null>;
 }) {
   const extra = MORE_STATUS_FILTERS.includes(status) ? status : null;
-  return <StateToolbar testID="kontor-switch-states" stateTestID="kontor-switch-state-" colors={colors} status={status} counts={counts} onStatus={onStatus}
-    more={{ testID: "kontor-switch-more", label: extra ? `More: ${quickFilterLabel(extra)}` : "More", help: extra ? stateHelp(extra, counts[extra]) : "Every state, the other states and archived sessions",
-      icon: extra ? QUICK_FILTER_ICONS[extra] : "ListFilter", selected: !!extra, expanded: more, count: extra ? counts[extra] : undefined, caption: extra ? undefined : "More", onPress: onMore }}
+  return <StateToolbar testID="kontor-switch-states" stateTestID="kontor-switch-state-" colors={colors} status={status} counts={counts} onStatus={onStatus} chosenRef={chosenRef}
+    more={{ ref: extra ? chosenRef : undefined, testID: "kontor-switch-more", label: extra ? `Filter: ${quickFilterLabel(extra)}` : "Filter", help: extra ? stateHelp(extra, counts[extra]) : "Every state, the other states and archived sessions",
+      icon: extra ? QUICK_FILTER_ICONS[extra] : "ListFilter", selected: !!extra, expanded: more, count: extra ? counts[extra] : undefined, caption: extra ? undefined : "Filter", onPress: onMore }}
     trailing={{ testID: "kontor-switch-kontor", label: "Open in Kontor", help: "Open Kontor's Sessions on this host with this state and search; nothing here is discarded.",
       icon: "Building2", caption: "Kontor", onPress: onKontor }} />;
 }
@@ -240,6 +240,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("recent");
   const [more, setMore] = useState(false);
+  const chosen = useRef<View | null>(null);
   const [searching, setSearching] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   // Show more reveals the list it was pressed for; a change of state or search starts short again.
@@ -306,7 +307,9 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const dismiss = () => { creation.current.open = false; onClose(); };
   const showView = (membership: SwitchView["membership"] = "sessions") => onShowView({ status: membership === "archived" ? "all" : status, query: query.trim(), membership });
   // Provider blocked is answered by exact-ID refusal reads, which only Kontor's Sessions makes.
-  const choose = (next: StatusFilter) => { cancelDelayedOpen(); if (next === "provider_blocked") { onShowView({ status: next, query: query.trim(), membership: "sessions" }); return; } setStatus(next); setMore(false); setRevealed(false); };
+  const choose = (next: StatusFilter) => { cancelDelayedOpen(); if (next === "provider_blocked") { onShowView({ status: next, query: query.trim(), membership: "sessions" }); return; } setStatus(next); setMore(false); setRevealed(false);
+    // ASMA-8851-D3: closing the grid takes focus to the chosen state, so More keeps no focus ring and focus is not lost with the grid.
+    if (more) setTimeout(() => focusControl(chosen.current), 0); };
   const favorite = async (entry: DirectoryEntry) => {
     const has = preferences.favorites.includes(entry.id);
     const ok = await organization.save({ favorites: has ? preferences.favorites.filter((id) => id !== entry.id) : [...preferences.favorites, entry.id] });
@@ -360,7 +363,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       {selection.selecting ? <SelectionHeader count={selection.selected.length} total={matches.length} hidden={selection.hidden} colors={colors} onDone={selection.clear}
         selectAll={{ checked: allSelected, unavailable: allSelected ? null : selectAllUnavailable, onPress: () => allSelected ? selection.remove(matches) : selection.selectAll(matches) }} />
         : <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>{heading}{newLead}{close}</View>}
-      <SwitchStrip colors={colors} status={status} counts={counts} more={more} onStatus={choose} onMore={() => { cancelDelayedOpen(); setMore((value) => !value); }} onKontor={() => showView()} />
+      <SwitchStrip colors={colors} status={status} counts={counts} more={more} chosenRef={chosen} onStatus={choose} onMore={() => { cancelDelayedOpen(); setMore((value) => !value); }} onKontor={() => showView()} />
       {more ? <MorePanel colors={colors} status={status} counts={counts} onStatus={choose} onArchived={() => showView("archived")} /> : null}
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 6, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: searching ? 2 : 1, borderColor: searching ? colors.accent : colors.border, borderRadius: 6 }}>

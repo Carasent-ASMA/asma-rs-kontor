@@ -137,7 +137,9 @@ function visitedRoutes(): DirectoryEntry[] {
   return entries;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  // A pick from the open grid returns focus on the next tick (ASMA-8851-D3); let a synchronous test's pending focus land before the count resets.
+  await settle();
   model.unmount();
   model.slots = []; model.cursor = 0; model.effect = 0; model.deps = []; model.stores = {};
   model.focusControl.mockClear();
@@ -474,7 +476,8 @@ describe("Start or switch sheet", () => {
     expect(shown * 48 + 2 * 48 - 4).toBeLessThanOrEqual(width);
     expect(tiles(s).map((node) => node.props.target)).toEqual(Array(shown).fill(44));
     expect([more!.props.testID, kontor!.props.testID, more!.props.target, kontor!.props.target]).toEqual(["kontor-switch-more", "kontor-switch-kontor", 44, 44]);
-    expect(states!.props.style).toEqual({ flex: 1, minWidth: 0, flexDirection: "row", gap: 4 });
+    // ASMA-8851-D3: the tiles fill the row but ask a shrink-to-fit host for no more than the 296pt row's four.
+    expect(states!.props.style).toEqual({ flex: 1, width: 0, minWidth: 4 * 48 - 4, flexDirection: "row", gap: 4 });
     expect(within(s.tree, "kontor-switch-states").some((node) => node.type === "ScrollView")).toBe(false);
     expect(byTestId(s.tree, "kontor-switch-kontor")?.props).toMatchObject({ icon: "Building2", caption: "Kontor", label: "Open in Kontor" });
     expect(tiles(s).map((node) => [node.props.label, node.props.count])).toEqual(STATES.slice(0, shown).map((state) => [expect.stringMatching(/^[A-Z].*, .+/), expect.objectContaining({ label: expect.any(String) })]));
@@ -506,13 +509,42 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-list")?.props.accessibilityLabel).toBe("Favorites sessions matching billing");
   });
 
-  it("shows a state chosen under More on More, never as a tile", () => {
+  /** The width a shrink-to-fit host such as the desktop popover gives the toolbar: the tiles' own width unless their row sets one, never under its minimum, then More and Kontor. */
+  const intrinsic = (s: ReturnType<typeof sheet>) => {
+    const style = (stateRow(s.tree).props.children as Element[])[0]!.props.style as { width?: number; minWidth: number };
+    return Math.max(style.width ?? tiles(s).length * 48 - 4, style.minWidth) + 2 * 48;
+  };
+  it.each(["recent", "activity", "running", "needs_input"])("ASMA-8851-D3: a %s pick from the grid closes it, takes focus off More and returns the popover to its compact width and tiles", async (state) => {
+    const s = sheet();
+    measure(s, intrinsic(s));
+    expect([intrinsic(s), ids(s)]).toEqual([284, STATES.slice(0, 4)]);
+    choose(s, "kontor-switch-more");
+    // The open grid widens the popover, and the toolbar uses the room (attachment 66842).
+    measure(s, 394);
+    expect(ids(s)).toEqual(STATES.slice(0, 6));
+    choose(s, `kontor-switch-more-${state}`);
+    expect(byTestId(s.tree, "kontor-switch-more-panel")).toBeUndefined();
+    measure(s, intrinsic(s));
+    expect([intrinsic(s), ids(s)]).toEqual([284, STATES.slice(0, 4)]);
+    expect(byTestId(s.tree, "kontor-switch-more")!.props).toMatchObject({ label: "Filter", selected: false, expanded: false });
+    const node = {};
+    (byTestId(s.tree, `kontor-switch-state-${state}`)!.props.ref as { current: unknown }).current = node;
+    await settle();
+    expect(model.focusControl).toHaveBeenLastCalledWith(node);
+  });
+
+  it("shows a state chosen under More on More, never as a tile", async () => {
     const s = sheet();
     measure(s, 296);
     choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-current");
-    expect(byTestId(s.tree, "kontor-switch-more")?.props).toMatchObject({ selected: true, label: "More: Current" });
+    expect(byTestId(s.tree, "kontor-switch-more")?.props).toMatchObject({ selected: true, label: "Filter: Current" });
     expect(ids(s)).toEqual(["recent", "activity", "running", "needs_input"]);
     expect(tiles(s).some((node) => node.props.selected)).toBe(false);
+    // ASMA-8851-D3: a state shown on Filter takes focus back to Filter once the grid closes.
+    const node = {};
+    (byTestId(s.tree, "kontor-switch-more")!.props.ref as { current: unknown }).current = node;
+    await settle();
+    expect(model.focusControl).toHaveBeenLastCalledWith(node);
   });
 
   it("filters Running in place without a hand-off, showing at most 20 of every match", () => {
@@ -583,6 +615,8 @@ describe("Start or switch sheet", () => {
   it("opens More with the other states and archived sessions; Archived hands Kontor the search in archived membership", () => {
     const s = sheet();
     expect(byTestId(s.tree, "kontor-switch-more-panel")).toBeUndefined();
+    // ASMA-8851-D2: the tile that opens every state is Filter, by sight and by name; Kontor's top-bar More stays an overflow menu.
+    expect(byTestId(s.tree, "kontor-switch-more")?.props).toMatchObject({ label: "Filter", caption: "Filter", icon: "ListFilter" });
     choose(s, "kontor-switch-more");
     expect(byTestId(s.tree, "kontor-switch-more")?.props.expanded).toBe(true);
     expect(within(s.tree, "kontor-switch-more-panel").filter((node) => node.props.onPress).map((node) => node.props.label)).toEqual(["Last visited", "Last activity", "Running", "Questions",
@@ -598,11 +632,11 @@ describe("Start or switch sheet", () => {
     const s = sheet({ directory: complete([...RUNNING, sessionEntry("done", { status: "closed", title: "Route review done" })]) });
     choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-closed");
     expect(byTestId(s.tree, "kontor-switch-more-panel")).toBeUndefined();
-    expect(byTestId(s.tree, "kontor-switch-more")?.props).toMatchObject({ label: "More: Closed", selected: true });
+    expect(byTestId(s.tree, "kontor-switch-more")?.props).toMatchObject({ label: "Filter: Closed", selected: true });
     expect(rowIds(s.tree)).toEqual(["done"]);
     choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-provider_blocked");
     expect(s.onShowView).toHaveBeenCalledExactlyOnceWith({ status: "provider_blocked", query: "", membership: "sessions" });
-    expect(byTestId(s.tree, "kontor-switch-more")?.props.label).toBe("More: Closed");
+    expect(byTestId(s.tree, "kontor-switch-more")?.props.label).toBe("Filter: Closed");
     expect(rowIds(s.tree)).toEqual(["done"]);
   });
 

@@ -73,7 +73,9 @@ async function checkContextual(page, touch, theme, name, filter) {
     await page.keyboard.press('Tab');
     await kontor().scrollIntoViewIfNeeded();
     await kontor().focus();
-    await visibleTooltip(page, 'Running: 1 of 2 sessions. Idle: 1 of 2 sessions. The denominator counts every descendant session in the retained surrounding context');
+    // ASMA-8851-D1: group help is the state counts only; the denominator text lives in the Legend checked above.
+    await visibleTooltip(page, 'Running: 1 of 2 sessions. Idle: 1 of 2 sessions');
+    assert.ok(!(await page.getByRole('tooltip').innerText()).includes('denominator'), 'group help leaves the denominator text to the Legend');
     await snap(page, `${name}-${filter}-context-help`);
     await page.keyboard.press('Escape');
   }
@@ -152,7 +154,9 @@ async function check(width, theme) {
       await chip(page, 0).click();
       await page.keyboard.press('Tab');
       await kontor().focus();
-      await visibleTooltip(page, 'Native lifecycle and attention signals can overlap');
+      // ASMA-8851-D1: the overlap note moved from group help to the Legend.
+      await visibleTooltip(page, ' of ');
+      assert.ok(!(await page.getByRole('tooltip').innerText()).includes('Native lifecycle'), 'group help is the state counts only');
       await snap(page, `${name}-group-help`);
       await page.keyboard.press('Escape');
     }
