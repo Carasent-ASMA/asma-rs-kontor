@@ -452,13 +452,13 @@ describe("SelectionBar", () => {
   });
 
   it("matches a test-side D2-r4 model over seeded random traces from the union alphabet and the edge classes (R38-STOP-r16c)", () => {
-    // R38-STOP-r16c (LSA-adopted), restated per R38-B-CLASS-r16k, R38-D-SAMPLE-r16k and the r16l
-    // edge sweep (runs/edge-sweep.json in the r16l evidence): family B's write-skip thresholds and
-    // clamp multiples are closed by the class rows (R38-B-CLASS-r16k); family D's non-negative
-    // finite initial-height constants are closed by the named sample (R38-D-SAMPLE-r16k); every
-    // other parametric class is closed over the parameter range runs/edge-sweep.json shows, and
-    // nothing beyond that range is claimed. The REAL component must agree, probe by probe, with a
-    // test-side
+    // R38-STOP-r16c (LSA-adopted), restated per R38-B-CLASS-r16k, R38-D-SAMPLE-r16k and the
+    // r16l edge sweep (runs/edge-sweep.json in the r16m evidence): family B's write-skip
+    // thresholds and clamp multiples are closed by the class rows (R38-B-CLASS-r16k); family
+    // D's non-negative finite initial-height constants are closed by the named sample
+    // (R38-D-SAMPLE-r16k); every other parametric class is closed over the parameter range
+    // runs/edge-sweep.json shows, and nothing beyond that range is claimed. The REAL component
+    // must agree, probe by probe, with a test-side
     // model of the store rule. The model is written from the RULING TEXT of R38-D2-r4/D2-r3, NOT
     // from session-selection.tsx, and the rule is named beside each model line. Deterministic:
     // seed 8539, 2048 traces x 10 events, every trace from a real fresh mount (the beforeEach reset
@@ -504,7 +504,8 @@ describe("SelectionBar", () => {
     // from logs/29-witness-floor-ladder.log by script). y-repeat-full-precision repeats at 5 / 3,
     // which the toFixed, round and ceil forms round UP — those probes first fail on this trace at
     // D = 7..15 in the r16i ladder log, re-run in r16l at 252cf214 (runs/precision-ladder.json in
-    // the r16l evidence; the later r16l commit changes comments only) — while floor and trunc round 5 / 3 DOWN: floor dies on the
+    // the r16l evidence; the later r16l commit changes comments only) — while floor and trunc
+    // round 5 / 3 DOWN: floor dies on the
     // h-y-repeat-floorD-noise traces, and trunc dies on h-y-repeat-negative-thirds, since
     // trunc(−4/3, D) > −4/3 for every D = 1..15 — truncation toward zero of a negative value, so
     // it holds by construction at every D, not by float noise. The full-precision heights are
