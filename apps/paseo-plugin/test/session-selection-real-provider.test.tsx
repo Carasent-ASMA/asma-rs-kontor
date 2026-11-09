@@ -220,7 +220,7 @@ describe("R16: another owner's help survives the bar MOUNTING with no Limits", (
   // unavailable, so the disclosure is inert in these four cells (the only consumer of disclosure
   // in the client is :100). Count two with effects AND Limits has no row: the clamps test covers
   // that cell.
-  // Kills (r16j results.json at c98e6a6d): the mount gate is the SOLE killer of
+  // Kills (r16l results.json at 252cf214): the mount gate is the SOLE killer of
   // NV-n2-dismiss-at-mount (the variant fails fifteen of the sixteen cases — every one except
   // count-one-limits, where neither !effects nor !hasLimits holds) and the UNIQUE killer of
   // V-n2-mount-effects-no-limits (its own case plus count-two-nolimits and count-three-nolimits),

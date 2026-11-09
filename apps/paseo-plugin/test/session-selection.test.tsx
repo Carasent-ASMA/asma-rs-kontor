@@ -339,8 +339,8 @@ describe("SelectionBar", () => {
     // rearm-content-change (SF1-r16c): a re-arm that changes only the content must store it
     // (N-h-content-kept-on-rearm keeps the old content, so the next lower event reads changed
     // geometry and holds the pin). Asserts behaviour only.
-    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept,
+    // Kills (r16l results.json at 252cf214, measured in runs/gate-kill-lists.json in the
+    // r16l evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept,
     // M-r16-heights-content-kept, M-r16-heights-notAtEnd, M-r16-heights-removed,
     // M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-notAtEnd, M-r16-y-removed,
     // M-r16-y-stableGeometry, N-h-content-kept-on-rearm, N-y-skip-rearm-stable, V-h-wasPinned,
@@ -370,8 +370,8 @@ describe("SelectionBar", () => {
     // shrinks that land ON an at-end event (N-h-content-high-water-at-end,
     // N-h-clip-high-water-at-end — the high water must not apply to the re-arm either). Asserts
     // behaviour only.
-    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept,
+    // Kills (r16l results.json at 252cf214, measured in runs/gate-kill-lists.json in the
+    // r16l evidence): M-drag-unpin-lost, M-pin-always, M-r16-heights-clip-kept,
     // M-r16-heights-content-kept, M-r16-heights-notAtEnd, M-r16-heights-removed,
     // M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-notAtEnd, M-r16-y-removed,
     // M-r16-y-stableGeometry, M-rb-r14-lasty-only-at-end, N-h-clip-high-water-at-end,
@@ -400,8 +400,8 @@ describe("SelectionBar", () => {
     // A drop in the hundredths (30.44 → 30.42) IS a user move: the pin releases — a store rounded
     // to one decimal (N-y-toFixed1) makes both events read 30.4 and never releases. Asserts
     // behaviour only.
-    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-pin-always,
+    // Kills (r16l results.json at 252cf214, measured in runs/gate-kill-lists.json in the
+    // r16l evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-pin-always,
     // M-r13-race-back, M-r16-heights-clip-kept, M-r16-heights-content-kept, M-r16-heights-removed,
     // M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-removed, M-r16-y-stableGeometry,
     // M-rb-r14-lasty-only-at-end, N-y-ceil, N-y-toFixed1, NV-sf1-heights-only-at-end, V-y-rounded.
@@ -433,8 +433,8 @@ describe("SelectionBar", () => {
     // fraction-clip-echo: a clip fraction (97.4 → 97) is also changed geometry; rounding the clip
     // alone (N-h-round-clip-only) reads it stable and releases where the head keeps.
     // Asserts behaviour only.
-    // Kills (r16j results.json at c98e6a6d, measured in runs/gate-kill-lists.json in the
-    // r16j evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-geom-clip-only,
+    // Kills (r16l results.json at 252cf214, measured in runs/gate-kill-lists.json in the
+    // r16l evidence): M-bar-rest-top, M-drag-unpin-lost, M-echo-unpins, M-geom-clip-only,
     // M-geom-content-only, M-geom-ignored, M-pin-always, M-r13-race-back, M-r14-mirror-back,
     // M-r16-heights-above-stable, M-r16-heights-clip-kept, M-r16-heights-content-kept,
     // M-r16-heights-removed, M-r16-heights-stableGeometry, M-r16-y-above-rule, M-r16-y-removed,
@@ -452,8 +452,13 @@ describe("SelectionBar", () => {
   });
 
   it("matches a test-side D2-r4 model over seeded random traces from the union alphabet and the edge classes (R38-STOP-r16c)", () => {
-    // R38-STOP-r16c (LSA-adopted): near variants of the two store lines are closed by this gate, not
-    // by an ever-longer row list. The REAL component must agree, probe by probe, with a test-side
+    // R38-STOP-r16c (LSA-adopted), restated per R38-B-CLASS-r16k, R38-D-SAMPLE-r16k and the r16l
+    // edge sweep (runs/edge-sweep.json in the r16l evidence): family B's write-skip thresholds and
+    // clamp multiples are closed by the class rows (R38-B-CLASS-r16k); family D's non-negative
+    // finite initial-height constants are closed by the named sample (R38-D-SAMPLE-r16k); every
+    // other parametric class is closed over the parameter range runs/edge-sweep.json shows, and
+    // nothing beyond that range is claimed. The REAL component must agree, probe by probe, with a
+    // test-side
     // model of the store rule. The model is written from the RULING TEXT of R38-D2-r4/D2-r3, NOT
     // from session-selection.tsx, and the rule is named beside each model line. Deterministic:
     // seed 8539, 2048 traces x 10 events, every trace from a real fresh mount (the beforeEach reset
@@ -464,24 +469,31 @@ describe("SelectionBar", () => {
     // smaller and one that grows. Fractional values ride the fractional and hundredths alphabets;
     // repeated stable geometry arises from repeated draws; the first event after mount (heights
     // still −1) arises because every trace starts fresh. Determinism: the seed is fixed below.
-    // Kills (r16j results.json at c98e6a6d — 165 seeds, failing_tests kept UNCAPPED): 98 seeds
-    // are attributed to this gate in the full battery, 58 of them UNIQUE — the 30 SF1–SF3
+    // Kills (r16l results.json at 252cf214 — 169 seeds, failing_tests kept UNCAPPED): 102 seeds
+    // are attributed to this gate in the full battery, 62 of them UNIQUE — the 30 SF1–SF3
     // store-line and fresh-mount seeds of review B r16d, the 14 store-line seeds of review B
-    // r16f, the five y-store seeds of review B r16h and the nine SHOULD-FIX seeds of review B
-    // r16i die only here (the full per-gate and per-seed lists are runs/gate-kill-lists.json in
-    // the r16j evidence, generated by script from results.json).
-    // Direction (b) (runs/direction-b-selection.json in the r16j evidence): the gate alone kills
-    // 92 of 92 — every seed whose diff touches session-selection.tsx:178-183 (91: the 86 of r16i
-    // plus the five :182 seeds of review B r16i) plus R-init-h-0, selected by script (apply each
-    // seed to a copy of its own file at the head, diff, select on an intersection with lines
-    // 178-183, add R-init-h-0). Direction (c): all THIRTY-NINE ruled equivalents pass it
-    // (R38-EQ-r16 ×3, R38-EQ-r16c ×3, R38-EQ-r16d ×4, R38-EQ-r16f ×3, R38-EQ-r16h ×3,
-    // R38-EQ-r16i ×23).
+    // r16f, the five y-store seeds of review B r16h, the nine SHOULD-FIX seeds of review B r16i
+    // and the four boundary seeds of review B r16k die only here (the full per-gate and per-seed
+    // lists are runs/gate-kill-lists.json in the r16l evidence, generated by script from
+    // results.json).
+    // Direction (b) (runs/direction-b-selection.json in the r16l evidence): the gate alone kills
+    // 95 of 95 — every seed whose diff touches session-selection.tsx:178-183 (94: the 91 of r16j
+    // plus the three :182 boundary seeds of review B r16k; K-init-h-300-100 touches :135 and does
+    // not intersect) plus R-init-h-0, selected by script (apply each seed to a copy of its own
+    // file at the head, diff, select on an intersection with lines 178-183, add R-init-h-0).
+    // Direction (c): all THIRTY-NINE ruled equivalents pass it (R38-EQ-r16 ×3, R38-EQ-r16c ×3,
+    // R38-EQ-r16d ×4, R38-EQ-r16f ×3, R38-EQ-r16h ×3, R38-EQ-r16i ×23).
     const SEED = 8539, TRACES = 2048, EVENTS = 10;
-    // r16j: 52 DIRECTED traces, enumerated below (count and names produced from the table by
-    // script; runs/directed-count-check.json in the r16j evidence): band-interior, band-round-content, band-negative-even, stable-near-content, stable-near-clip, stable-near-3dp, stable-near-4dp, rule-near-y, y-near-3dp, y-near-4dp, y-near-7dp, h-content-3dp, h-clip-3dp, h-content-4dp, h-content-7dp, y-store-short, h-store-short, h-store-negative, h-content-below-clip, first-event-zero-box, full-precision-heights, y-repeat-fractional, f-band-fractional-clip, f-zero-clip-stable, f-zero-box-two, f-zero-clip-y-store, f-fit-top-bounce, f-clip-collapse-back, f-content-collapse-back, f-small-clip-full-precision, f-small-content-full-precision, f-tiny-clip-full-precision, y-repeat-full-precision, f-tiny-content-full-precision, h-y-repeat-negative-thirds, h-y-skip-at-floor, h-y-repeat-floor7-noise, h-y-repeat-floor8-noise, h-y-repeat-floor9-noise, h-y-repeat-floor10-noise, h-y-repeat-floor11-noise, h-y-repeat-floor12-noise, h-y-repeat-floor13-noise, h-y-repeat-floor14-noise, h-y-repeat-floor15-noise, y-skip-down-under-unstable, y-top-bounce-deeper-than-content, first-event-bounce-1-1, first-event-bounce-1-4, first-event-bounce-188-97, first-event-bounce-1e9, y-top-bounce-deeper-than-clip.
-    // Provenance: the seven should-fix-witness traces of review-B r16i (SF1–SF3-r16i) are copied
-    // programmatically from its probes16i-traces.json; plus the 21 of r16f (numbers copied
+    // r16l: 56 DIRECTED traces, enumerated below (count and names produced from the table by
+    // script; runs/directed-count-check.json in the r16l evidence): band-interior, band-round-content, band-negative-even, stable-near-content, stable-near-clip, stable-near-3dp, stable-near-4dp, rule-near-y, y-near-3dp, y-near-4dp, y-near-7dp, h-content-3dp, h-clip-3dp, h-content-4dp, h-content-7dp, y-store-short, h-store-short, h-store-negative, h-content-below-clip, first-event-zero-box, full-precision-heights, y-repeat-fractional, f-band-fractional-clip, f-zero-clip-stable, f-zero-box-two, f-zero-clip-y-store, f-fit-top-bounce, f-clip-collapse-back, f-content-collapse-back, f-small-clip-full-precision, f-small-content-full-precision, f-tiny-clip-full-precision, y-repeat-full-precision, f-tiny-content-full-precision, h-y-repeat-negative-thirds, h-y-skip-at-floor, h-y-repeat-floor7-noise, h-y-repeat-floor8-noise, h-y-repeat-floor9-noise, h-y-repeat-floor10-noise, h-y-repeat-floor11-noise, h-y-repeat-floor12-noise, h-y-repeat-floor13-noise, h-y-repeat-floor14-noise, h-y-repeat-floor15-noise, y-skip-down-under-unstable, y-top-bounce-deeper-than-content, first-event-bounce-1-1, first-event-bounce-1-4, first-event-bounce-188-97, first-event-bounce-1e9, y-top-bounce-deeper-than-clip, first-event-bounce-300-100, y-skip-down-at-floor-then-repeat, y-top-bounce-empty-content, y-top-bounce-zero-clip.
+    // Provenance: the four class rows of review-B r16k (SF1–SF3-r16k, closing the classes under
+    // R38-B-CLASS-r16k and R38-D-SAMPLE-r16k) are copied programmatically from its probes16k-traces.json:
+    // first-event-bounce-300-100, y-skip-down-at-floor-then-repeat, y-top-bounce-empty-content and
+    // y-top-bounce-zero-clip. The three single-point witness rows of that file are NOT folded: their
+    // variants die on the class rows. y-skip-down-at-floor-then-repeat steps exactly 0.05 px and its
+    // y values ride the R38-PREC-DOMAIN-r16k domain exception — no other trace does. Plus the seven
+    // should-fix-witness traces of review-B r16i (SF1–SF3-r16i), copied programmatically from its
+    // probes16i-traces.json; plus the 21 of r16f (numbers copied
     // programmatically from review-B r16d's probes17.py,
     // never retyped), review-B r16f's ten f-probes and r16h's f-tiny-content-full-precision (from
     // probes-r16f.py PROBES and the r16h ruling; 100 / 3, 4 / 3 and 5 / 3 stay full-precision
@@ -491,7 +503,8 @@ describe("SelectionBar", () => {
     // an exact repeat at review B's logged floor-noise witness for that D (copied digit for digit
     // from logs/29-witness-floor-ladder.log by script). y-repeat-full-precision repeats at 5 / 3,
     // which the toFixed, round and ceil forms round UP — those probes first fail on this trace at
-    // D = 7..15 in the r16i ladder log — while floor and trunc round 5 / 3 DOWN: floor dies on the
+    // D = 7..15 in the r16i ladder log, re-run in r16l at 252cf214 (runs/precision-ladder.json in
+    // the r16l evidence; the later r16l commit changes comments only) — while floor and trunc round 5 / 3 DOWN: floor dies on the
     // h-y-repeat-floorD-noise traces, and trunc dies on h-y-repeat-negative-thirds, since
     // trunc(−4/3, D) > −4/3 for every D = 1..15 — truncation toward zero of a negative value, so
     // it holds by construction at every D, not by float noise. The full-precision heights are
@@ -499,8 +512,9 @@ describe("SelectionBar", () => {
     // the seeds kill the heights stores' toFixed at 14 decimals (F-h-toFixed14, F-h-toFixed14-clip,
     // F-h-toFixed14-content) and 15 (F-h-toFixed15) at them. R38-PREC-r16f as corrected (msg
     // 1b286dab): every rounding form {toFixed, round, floor, ceil, trunc} at D <= 15 counts, and
-    // the r16i ladder (all 300 killed at the round head, runs/precision-ladder.json in the r16i
-    // evidence) covers {toFixed, round, floor, ceil, trunc} x D = 1..15 for the y, content, clip
+    // the r16l ladder re-run at 252cf214 (all 300 killed and the four toFixed D16 probes
+    // equivalent, runs/precision-ladder.json in the r16l evidence; r16j's record holds the same
+    // 300/4/0) covers {toFixed, round, floor, ceil, trunc} x D = 1..15 for the y, content, clip
     // and both stores beside the traces; at D >= 16 toFixed round-trips and is EQUIVALENT, while
     // the multiply-divide forms are BEYOND THE CAP (recorded, not counted, not probed). Each trace
     // is replayed through the same model text and probe in a separate loop — a fresh mount per
