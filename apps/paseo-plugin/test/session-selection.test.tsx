@@ -475,9 +475,10 @@ describe("SelectionBar", () => {
     // seeds are attributed to this gate in the full battery, 93 of them UNIQUE — the 30 SF1–SF3
     // store-line and fresh-mount seeds of review B r16d, the 14 store-line seeds of review B r16f,
     // the five y-store seeds of review B r16h, the nine SHOULD-FIX seeds of review B r16i and the
-    // four boundary seeds of review B r16k (62 unique at r16l), the 22 r16n clamp-family and
-    // tolerance seeds of runs/kill-pairs-r16n.json in the r16n evidence (the SF6/SF7/SF4/SF8 kill
-    // list, including sf6-min-end-negative-largest-k = 1+4299163*2^-52), and the 13 r16n-fold
+    // four boundary seeds of review B r16k (62 unique at r16l), the 18 r16n seeds of
+    // mutations/seeds-r16n.json new_seeds.names in the r16n-fold evidence (the review-b r16m
+    // EDGE16M variants, incl. M-sf6-end-k2; runs/kill-pairs-r16n.json in the r16n evidence lists
+    // 17 of them under 'rb17' and the kill-pair forms under 'kills'), and the 13 r16n-fold
     // diagnostic seeds (nine review-B r16n-fu store-threshold and low-water mutants + four audit
     // r16n-fu F1 probe variants), each of the thirteen uniquely attributed
     // (runs/kill-attributions-r16n-fold.json in the r16n-fold evidence). The fu head fd0099c7
