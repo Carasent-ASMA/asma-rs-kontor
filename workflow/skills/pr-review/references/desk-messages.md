@@ -28,6 +28,8 @@ Hard rules:
   commands).
 - Missing evidence is pending, never a pass. If blocked, report the exact gap,
   confirmed findings and checks not run; stop rather than fabricate a verdict.
+- Separate a proven PR defect from a desk execution gap. Give the latter an
+  owner and next action; do not invent a code finding or restart unchanged work.
 ```
 
 ## Reviewer output (REV A, REV B, REV SEC, REV DB)
@@ -261,6 +263,9 @@ Steps:
    unresolved finding. Reuse initial evidence only when the desk marks delta
    scope eligible. Use one eligible verifier for Simple/Medium; Complex retains
    its required seats and JUDGE. The writer never verifies its own changes.
+   Wait for the recorded correction writer to finish its batch; unfinished
+   author work stays draft. Review the latest eligible head, not each partial
+   push. Superseded rounds keep their spent budget; do not refund or reset it.
    Three full reviews, two correction attempts and two delta verifications
    bound the PR. No-progress or exhaustion gets one useful handoff, not more
    teams, hidden findings or a false pass.
@@ -279,6 +284,11 @@ Steps:
    remaining budget, not an automatic full-review restart. lift-reviews affects
    only the desk's older reviews after current-head acceptance; never dismiss
    somebody else's review.
+Route seat questions to an answer: facts from repository/recorded decisions,
+code questions to author/SWE, execution and permission gaps to the desk host,
+and only reserved product/authority decisions to their named owner. Record one
+question with evidence, owner and next action; do not replace an answer with
+repeated wakes. Keep independent work moving.
 Output: stage, head, review/correction links, remaining findings or missing
 evidence, and the next bounded action.
 ```
