@@ -458,18 +458,17 @@ describe("SelectionBar", () => {
     // multiples are closed by the class rows (R38-B-CLASS-r16k); family D's non-negative finite
     // initial-height constants are closed by the named sample (R38-D-SAMPLE-r16k); every other
     // parametric class is closed over the parameter range the sweep shows, and nothing beyond that
-    // range is claimed. The REAL component
-    // must agree, probe by probe, with a test-side model of the store rule. The model is written
-    // from the RULING TEXT of R38-D2-r4/D2-r3, NOT from session-selection.tsx, and the rule is
-    // named beside each model line. Deterministic: seed 8539, 2048 traces x 10 events, every trace
-    // from a real fresh mount (the beforeEach reset plus harness.fresh() here). Alphabet: the union
-    // of review-B's five alphabets (model/store-diff.cjs:91-95, numbers verbatim) plus the LSA edge
-    // classes — the end band on BOTH sides of the boundary for every (clip, content) pair,
-    // overscroll past the end, a negative offset (top bounce), content shorter than clip, a height
-    // that shrinks and stays smaller and one that grows. Fractional values ride the fractional and
-    // hundredths alphabets; repeated stable geometry arises from repeated draws; the first event
-    // after mount (heights still −1) arises because every trace starts fresh. Determinism: the seed
-    // is fixed below.
+    // range is claimed. The REAL component must agree, probe by probe, with a test-side model of
+    // the store rule. The model is written from the RULING TEXT of R38-D2-r4/D2-r3, NOT from
+    // session-selection.tsx, and the rule is named beside each model line. Deterministic: seed
+    // 8539, 2048 traces x 10 events, every trace from a real fresh mount (the beforeEach reset plus
+    // harness.fresh() here). Alphabet: the union of review-B's five alphabets
+    // (model/store-diff.cjs:91-95, numbers verbatim) plus the LSA edge classes — the end band on
+    // BOTH sides of the boundary for every (clip, content) pair, overscroll past the end, a
+    // negative offset (top bounce), content shorter than clip, a height that shrinks and stays
+    // smaller and one that grows. Fractional values ride the fractional and hundredths alphabets;
+    // repeated stable geometry arises from repeated draws; the first event after mount (heights
+    // still −1) arises because every trace starts fresh. Determinism: the seed is fixed below.
     // Kills (r16n-fold results.json at 33c2df3960875392aaa613f40a89ce0591f2885a — 200 seeds: the
     // 187 r16n-fu seeds + the 13 r16n-fold diagnostic seeds, failing_tests kept UNCAPPED): 133
     // seeds are attributed to this gate in the full battery, 93 of them UNIQUE — the 30 SF1–SF3
@@ -477,10 +476,10 @@ describe("SelectionBar", () => {
     // the five y-store seeds of review B r16h, the nine SHOULD-FIX seeds of review B r16i and the
     // four boundary seeds of review B r16k (62 unique at r16l), the 18 r16n seeds of
     // mutations/seeds-r16n.json new_seeds.names in the r16n-fold evidence (the review-b r16m
-    // EDGE16M variants, incl. M-sf6-end-k2; runs/kill-pairs-r16n.json in the r16n evidence lists
-    // 17 of them under 'rb17' and the kill-pair forms under 'kills'), and the 13 r16n-fold
-    // diagnostic seeds (nine review-B r16n-fu store-threshold and low-water mutants + four audit
-    // r16n-fu F1 probe variants), each of the thirteen uniquely attributed
+    // EDGE16M variants, incl. M-sf6-end-k2; runs/kill-pairs-r16n.json in the r16n evidence lists 17
+    // of them under 'rb17' and the kill-pair forms under 'kills'), and the 13 r16n-fold diagnostic
+    // seeds (nine review-B r16n-fu store-threshold and low-water mutants + four audit r16n-fu F1
+    // probe variants), each of the thirteen uniquely attributed
     // (runs/kill-attributions-r16n-fold.json in the r16n-fold evidence). The fu head fd0099c7
     // carried 120 attributed / 80 unique of 187 (the fu header's 124/84 was corrected by the
     // audit). The full per-gate and per-seed lists are mutations/results.json in the r16n-fold
@@ -494,85 +493,101 @@ describe("SelectionBar", () => {
     const SEED = 8539, TRACES = 2048, EVENTS = 10;
     // r16n-fold: 78 DIRECTED traces, enumerated below (count and names produced from the table by
     // script; runs/directed-count-check.json in the r16l evidence, re-run in r16n-fu and at the
-    // r16n-fold head, runs/row-counts.json in the r16n-fold evidence): band-interior, band-round-content, band-negative-even, stable-near-content, stable-near-clip, stable-near-3dp, stable-near-4dp, rule-near-y, y-near-3dp, y-near-4dp, y-near-7dp, h-content-3dp, h-clip-3dp, h-content-4dp, h-content-7dp, y-store-short, h-store-short, h-store-negative, h-content-below-clip, first-event-zero-box, full-precision-heights, y-repeat-fractional, f-band-fractional-clip, f-zero-clip-stable, f-zero-box-two, f-zero-clip-y-store, f-fit-top-bounce, f-clip-collapse-back, f-content-collapse-back, f-small-clip-full-precision, f-small-content-full-precision, f-tiny-clip-full-precision, y-repeat-full-precision, f-tiny-content-full-precision, h-y-repeat-negative-thirds, h-y-skip-at-floor, h-y-repeat-floor7-noise, h-y-repeat-floor8-noise, h-y-repeat-floor9-noise, h-y-repeat-floor10-noise, h-y-repeat-floor11-noise, h-y-repeat-floor12-noise, h-y-repeat-floor13-noise, h-y-repeat-floor14-noise, h-y-repeat-floor15-noise, y-skip-down-under-unstable, y-top-bounce-deeper-than-content, first-event-bounce-1-1, first-event-bounce-1-4, first-event-bounce-188-97, first-event-bounce-1e9, y-top-bounce-deeper-than-clip, first-event-bounce-300-100, y-skip-down-at-floor-then-repeat, y-top-bounce-empty-content, y-top-bounce-zero-clip,
-    // y-repeat-noise-ladder, band-tie-floor-and-toFixed-1dp, band-tie-round-1dp, stable-clip-ceil-1dp, y-skip-up-at-floor-then-repeat, y-cap-under-end, y-cap-above-negative-end, lastY-fall-1e6-then-rise, lastY-jump-1e6-then-fall, a-rule-relative-cap, e-stable-relative-cap, b-cap-content-near-1-cap, b-cap-end-near-1-cap, b-low-water-cap, b-high-water-cap, b-cap-end-negative-cap, rb16n-subfloor-up,
-    // rb16n-subfloor-down, rb16n-low-water-cap-repeat, rb16n-a-left, rb16n-e-stable-small-height,
+    // r16n-fold head, runs/row-counts.json in the r16n-fold evidence): band-interior,
+    // band-round-content, band-negative-even, stable-near-content, stable-near-clip,
+    // stable-near-3dp, stable-near-4dp, rule-near-y, y-near-3dp, y-near-4dp, y-near-7dp,
+    // h-content-3dp, h-clip-3dp, h-content-4dp, h-content-7dp, y-store-short, h-store-short,
+    // h-store-negative, h-content-below-clip, first-event-zero-box, full-precision-heights,
+    // y-repeat-fractional, f-band-fractional-clip, f-zero-clip-stable, f-zero-box-two,
+    // f-zero-clip-y-store, f-fit-top-bounce, f-clip-collapse-back, f-content-collapse-back,
+    // f-small-clip-full-precision, f-small-content-full-precision, f-tiny-clip-full-precision,
+    // y-repeat-full-precision, f-tiny-content-full-precision, h-y-repeat-negative-thirds,
+    // h-y-skip-at-floor, h-y-repeat-floor7-noise, h-y-repeat-floor8-noise, h-y-repeat-floor9-noise,
+    // h-y-repeat-floor10-noise, h-y-repeat-floor11-noise, h-y-repeat-floor12-noise,
+    // h-y-repeat-floor13-noise, h-y-repeat-floor14-noise, h-y-repeat-floor15-noise,
+    // y-skip-down-under-unstable, y-top-bounce-deeper-than-content, first-event-bounce-1-1,
+    // first-event-bounce-1-4, first-event-bounce-188-97, first-event-bounce-1e9,
+    // y-top-bounce-deeper-than-clip, first-event-bounce-300-100, y-skip-down-at-floor-then-repeat,
+    // y-top-bounce-empty-content, y-top-bounce-zero-clip, y-repeat-noise-ladder,
+    // band-tie-floor-and-toFixed-1dp, band-tie-round-1dp, stable-clip-ceil-1dp,
+    // y-skip-up-at-floor-then-repeat, y-cap-under-end, y-cap-above-negative-end,
+    // lastY-fall-1e6-then-rise, lastY-jump-1e6-then-fall, a-rule-relative-cap,
+    // e-stable-relative-cap, b-cap-content-near-1-cap, b-cap-end-near-1-cap, b-low-water-cap,
+    // b-high-water-cap, b-cap-end-negative-cap, rb16n-subfloor-up, rb16n-subfloor-down,
+    // rb16n-low-water-cap-repeat, rb16n-a-left, rb16n-e-stable-small-height,
     // rb16n-sf4-negative-cap.
     // Provenance: the four class rows of review-B r16k (SF1–SF3-r16k, closing the classes under
-    // R38-B-CLASS-r16k and R38-D-SAMPLE-r16k) are copied programmatically from its probes16k-traces.json:
-    // first-event-bounce-300-100, y-skip-down-at-floor-then-repeat, y-top-bounce-empty-content and
-    // y-top-bounce-zero-clip. The three single-point witness rows of that file are NOT folded: their
-    // variants die on the class rows. y-skip-down-at-floor-then-repeat steps exactly 0.05 px and its
-    // y values ride the R38-PREC-DOMAIN-r16k domain exception — no other trace does. Plus the seven
+    // R38-B-CLASS-r16k and R38-D-SAMPLE-r16k) are copied programmatically from its
+    // probes16k-traces.json: first-event-bounce-300-100, y-skip-down-at-floor-then-repeat,
+    // y-top-bounce-empty-content and y-top-bounce-zero-clip. The three single-point witness rows of
+    // that file are NOT folded: their variants die on the class rows.
+    // y-skip-down-at-floor-then-repeat steps exactly 0.05 px and its y values ride the
+    // R38-PREC-DOMAIN-r16k domain exception — no other trace does. Plus the seven
     // should-fix-witness traces of review-B r16i (SF1–SF3-r16i), copied programmatically from its
-    // probes16i-traces.json; plus the 21 of r16f (numbers copied
-    // programmatically from review-B r16d's probes17.py,
-    // never retyped), review-B r16f's ten f-probes and r16h's f-tiny-content-full-precision (from
-    // probes-r16f.py PROBES and the r16h ruling; 100 / 3, 4 / 3 and 5 / 3 stay full-precision
-    // expressions), r16h's two y-repeat traces (msg 68273bf0), review-B r16h's
-    // h-y-repeat-negative-thirds and h-y-skip-at-floor (probes16h.py PROBES, copied by script), and
-    // the nine h-y-repeat-floorD-noise traces (D = 7..15) the r16i 300-probe ladder required, each
-    // an exact repeat at review B's logged floor-noise witness for that D (copied digit for digit
-    // from logs/29-witness-floor-ladder.log by script). y-repeat-full-precision repeats at 5 / 3,
-    // which the toFixed, round and ceil forms round UP — those probes first fail on this trace at
-    // D = 7..15 in the r16i ladder log, re-run in r16l at 252cf214 (runs/precision-ladder.json in
-    // the r16l evidence; the later r16l commit changes comments only) — while floor and trunc
-    // round 5 / 3 DOWN: floor dies on the
-    // h-y-repeat-floorD-noise traces, and trunc dies on h-y-repeat-negative-thirds, since
-    // trunc(−4/3, D) > −4/3 for every D = 1..15 — truncation toward zero of a negative value, so
-    // it holds by construction at every D, not by float noise. The full-precision heights are
-    // 97 + 1/3, 188 + 1/3, 100 / 3 and 4 / 3, and
-    // the seeds kill the heights stores' toFixed at 14 decimals (F-h-toFixed14, F-h-toFixed14-clip,
-    // F-h-toFixed14-content) and 15 (F-h-toFixed15) at them. r16n provenance: the fifteen r16n rows
-    // (y-repeat-noise-ladder through b-high-water-cap) are the r16n round's clamp-family and
-    // tolerance kill rows, copied programmatically per the r16n record; b-cap-end-negative-cap is
-    // the amendment-3 row [[0, 2147483645.9499998, 0], [-2147483648, 2147483645.9499998, 0]] with
-    // count 0 — it kills the SF6-end family exactly to its separability edge 2^31/E and resolves
-    // the r16n STOP (msg 603d18b7). r16n-fold provenance: the six fold rows are the r16n-fu review
-    // witnesses, copied programmatically from the review evidence (review-B confirm16n scratch
-    // rows and the audit floor-gate-probes / new-exact-witnesses / edge-A-left files):
-    // rb16n-subfloor-up [[50, 97, 188], [50.01, 97, 189], [50.005, 97, 189]] (count 0) and
-    // rb16n-subfloor-down [[50, 97, 188], [49.99, 97, 189], [49.995, 97, 189]] (count 1), the
-    // B-skip sub-floor killers; rb16n-low-water-cap-repeat [[2147483648, 97, 10],
-    // [-2147483648, 97, 10.1], [-2147483648, 97, 10.1]] (count 1; kills the SF7-low water family
-    // at every d < 2^32); rb16n-a-left [[1.5, 1, 4], [0, 1, 4], [1.05, 1, 4]] (count 1; the audit
-    // A-band left diagnostic); rb16n-e-stable-small-height [[30, 1, 188], [10, 1.05, 188]] (count
-    // 1; the audit E-stable tolerance diagnostic); rb16n-sf4-negative-cap
-    // [[-2147483647.9499998, 0, 2147483648], [-2147483648, 0, 2147483648]] (count 0; the audit
-    // SF4 negative-end diagnostic).
-    // K1 (k1 = 1 + 4299162·2^-52) is killed by b-cap-end-negative-cap@1. A floor-meeting double trace
-    // separates it (IR-B NOTE 6, j = 8598323, content 1e-7); that trace is outside the value domain {0}
-    // ∪ {|v| >= 1 px} of R38-PREC-r16f, so it is recorded, not a row.
-    // S erratum (N3): S = 209716*2^-22 = 0.05000019073486328125 — the earlier
-    // decimal 0.05000004768371582 was wrong; the committed row values are unaffected.
-    // R38-PREC-r16f as corrected (msg
-    // 1b286dab): every rounding form {toFixed, round, floor, ceil, trunc} at D <= 15 counts, and
-    // the r16l ladder re-run at 252cf214 (all 300 killed and the four toFixed D16 probes
-    // equivalent, runs/precision-ladder.json in the r16l evidence; r16j's record holds the same
-    // 300/4/0) covers {toFixed, round, floor, ceil, trunc} x D = 1..15 for the y, content, clip
-    // and both stores beside the traces — re-run at the r16n-fu head fd0099c7 and at the
-    // r16n-fold head 33c2df39 with the same 300/4/0 (runs/precision-ladder.json in the r16n-fold
-    // evidence); at D >= 16 toFixed round-trips
-    // and is EQUIVALENT, while the multiply-divide forms are BEYOND THE PRECISION CAP (recorded,
-    // not counted, not probed). The magnitude cap (|values| <= 2^31, R38-NUM-r16m clause 1) and
-    // the precision cap (R38-PREC-r16f) are distinct caps; the complement labels re-derived at
-    // the 78-row head (runs/exact-sweep.json in the r16n-fold evidence; witness rule per
-    // R38-NUM-r16n.k1 item 2) cite R38-NUM-r16m clause 2a beside clause 2 for the parameter
-    // doubles between a family's double-trace edge and its real-trace edge: the SF6_end sliver
-    // (kC, K1) holds 12897485 doubles: k = 1 is EQUIVALENT (ruled, R38-EQ-r16d R-y-min-end), and
-    // the other 12897484 are BELOW FLOOR (integer proof 8598323.2); the SF4 NUMERIC RESIDUE
-    // (R38-NUM-r16m 2a) window is [0.05/(2^31 - 0.05), 2.3283097672619805e-11) after
-    // rb16n-sf4-negative-cap lowered the union edge from 2.328309769430388e-11; the SF7_low
-    // complement [2^32, +inf) is EQUIVALENT (R38-NUM-r16m 4a, step clamp, d >= 2^32; lapse "the
-    // cap changes") — rb16n-low-water-cap-repeat kills every double d < 2^32; the SF7_high
-    // complement (dHi, 2^32) is BELOW FLOOR (R38-NUM-r16m clause 2 as applied in 045f9516 to the
-    // high-water complement (2^32 - 2.05, 2^32)), containing the declared kill-list survivor
-    // d = 2^32 - 1, and [2^32, +inf) is EQUIVALENT (4a, lapse "the cap changes"); the B_skip
-    // survivors (0, 0.00999999999999801048] are BELOW FLOOR. Each trace
-    // is replayed through the same model text and probe in a separate loop — a fresh mount per
-    // trace and a comparison after every event — BEFORE the random phase; the PRNG draws nothing
-    // for them. The expected final settle count sits beside each trace, and the model must reach
-    // it, so a mis-copied trace fails the expectation instead of testing nothing.
+    // probes16i-traces.json; plus the 21 of r16f (numbers copied programmatically from review-B
+    // r16d's probes17.py, never retyped), review-B r16f's ten f-probes and r16h's
+    // f-tiny-content-full-precision (from probes-r16f.py PROBES and the r16h ruling; 100 / 3, 4 / 3
+    // and 5 / 3 stay full-precision expressions), r16h's two y-repeat traces (msg 68273bf0),
+    // review-B r16h's h-y-repeat-negative-thirds and h-y-skip-at-floor (probes16h.py PROBES, copied
+    // by script), and the nine h-y-repeat-floorD-noise traces (D = 7..15) the r16i 300-probe ladder
+    // required, each an exact repeat at review B's logged floor-noise witness for that D (copied
+    // digit for digit from logs/29-witness-floor-ladder.log by script). y-repeat-full-precision
+    // repeats at 5 / 3, which the toFixed, round and ceil forms round UP — those probes first fail
+    // on this trace at D = 7..15 in the r16i ladder log, re-run in r16l at 252cf214
+    // (runs/precision-ladder.json in the r16l evidence; the later r16l commit changes comments
+    // only) — while floor and trunc round 5 / 3 DOWN: floor dies on the h-y-repeat-floorD-noise
+    // traces, and trunc dies on h-y-repeat-negative-thirds, since trunc(−4/3, D) > −4/3 for every
+    // D = 1..15 — truncation toward zero of a negative value, so it holds by construction at every
+    // D, not by float noise. The full-precision heights are 97 + 1/3, 188 + 1/3, 100 / 3 and 4 / 3,
+    // and the seeds kill the heights stores' toFixed at 14 decimals (F-h-toFixed14,
+    // F-h-toFixed14-clip, F-h-toFixed14-content) and 15 (F-h-toFixed15) at them. r16n provenance:
+    // the fifteen r16n rows (y-repeat-noise-ladder through b-high-water-cap) are the r16n round's
+    // clamp-family and tolerance kill rows, copied programmatically per the r16n record;
+    // b-cap-end-negative-cap is the amendment-3 row [[0, 2147483645.9499998, 0],
+    // [-2147483648, 2147483645.9499998, 0]] with count 0 — it kills the SF6-end family exactly to
+    // its separability edge 2^31/E and resolves the r16n STOP (msg 603d18b7). r16n-fold provenance:
+    // the six fold rows are the r16n-fu review witnesses, copied programmatically from the review
+    // evidence (review-B confirm16n scratch rows and the audit
+    // floor-gate-probes / new-exact-witnesses / edge-A-left files): rb16n-subfloor-up
+    // [[50, 97, 188], [50.01, 97, 189], [50.005, 97, 189]] (count 0) and rb16n-subfloor-down
+    // [[50, 97, 188], [49.99, 97, 189], [49.995, 97, 189]] (count 1), the B-skip sub-floor killers;
+    // rb16n-low-water-cap-repeat [[2147483648, 97, 10], [-2147483648, 97, 10.1],
+    // [-2147483648, 97, 10.1]] (count 1; kills the SF7-low water family at every d < 2^32);
+    // rb16n-a-left [[1.5, 1, 4], [0, 1, 4], [1.05, 1, 4]] (count 1; the audit A-band left
+    // diagnostic); rb16n-e-stable-small-height [[30, 1, 188], [10, 1.05, 188]] (count 1; the audit
+    // E-stable tolerance diagnostic); rb16n-sf4-negative-cap [[-2147483647.9499998, 0, 2147483648],
+    // [-2147483648, 0, 2147483648]] (count 0; the audit SF4 negative-end diagnostic).
+    // K1 (k1 = 1 + 4299162·2^-52) is killed by b-cap-end-negative-cap@1. A floor-meeting double
+    // trace separates it (IR-B NOTE 6, j = 8598323, content 1e-7); that trace is outside the value
+    // domain {0} ∪ {|v| >= 1 px} of R38-PREC-r16f, so it is recorded, not a row.
+    // S erratum (N3): S = 209716*2^-22 = 0.05000019073486328125 — the earlier decimal
+    // 0.05000004768371582 was wrong; the committed row values are unaffected.
+    // R38-PREC-r16f as corrected (msg 1b286dab): every rounding form {toFixed, round, floor, ceil,
+    // trunc} at D <= 15 counts, and the r16l ladder re-run at 252cf214 (all 300 killed and the four
+    // toFixed D16 probes equivalent, runs/precision-ladder.json in the r16l evidence; r16j's record
+    // holds the same 300/4/0) covers {toFixed, round, floor, ceil, trunc} x D = 1..15 for the y,
+    // content, clip and both stores beside the traces — re-run at the r16n-fu head fd0099c7 and at
+    // the r16n-fold head 33c2df39 with the same 300/4/0 (runs/precision-ladder.json in the
+    // r16n-fold evidence); at D ≥ 16 toFixed round-trips and is EQUIVALENT, while the
+    // multiply-divide forms are BEYOND THE PRECISION CAP (recorded, not counted, not probed). The
+    // magnitude cap (|values| ≤ 2^31, R38-NUM-r16m clause 1) and the precision cap (R38-PREC-r16f)
+    // are distinct caps; the complement labels re-derived at the 78-row head (runs/exact-sweep.json
+    // in the r16n-fold evidence; witness rule per R38-NUM-r16n.k1 item 2) cite R38-NUM-r16m clause
+    // 2a beside clause 2 for the parameter doubles between a family's double-trace edge and its
+    // real-trace edge: the SF6_end sliver (kC, K1) holds 12897485 doubles: k = 1 is EQUIVALENT
+    // (ruled, R38-EQ-r16d R-y-min-end), and the other 12897484 are BELOW FLOOR (integer proof
+    // 8598323.2); the SF4 NUMERIC RESIDUE (R38-NUM-r16m 2a) window is [0.05/(2^31 − 0.05),
+    // 2.3283097672619805e-11) after rb16n-sf4-negative-cap lowered the union edge from
+    // 2.328309769430388e-11; the SF7_low complement [2^32, +∞) is EQUIVALENT (R38-NUM-r16m 4a, step
+    // clamp, d ≥ 2^32; lapse "the cap changes") — rb16n-low-water-cap-repeat kills every double
+    // d < 2^32; the SF7_high complement (dHi, 2^32) is BELOW FLOOR (R38-NUM-r16m clause 2 as
+    // applied in 045f9516 to the high-water complement (2^32 − 2.05, 2^32)), containing the
+    // declared kill-list survivor d = 2^32 − 1, and [2^32, +∞) is EQUIVALENT (4a, lapse "the cap
+    // changes"); the B_skip survivors (0, 0.00999999999999801048] are BELOW FLOOR. Each trace is
+    // replayed through the same model text and probe in a separate loop — a fresh mount per trace
+    // and a comparison after every event — BEFORE the random phase; the PRNG draws nothing for
+    // them. The expected final settle count sits beside each trace, and the model must reach it, so
+    // a mis-copied trace fails the expectation instead of testing nothing.
     const DIRECTED: Array<[string, Array<[number, number, number]>, number]> = [
     ["band-interior", [[30, 97, 188], [10, 97, 188], [88.995, 97, 188]], 0],
     ["band-round-content", [[30, 97, 188.4], [10, 97, 188.4], [89.2, 97, 188.4]], 0],
