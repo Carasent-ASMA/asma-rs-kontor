@@ -214,7 +214,7 @@ verification. Review seats remain read-only.
   excluded repositories, branch protections and existing fix decisions.
   Forks, guarded paths and unsupported publication remain suggestions or
   explicit holds. Never change forge settings, force-push or use admin bypass.
-- Batch corrections and author validation before independent verification.
+- Batch corrections before independent verification.
   Keep unfinished author work draft under the readiness rule. Do not dispatch
   a new review while a recorded writer is still changing that scope; use the
   latest eligible head after completion. A quiet interval alone proves neither
