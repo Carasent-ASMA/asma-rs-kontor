@@ -86,6 +86,14 @@ Cards say "the checklist below" or "the format below", never "read a file".
 | `REV DB` | Database reviewer for risky changes; read-only. |
 | `SWE` | The fixer: writes and tests confirmed corrections in an isolated worktree; the desk appends them to the original PR branch ([fix route](#fix-route)). |
 
+The PR Adam owns routing each seat's question to an answer. It resolves facts
+from the repository and recorded decisions, sends code questions to the owning
+author/SWE, and sends runtime, permission and publication gaps to the desk host.
+Only an unresolved product or reserved authority decision goes to the named
+decision owner. Record the question, evidence, owner and next action once;
+continue independent eligible work. A tool permission prompt is not a product
+question and a repeated wake is not an answer.
+
 ## Size
 
 The desk script classifies the complete actual diff using configured limits
@@ -206,6 +214,11 @@ verification. Review seats remain read-only.
   excluded repositories, branch protections and existing fix decisions.
   Forks, guarded paths and unsupported publication remain suggestions or
   explicit holds. Never change forge settings, force-push or use admin bypass.
+- Batch corrections before independent verification.
+  Keep unfinished author work draft under the readiness rule. Do not dispatch
+  a new review while a recorded writer is still changing that scope; use the
+  latest eligible head after completion. A quiet interval alone proves neither
+  readiness nor completion. Superseded work keeps its spent budget and evidence.
 - Persist intent before pushing. Require the destination's advertised OID and
   Git's update-time old OID to equal H. This cannot detect an intermediate move
   or deletion/recreation that returns to H. Reconcile lost replies by the
