@@ -11,7 +11,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ FlatList: "FlatList", S
 import { GraphPage, captureDay, capturedJiraChildren, type BoardItem } from "../client/graph-page";
 import { PlanGraph } from "../client/plan-graph/graph";
 import { SourceDetails } from "../client/source-details";
-import { Action, Disclosure } from "../client/page-controls";
+import { Action, ChoosePlanButton, Disclosure } from "../client/page-controls";
 import { TaskSessionsChooser, TaskSessionsControl, type BoardSessions } from "../client/board-sessions";
 import { MenuItem } from "../client/anchored-menu";
 import { emptyDirectoryState, type DirectoryEntry } from "../client/session-directory";
@@ -166,7 +166,10 @@ describe("Board without a valid canonical graph (BOARD-01)", () => {
     const { data, header, onChooseSource } = mount({ epicKey: null, compact });
     expect(data).toEqual([]);
     expect(text(header)).toContain("No plan or epic in this context.");
-    const choose = actions(header).find((button) => button.props.label === "Choose plan")!;
+    // ASMA-8851-D5: Board and the Plan tab draw the one shared Choose plan, bordered on a desktop page.
+    const choose = elements(header).find((element) => element.type === ChoosePlanButton)!;
+    expect(choose.props.compact).toBe(compact);
+    expect(ChoosePlanButton(choose.props as Parameters<typeof ChoosePlanButton>[0]).props).toMatchObject({ label: "Choose plan", small: !compact });
     (choose.props.onPress as () => void)(); expect(onChooseSource).toHaveBeenCalledTimes(1);
     expect(capturedJiraChildren(null, [jira]).records).toEqual([]);
   });

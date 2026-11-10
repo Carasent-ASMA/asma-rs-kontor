@@ -72,6 +72,7 @@ import { sessionEntry } from "./session-fixtures";
 import { GraphPage } from "../client/graph-page";
 import { historicalPlanProgress } from "../client/page-data";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
+import { DisclosureChevron } from "../client/page-controls";
 import { SessionsScreen } from "../client/sessions-screen";
 import { NativeFreshnessPill } from "../client/native-freshness";
 import { KontordBanner } from "../client/kontord-banner";
@@ -703,9 +704,10 @@ describe("Kontor shell native actions", () => {
   it("keeps Graph and Delivery directly accessible on desktop with the remaining pages in an end-aligned More dropdown", () => {
     const screen = mount(false);
     expect(screen.elements().filter((element) => element.props.tab === true).map((element) => element.props.label)).toEqual(["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery"]);
-    expect(screen.action("More").props).toMatchObject({ trailing: "⌄", expanded: false });
+    expect(screen.action("More").props).toMatchObject({ trailing: { type: DisclosureChevron, props: { open: false } }, expanded: false });
     screen.click("Graph"); expect(hostNavigation(screen.props.host.id).route.tab).toBe("Graph");
     screen.click("More");
+    expect(screen.action("More").props).toMatchObject({ trailing: { type: DisclosureChevron, props: { open: true } }, expanded: true });
     expect(screen.menu()!.props.placement).toEqual({ align: "end", width: 190 });
     expect(moreViews(screen.menu())).toEqual(["Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
     screen.choose("Inbox"); expect(screen.action("More").props.selected).toBe(true);

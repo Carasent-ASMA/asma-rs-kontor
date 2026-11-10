@@ -3,9 +3,13 @@ import { BackHandler, Platform, ScrollView, Text, View, type GestureResponderEve
 import type { PluginTheme } from "@getpaseo/plugin";
 import { anchoredPanelOpen, menuFrame, type MenuFrame, type MenuSize } from "./anchored-menu";
 
+/** ASMA-8851-D1: a row's pointer hover opens its help only after this delay, so sweeping a list opens nothing. */
+export const HELP_HOVER_DELAY_MS = 650;
+
 type Anchor = RefObject<View | null>;
-type Help = { anchor: Anchor; text: string; focused: boolean; held?: boolean };
-type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean, held?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; forget(anchor: Anchor): void; enter(help: Help): void; exit(help: Help): void; dismiss(): void; subscribe(anchor: Anchor, listener: (open: boolean, held: boolean) => void): () => void };
+/** `row`: list-row help, at most two lines, clear of the row and its neighbours, never under the pointer, opened late by hover. */
+type Help = { anchor: Anchor; text: string; focused: boolean; held?: boolean; row?: boolean };
+type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean, held?: boolean, row?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; forget(anchor: Anchor): void; enter(help: Help): void; exit(help: Help): void; dismiss(): void; subscribe(anchor: Anchor, listener: (open: boolean, held: boolean) => void): () => void };
 const HelpContext = createContext<Controller | null>(null);
 type KeyEvent = { key?: string; pointerType?: string; clientX?: number; clientY?: number; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
 type EventTarget = { addEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void; removeEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void };
@@ -24,6 +28,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   const pressedAt = useRef<{ x?: number; y?: number } | null>(null);
   const fitted = useRef<{ text: string; size: MenuSize } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pending = useRef<{ help: Help; timer: ReturnType<typeof setTimeout> } | null>(null);
   const revision = useRef(0);
   // Controls that mirror this popover's open state (a held Limits control's expanded flag) subscribe per
   // anchor; a control re-renders only when its own anchor's open state flips, never on another's.
@@ -36,9 +41,11 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   }, [help]);
   const controller = useMemo<Controller>(() => {
     const cancel = () => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; };
-    const dismiss = () => { cancel(); revision.current++; current.current = null; overPanel.current = null; fitted.current = null; setHelp(null); setFrame(null); };
+    const cancelOpen = () => { if (pending.current) clearTimeout(pending.current.timer); pending.current = null; };
+    const dismiss = () => { cancel(); cancelOpen(); revision.current++; current.current = null; overPanel.current = null; fitted.current = null; setHelp(null); setFrame(null); };
     // Source hover-out can arrive after panel pointer-enter on React Native Web.
     const leave = (anchor: Anchor, blur = false) => {
+      if (pending.current?.help.anchor === anchor) { cancelOpen(); return; }
       if (current.current?.anchor !== anchor) return;
       if (blur) current.current.focused = false;
       if (current.current.focused || current.current.held || overPanel.current?.anchor === anchor) return;
@@ -53,8 +60,10 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         if (token !== revision.current || !w || !h || !width || !height) return;
         if (x + w < rootX || x > rootX + width || y + h < rootY || y > rootY + height) { setHelp(null); setFrame(null); return; }
         const size = fitted.current?.text === next.text ? fitted.current.size : null;
+        // Row help keeps one row height clear on each side, so it never covers the row or a neighbour.
+        const band = next.row ? { x: x - rootX, y: y - rootY - h, width: w, height: 3 * h } : { x: x - rootX, y: y - rootY, width: w, height: h };
         // Native/web layout measurements can round down a fractional text width.
-        setFrame(menuFrame({ x: x - rootX, y: y - rootY, width: w, height: h }, { width, height }, { align: "start", width: Math.min(size ? size.width + 1 : 360, 360), gap: 0, margin: 6, maxHeight: Math.min(size?.height ?? 220, 220, height - 12) }));
+        setFrame(menuFrame(band, { width, height }, { align: "start", width: Math.min(size ? size.width + 1 : 360, 360), gap: 0, margin: 6, maxHeight: Math.min(size?.height ?? 220, 220, height - 12) }));
         setHelp(next);
       }));
     };
@@ -68,14 +77,19 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         if (overPanel.current?.anchor !== help.anchor || overPanel.current.text !== help.text) return;
         overPanel.current = null; leave(help.anchor);
       },
-      show(anchor, text, focused = false, held = false) {
+      show(anchor, text, focused = false, held = false, row = false) {
         // Native keyboard/accessibility focus has no document keydown to reset touch mode.
         if (focused && Platform.OS !== "web") input.current = "keyboard";
         if (!text || (!held && (input.current === "touch" || (focused && input.current === "pointer") || (!focused && pressedAt.current) || (current.current?.focused && !focused)))) return;
-        cancel();
-        place({ anchor, text, focused, held });
+        cancel(); cancelOpen();
+        const next = { anchor, text, focused, held, row };
+        if (!row || focused || held || Platform.OS !== "web" || current.current?.anchor === anchor) { place(next); return; }
+        if (current.current) dismiss();
+        pending.current = { help: next, timer: setTimeout(() => { const value = pending.current?.help; pending.current = null; if (value) place(value); }, HELP_HOVER_DELAY_MS) };
       },
       refresh(anchor, text) {
+        // A commit during the hover delay opens the latest text, or nothing.
+        if (pending.current?.help.anchor === anchor) { if (text) pending.current.help = { ...pending.current.help, text }; else cancelOpen(); }
         const value = current.current;
         if (!value || value.anchor !== anchor || value.text === text) return;
         if (!text) { dismiss(); return; }
@@ -93,6 +107,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
       },
       press(touch, target) {
         input.current = touch ? "touch" : "pointer";
+        cancelOpen();
         // R9 AUD-F3: the control that HOLDS this popover toggles with one decision per press — a
         // pointerdown on its own trigger must not dismiss here, so the trigger's activation reads the
         // true press-start state. A press on any other control, or outside, dismisses as before.
@@ -100,7 +115,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         if (value?.held && (value.anchor.current as Contains | null)?.contains?.(target)) return;
         if (!(panel.current as Contains | null)?.contains?.(target)) dismiss();
       },
-      forget(anchor) { if (current.current?.anchor === anchor) dismiss(); },
+      forget(anchor) { if (pending.current?.help.anchor === anchor) cancelOpen(); if (current.current?.anchor === anchor) dismiss(); },
       subscribe(anchor, listener) {
         let listeners = openListeners.current.get(anchor);
         if (!listeners) { listeners = new Set(); openListeners.current.set(anchor, listeners); }
@@ -114,7 +129,9 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     const window = Platform.OS === "web" ? (globalThis as { window?: EventTarget }).window : undefined;
     const key = (event: KeyEvent) => {
       if (event.key && !["Shift", "Control", "Alt", "Meta"].includes(event.key)) input.current = "keyboard";
-      if (event.key !== "Escape" || !current.current) return;
+      if (event.key !== "Escape") return;
+      // Escape also drops a row hover still waiting to open.
+      if (!current.current) { controller.dismiss(); return; }
       controller.dismiss();
       // A menu/dialog keeps its existing one-press Escape and focus return.
       if (anchoredPanelOpen()) return;
@@ -137,7 +154,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     const scroll = (event: KeyEvent) => {
       if ((panel.current as Contains | null)?.contains?.(event.target)) return;
       const value = current.current;
-      if (value?.focused) controller.show(value.anchor, value.text, true);
+      if (value?.focused) controller.show(value.anchor, value.text, true, value.held, value.row);
       else controller.dismiss();
     };
     const moved = () => controller.dismiss();
@@ -153,20 +170,20 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss}
       onTouchStart={(event) => controller.press(true, event && (event as { target?: unknown }).target)} onTouchCancel={controller.dismiss}>
       {children}
-      {help && frame ? <View testID="control-help-layer" pointerEvents="box-none" style={{ position: "absolute", inset: 0, zIndex: 100 }}>
+      {help && frame ? <View testID="control-help-layer" pointerEvents={help.row ? "none" : "box-none"} style={{ position: "absolute", inset: 0, zIndex: 100 }}>
         <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={() => controller.enter(help)} onPointerLeave={() => controller.exit(help)}
           onLayout={({ nativeEvent }) => controller.fit(help, nativeEvent.layout)}
           style={{ position: "absolute", left: frame.left, maxWidth: frame.width, opacity: fitted.current?.text === help.text ? 1 : 0, ...(frame.bottom === null ? { top: frame.top ?? 0 } : { bottom: frame.bottom }), maxHeight: frame.maxHeight,
             padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 7, backgroundColor: colors.surface2, elevation: 12, shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 8 }}>
-          <ScrollView style={{ flexShrink: 1 }}><Text selectable style={{ color: colors.foreground, fontSize: 12, lineHeight: 18 }}>{help.text}</Text></ScrollView>
+          <ScrollView style={{ flexShrink: 1 }}><Text selectable numberOfLines={help.row ? 2 : undefined} style={{ color: colors.foreground, fontSize: 12, lineHeight: 18 }}>{help.text}</Text></ScrollView>
         </View>
       </View> : null}
     </View>
   </HelpContext.Provider>;
 }
 
-/** Attach to the existing control; never nest an extra control inside a session row. */
-export function useControlHelp(text: string, forwarded?: Ref<View>) {
+/** Attach to the existing control; never nest an extra control inside a session row. A list row passes `row`. */
+export function useControlHelp(text: string, forwarded?: Ref<View>, { row = false }: { row?: boolean } = {}) {
   const controller = useContext(HelpContext);
   const anchor = useRef<View | null>(null);
   const focused = useRef(false);
@@ -196,13 +213,13 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
         // anchor refreshes; no row effects, polling, or dismissed-help reopening.
         if (node) controller?.refresh(anchor, text);
       },
-      onHoverIn: () => controller?.show(anchor, text, focused.current),
+      onHoverIn: () => controller?.show(anchor, text, focused.current, false, row),
       onHoverOut: () => controller?.leave(anchor),
-      onFocus: () => { focused.current = true; controller?.show(anchor, text, true); },
+      onFocus: () => { focused.current = true; controller?.show(anchor, text, true, false, row); },
       onBlur: () => { focused.current = false; controller?.leave(anchor, true); },
     },
     dismiss: () => controller?.dismiss(),
-    hold: () => controller?.show(anchor, text, false, true),
+    hold: () => controller?.show(anchor, text, false, true, row),
     forget: () => controller?.forget(anchor),
     open,
   };

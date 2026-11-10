@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement, ReactNode } from "react";
-const help = vi.hoisted(() => ({ show: vi.fn(), hide: vi.fn(), focus: vi.fn(), blur: vi.fn(), dismiss: vi.fn(), text: "" }));
+const help = vi.hoisted(() => ({ show: vi.fn(), hide: vi.fn(), focus: vi.fn(), blur: vi.fn(), dismiss: vi.fn(), text: "", row: false as boolean | undefined }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (fn: () => unknown) => fn() }));
 vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Pressable: "Pressable", Text: "Text", View: "View", PanResponder: { create: () => ({ panHandlers: {} }) } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
-vi.mock("../client/control-help", () => ({ useControlHelp: (text: string) => { help.text = text; return {
+vi.mock("../client/control-help", () => ({ useControlHelp: (text: string, _ref?: unknown, options?: { row?: boolean }) => { help.text = text; help.row = options?.row; return {
   bindings: { "aria-describedby": "scope-help", onHoverIn: help.show, onHoverOut: help.hide, onFocus: help.focus, onBlur: help.blur }, dismiss: help.dismiss,
 }; } }));
 import { SESSION_SHORTCUTS, SessionScopeChip } from "../client/session-scope-chip";
@@ -202,12 +202,15 @@ describe("group primary state shares", () => {
     expect(secondary(render({ unit: "workspaces", unitVisible: 5, unitTotal: 5 }))).toEqual(["5 workspaces"]);
   });
 
-  it.each([true, false])("uses the same scope explanation in the tooltip and accessible hint, contextual=%s", (contextual) => {
+  it.each([true, false])("hovers only the state counts as row help and keeps the scope explanation in the accessible hint, contextual=%s", (contextual) => {
     const group = buildOrganizationTree({ entries, grouping: "flat" })[0]!;
     const tree = OrganizationRowView({ row: { kind: "group", group, depth: 0, expanded: false }, colors, compact: false, contextual,
       disabled: false, arranging: false, selected: false, favorite: false, onToggle() {}, onFavorite() {}, onMove() {}, onSelect() {} });
     const hint = walk(tree).find(node => node.type === "Pressable")!.props.accessibilityHint;
-    expect(help.text).toBe(hint);
+    // ASMA-8851-D1: the hover text is the one-line summary, opened as row help; the denominator paragraph is not in it.
+    expect([help.text, help.row]).toEqual([groupStateSummary(group.aggregate), true]);
+    expect(help.text).not.toContain("denominator");
+    expect(hint).toBe(groupStateHelp(group.aggregate, contextual));
     expect(hint).toContain(contextual ? "retained surrounding context" : "matching the current search and filters");
     expect(hint).toContain("including collapsed branches");
     expect(hint).toContain("Native lifecycle and attention signals can overlap");

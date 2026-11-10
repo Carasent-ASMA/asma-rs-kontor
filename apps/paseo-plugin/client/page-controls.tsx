@@ -5,6 +5,23 @@ import { useActionHelp, useControlHelp } from "./control-help";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { readableInk } from "./session-status-ink";
 export type Colors = PluginTheme["colors"];
+
+/**
+ * ASMA-8851-D4: the one disclosure chevron. A font arrow ("⌄") sits at a font-dependent offset
+ * inside its line box, so the drawn glyph leaves the label's vertical centre; an icon glyph in its
+ * own fixed, centre-aligned box is metrically centred on the label at any text size.
+ */
+export function DisclosureChevron({ open, colors, size = 14 }: { open: boolean; colors: Colors; size?: number }) {
+  return <View pointerEvents="none" importantForAccessibility="no" accessibilityElementsHidden
+    style={{ height: 18, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+    <Icon name={open ? "ChevronUp" : "ChevronDown"} size={size} color={colors.foregroundMuted} />
+  </View>;
+}
+
+/** ASMA-8851-D5: the one "Choose plan" action, drawn with the same component and variant by Board and the Plan tab. */
+export function ChoosePlanButton({ colors, compact, onPress }: { colors: Colors; compact: boolean; onPress: () => unknown }) {
+  return <Action colors={colors} small={!compact} label="Choose plan" onPress={onPress} />;
+}
 /** Wide tabs follow the prototype's compact left-grouped strip; stacked tabs are the compact bottom bar. A touch pointer gets 44pt in every style. */
 export function Action({ label, accessibilityLabel, onPress, colors, icon, stacked = false, tab = false, selected: selectedProp, disabled = false, expanded, trailing, small = false, iconOnly = false, help, ref }: {
   label: string; colors: Colors; selected?: boolean; disabled?: boolean;
@@ -16,7 +33,7 @@ export function Action({ label, accessibilityLabel, onPress, colors, icon, stack
   stacked?: boolean; tab?: boolean;
   accessibilityLabel?: string;
   /** Menu or disclosure trigger state. */
-  expanded?: boolean; trailing?: string; small?: boolean;
+  expanded?: boolean; trailing?: ReactNode; small?: boolean;
   ref?: Ref<View>;
 }) {
   const selected = selectedProp ?? false;
@@ -46,7 +63,9 @@ export function Action({ label, accessibilityLabel, onPress, colors, icon, stack
     {pending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : icon && (!strip || hideLabel) ? <Icon name={icon} size={stacked ? 19 : 16} color={selected ? colors.accent : colors.foregroundMuted} /> : null}
     {/* A selected label keeps the accent only where it reads at 4.5:1; elsewhere the green icon and surface carry the selection. */}
     {hideLabel ? null : <Text numberOfLines={1} ellipsizeMode="tail" style={{ flexShrink: 1, color: strip ? (selected ? colors.foreground : colors.foregroundMuted) : selected ? readableInk(colors.accent, colors, 4.5) : colors.foreground, fontSize: stacked ? 10 : strip || compactButton ? 12 : 13, fontWeight: strip && selected ? "600" : compactButton ? "600" : "400" }}>{label}</Text>}
-    {trailing ? <Text importantForAccessibility="no" accessibilityElementsHidden style={{ color: colors.foregroundMuted, fontSize: 11 }}>{trailing}</Text> : null}
+    {trailing ? <View importantForAccessibility="no" accessibilityElementsHidden style={{ flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+      {typeof trailing === "string" ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{trailing}</Text> : trailing}
+    </View> : null}
   </Pressable>;
 }
 /**

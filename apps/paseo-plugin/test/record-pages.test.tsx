@@ -164,6 +164,12 @@ describe("primary surfaces keep moved statements in labels and Source details", 
     expect(byId(page, "plan-empty").props.accessibilityLabel).toBe("No plan linked. Select a configured plan in the top context picker. Conversation prose and titles do not create links.");
     expect(page.visible).not.toContain("Conversation prose");
   });
+  it.each([false, true])("ASMA-8851-D5: draws the Plan tab's Choose plan as Board does, bordered on a desktop page (compact %s)", (compact) => {
+    const page = render("Plan", [], { sourceId: null, onChooseSource: vi.fn(), compact });
+    const choose = page.nodes.find((node) => node.type === "Pressable" && node.props.accessibilityLabel === "Choose plan")!;
+    const style = (choose.props.style as (state: { pressed: boolean }) => Record<string, unknown>)({ pressed: false });
+    expect([style.borderWidth, style.borderRadius]).toEqual(compact ? [undefined, 8] : [1, 6]);
+  });
   it("shows only a non-zero session count on AI teams & sessions and keeps the observation statement in the header label", () => {
     const empty = render("AI teams & sessions", [], { contextLabel: "Context plan" });
     expect(empty.visible).toContain("No sessions in this context.");
