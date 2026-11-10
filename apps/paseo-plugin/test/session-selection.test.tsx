@@ -482,7 +482,7 @@ describe("SelectionBar", () => {
     // r16n-fu F1 probe variants), each of the thirteen uniquely attributed
     // (runs/kill-attributions-r16n-fold.json in the r16n-fold evidence). The fu head fd0099c7
     // carried 120 attributed / 80 unique of 187 (the fu header's 124/84 was corrected by the
-    // audit). The full per-gate and per-seed lists are runs/results.json in the r16n-fold
+    // audit). The full per-gate and per-seed lists are mutations/results.json in the r16n-fold
     // evidence.
     // Direction (b) (runs/direction-b-selection.json in the r16n-fold evidence): the gate alone
     // kills 126 of 126 — 125 seeds whose diffs touch session-selection.tsx:178-183, selected by
@@ -558,14 +558,16 @@ describe("SelectionBar", () => {
     // the 78-row head (runs/exact-sweep.json in the r16n-fold evidence; witness rule per
     // R38-NUM-r16n.k1 item 2) cite R38-NUM-r16m clause 2a beside clause 2 for the parameter
     // doubles between a family's double-trace edge and its real-trace edge: the SF6_end sliver
-    // (kC, K1) holds 12897485 doubles, of which k = 1 is observable-equivalent and the other
-    // 12897484 are BELOW FLOOR (every separating trace sub-floor, integer proof 8598323.2); the
-    // SF4 residue window is [0.05/(2^31 - 0.05), 2.3283097672619805e-11) after
+    // (kC, K1) holds 12897485 doubles: k = 1 is EQUIVALENT (ruled, R38-EQ-r16d R-y-min-end), and
+    // the other 12897484 are BELOW FLOOR (integer proof 8598323.2); the SF4 NUMERIC RESIDUE
+    // (R38-NUM-r16m 2a) window is [0.05/(2^31 - 0.05), 2.3283097672619805e-11) after
     // rb16n-sf4-negative-cap lowered the union edge from 2.328309769430388e-11; the SF7_low
-    // residue window is gone (rb16n-low-water-cap-repeat kills every d < 2^32; complement
-    // [2^32, +inf) BEYOND THE PRECISION CAP); the SF7_high window is empty to quantization
-    // (survivors observable-equivalent); the B_skip survivors (0, 0.00999999999999801048] are
-    // BELOW FLOOR. Each trace
+    // complement [2^32, +inf) is EQUIVALENT (R38-NUM-r16m 4a, step clamp, d >= 2^32; lapse "the
+    // cap changes") — rb16n-low-water-cap-repeat kills every double d < 2^32; the SF7_high
+    // complement (dHi, 2^32) is BELOW FLOOR (R38-NUM-r16m clause 2 as applied in 045f9516 to the
+    // high-water complement (2^32 - 2.05, 2^32)), containing the declared kill-list survivor
+    // d = 2^32 - 1, and [2^32, +inf) is EQUIVALENT (4a, lapse "the cap changes"); the B_skip
+    // survivors (0, 0.00999999999999801048] are BELOW FLOOR. Each trace
     // is replayed through the same model text and probe in a separate loop — a fresh mount per
     // trace and a comparison after every event — BEFORE the random phase; the PRNG draws nothing
     // for them. The expected final settle count sits beside each trace, and the model must reach
