@@ -36,7 +36,9 @@ Hard rules:
 
 ```text
 Return JSON only. Use the actual runtime agent_id and the recorded head/base,
-tier and classifier version. Templates describe fields, not passing evidence;
+tier and classifier version. Copy review.version as an integer from the facts;
+never substitute a template default or the latest installed policy version.
+Templates describe fields, not passing evidence;
 never submit placeholders. checked is an object with every key "1" through
 "10"; each value has status "checked", "not-applicable" or "unchecked" and
 nonempty evidence. Initial findings may include unchecked; final acceptance
@@ -48,7 +50,7 @@ never change identity to repeat a finding. There is no findings quota.
   "pr_head_sha": "<full reviewed head>",
   "pr_base_sha": "<full reviewed base>",
   "tier": "simple | medium | complex",
-  "classifier_version": 1,
+  "classifier_version": <integer from review.version>,
   "seat": "REV A | REV B | REV SEC | REV DB",
   "agent_id": "<actual native agent id>",
   "covered_files": ["path/to/file"],
@@ -137,7 +139,7 @@ false even while missing evidence leaves acceptance "no" and verdict "not verifi
   "pr_head_sha": "<full reviewed head>",
   "pr_base_sha": "<full reviewed base>",
   "tier": "complex",
-  "classifier_version": 1,
+  "classifier_version": <integer from review.version>,
   "seat": "JUDGE",
   "agent_id": "<actual native agent id>",
   "covered_files": ["path/to/file"],
