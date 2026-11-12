@@ -15,6 +15,15 @@ eligible delta, review the correction, affected behavior and all unresolved
 findings; reuse only valid initial evidence. A changed head/base, criteria or
 policy invalidates the evidence it affects. Missing evidence stays pending.
 Record all real findings; do not restart review for cosmetic preferences.
+Explain the concrete impact and proof using the finding format. A test request
+must identify a required behavior the existing evidence does not establish,
+not a coverage target or every imaginable variation. Reuse valid proof; ask
+for more only where a change or a specific gap makes it necessary.
+
+Missing permissions, dependencies, room preparation or publication metadata
+are desk delivery gaps. Report their owner and next action separately from PR
+defects. They may leave acceptance pending, but do not invent an author finding
+or start another review to repair the environment.
 
 ## The 11 human-judgment checks
 

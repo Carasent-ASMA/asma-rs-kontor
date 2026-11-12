@@ -39,8 +39,16 @@ Rules:
   display may link complete records; presentation limits never remove findings or their dispositions.
 - No proof, no finding. If you cannot show a concrete failing case, make it a
   `question`.
+- For `blocking` or `should fix`, explain the user impact or violated contract
+  in the problem/proof fields. A preference, speculative improvement or an
+  extra test without a concrete uncovered behavior is not a confirmed defect.
+  Keep optional polish advisory; never relabel a proven defect to get a pass.
 - Verify existing findings and link/reuse their IDs instead of posting
   duplicates. Do not omit an issue because another reviewer found it.
+- The deciding seat groups sightings of the same proven root cause before
+  requesting corrections. Keep one surviving ID and an explicit `duplicate_of`
+  disposition for each other sighting, including differently worded reports.
+  Preserve their evidence and keys; similar wording alone proves no duplicate.
 - One point per finding. Do not bundle.
 - Point at the exact new line (`file:line`), not a range when one line is enough.
 - Follow the shared communication skill's plain-language and requested-language
@@ -55,6 +63,12 @@ Keep every ID with its final outcome and reason: `verified` (with current
 `fixed_sha`), `rejected`, `duplicate` (with `duplicate_of` naming the surviving
 stable ID), `pre-existing` or `deferred`.
 Confirmed actionable findings cannot be deferred into a passing PR.
+
+Correction scope follows the proven defect. A small correction gets the
+eligible delta verification of its behavior, affected callers and unresolved
+findings; it does not restart unrelated checks or reopen settled preferences.
+Security, accessibility and other explicit contracts remain acceptance criteria
+even when the fix is small.
 
 When direct correction is unsupported or opted out, a safe prepared patch may
 be posted as a suggestion on its exact line. Preserve the unresolved finding;

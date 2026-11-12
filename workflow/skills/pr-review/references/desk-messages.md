@@ -28,13 +28,17 @@ Hard rules:
   commands).
 - Missing evidence is pending, never a pass. If blocked, report the exact gap,
   confirmed findings and checks not run; stop rather than fabricate a verdict.
+- Separate a proven PR defect from a desk execution gap. Give the latter an
+  owner and next action; do not invent a code finding or restart unchanged work.
 ```
 
 ## Reviewer output (REV A, REV B, REV SEC, REV DB)
 
 ```text
 Return JSON only. Use the actual runtime agent_id and the recorded head/base,
-tier and classifier version. Templates describe fields, not passing evidence;
+tier and classifier version. Copy review.version as an integer from the facts;
+never substitute a template default or the latest installed policy version.
+Templates describe fields, not passing evidence;
 never submit placeholders. checked is an object with every key "1" through
 "10"; each value has status "checked", "not-applicable" or "unchecked" and
 nonempty evidence. Initial findings may include unchecked; final acceptance
@@ -46,7 +50,7 @@ never change identity to repeat a finding. There is no findings quota.
   "pr_head_sha": "<full reviewed head>",
   "pr_base_sha": "<full reviewed base>",
   "tier": "simple | medium | complex",
-  "classifier_version": 1,
+  "classifier_version": <integer from review.version>,
   "seat": "REV A | REV B | REV SEC | REV DB",
   "agent_id": "<actual native agent id>",
   "covered_files": ["path/to/file"],
@@ -135,7 +139,7 @@ false even while missing evidence leaves acceptance "no" and verdict "not verifi
   "pr_head_sha": "<full reviewed head>",
   "pr_base_sha": "<full reviewed base>",
   "tier": "complex",
-  "classifier_version": 1,
+  "classifier_version": <integer from review.version>,
   "seat": "JUDGE",
   "agent_id": "<actual native agent id>",
   "covered_files": ["path/to/file"],
@@ -261,6 +265,9 @@ Steps:
    unresolved finding. Reuse initial evidence only when the desk marks delta
    scope eligible. Use one eligible verifier for Simple/Medium; Complex retains
    its required seats and JUDGE. The writer never verifies its own changes.
+   Wait for the recorded correction writer to finish its batch; unfinished
+   author work stays draft. Review the latest eligible head, not each partial
+   push. Superseded rounds keep their spent budget; do not refund or reset it.
    Three full reviews, two correction attempts and two delta verifications
    bound the PR. No-progress or exhaustion gets one useful handoff, not more
    teams, hidden findings or a false pass.
@@ -279,6 +286,11 @@ Steps:
    remaining budget, not an automatic full-review restart. lift-reviews affects
    only the desk's older reviews after current-head acceptance; never dismiss
    somebody else's review.
+Route seat questions to an answer: facts from repository/recorded decisions,
+code questions to author/SWE, execution and permission gaps to the desk host,
+and only reserved product/authority decisions to their named owner. Record one
+question with evidence, owner and next action; do not replace an answer with
+repeated wakes. Keep independent work moving.
 Output: stage, head, review/correction links, remaining findings or missing
 evidence, and the next bounded action.
 ```
