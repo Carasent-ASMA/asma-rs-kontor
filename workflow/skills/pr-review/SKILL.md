@@ -94,27 +94,53 @@ decision owner. Record the question, evidence, owner and next action once;
 continue independent eligible work. A tool permission prompt is not a product
 question and a repeated wake is not an answer.
 
-## Size
+## Complexity and regression risk
 
-The desk script classifies the complete actual diff using configured limits
-at readiness and after head changes. It does not classify tracker/plan context.
-Before dispatch, PR Adam reads that context and uses `review-level` to raise
-high-stakes or linked-repository work with a reason. Planning is a forecast.
-An unreadable or incomplete diff is `pending`; more reviewers do not supply
-missing evidence.
+Classify the complete actual diff, then check the tracker scope, callers and
+linked repositories before dispatch. Size describes work; it never chooses the
+review tier. There is no 300/500-line or 10-file escalation threshold. Count
+changed executable code separately from comments, docstrings, documentation,
+tests and generated output. A large isolated addition can be Simple; one
+changed permission check can be Complex.
 
-| Tier | Default scope | Required review |
+| Tier | Behavior and impact | Required review |
 | --- | --- | --- |
-| Simple | Ordinary prose or isolated new tests, with no higher-risk change | One cheap `REV A` |
-| Medium | One module, at most 300 changed production lines and 10 production files; ordinary code, plans/specifications or build configuration | One premium `REV A` |
-| Complex | Larger or cross-module work, workflow policy, shared contracts, or new/major dependencies | `REV A` + `REV B` + premium `JUDGE` |
+| Simple | Isolated new feature/source files or new tests with no critical operation, no changed existing behavior or shared contract; comment/format-only code changes | One economical `REV A` |
+| Medium | Documentation-only of any length, including plans and policy prose; bounded local existing behavior changes, ordinary build/configuration or dependency maintenance | One premium `REV A` |
+| Complex | Critical operations, changed public contracts, executable workflow authority or deployment; existing production behavior changed across independently owned modules; concrete high regression risk established by context | `REV A` + `REV B` + premium `JUDGE`, with applicable specialists |
 
-The selected project policy owns the thresholds. Security/auth, tenant or
-patient data, money, migrations and deployment force Complex and the relevant
-`REV SEC`/`REV DB` specialists. Apply risk before size. TPM and reviewers may
-raise the tier with evidence; LSA resolves documented classification exceptions.
-No exception waives evidence, writer independence or established risk.
-These PR tiers change no task QA/AUD, formal committee or epic completion gate.
+Critical operations include authentication/authorization, tenant isolation,
+patient-data access, money movement and destructive data/schema writes. Their
+code or configuration changes require Complex and `REV SEC`/`REV DB` as
+applicable, even for a one-line fix or a new feature. Merely residing in an
+`auth/`, `api/` or `public/` folder does not establish that risk. A manifest or
+lockfile change alone is not a breaking contract. Distinguish dependency
+maintenance from a proven incompatible upgrade and inspect the affected callers.
+
+An existing behavior change alters executable statements or removes existing
+code after comments/formatting are excluded. New files do not, by themselves,
+prove isolation: PR Adam checks registration, startup effects, callers, shared
+state and dependencies. Adding a hook to existing production code is an
+existing behavior change. Cross-module escalation means changed existing
+production behavior in more than one independently owned module, not many new
+files, tests or documentation folders. Record the actual modules and interaction;
+a directory name alone is not proof of ownership.
+
+The script supplies a conservative, reproducible default and the matching
+reasons. It cannot infer every semantic dependency. Before dispatch, PR Adam
+must check those reasons against the actual behavior and use `review-level`
+to raise missed risk with the affected behavior/callers as evidence. An unknown
+impact requires investigation, not a claim that the feature is isolated.
+Unreadable/incomplete diff or unavailable classification tooling is `pending`.
+Do not invent a line-count threshold as a fallback.
+
+Pin the classifier version in each admitted PR record. Existing reviews and
+correction allowances retain that version; deploying a policy does not reset
+budgets, invalidate completed evidence or launch a replacement round. Newly
+admitted PRs use the new policy. TPM/reviewers may raise the tier with evidence;
+LSA resolves documented classification exceptions. No exception waives evidence,
+writer independence or established risk. These PR tiers change no task QA/AUD,
+formal committee or epic completion gate.
 
 ## Vendors
 
