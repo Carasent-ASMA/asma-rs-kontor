@@ -9,7 +9,7 @@ import type { Colors } from "./page-controls";
 /** Secondary prose is available on demand; scope, units and actionable data warnings stay visible. */
 export function TokenomicsHelp({ title, children, colors, short = false, hint }: { title: string; children: ReactNode; colors: Colors; short?: boolean; hint?: string }) {
   const helpId = `report-help-${useId()}`;
-  const [open, setOpen] = useState(false), [focused, setFocused] = useState(false), anchor = useRef<View>(null), context = useTokenomicsOverlay();
+  const [open, setOpen] = useState(false), [focused, setFocused] = useState(false), anchor = useRef<View>(null), closeButton = useRef<View>(null), context = useTokenomicsOverlay();
   const close = () => { setOpen(false); requestAnimationFrame(() => focusControl(anchor.current)); };
   useEffect(() => {
     if (!open || !short || !context) return;
@@ -27,7 +27,7 @@ export function TokenomicsHelp({ title, children, colors, short = false, hint }:
   }, [open, short]);
   return <>
     <Pressable ref={anchor} accessibilityRole="button" accessibilityLabel={`About ${title}`} accessibilityHint={hint} aria-describedby={short && open ? helpId : undefined} accessibilityState={{ expanded: open }} onFocus={() => { setFocused(true); context?.reveal?.(anchor.current, title); }} onBlur={() => setFocused(false)} onPress={() => setOpen(!open)} style={({ pressed }) => ({ minHeight: 44, minWidth: 44, padding: 10, alignItems: "center", justifyContent: "center", alignSelf: "flex-start", borderRadius: 8, borderWidth: 1, borderColor: focused ? colors.accent : "transparent", backgroundColor: pressed || open ? colors.surface2 : undefined })}><Icon name="Info" size={17} color={colors.foregroundMuted} /></Pressable>
-    {open && (!short || !context) ? <View testID="report-contextual-help" style={{ width: "100%", maxWidth: 680, padding: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface2, borderRadius: 8, gap: 10 }}>{children}<Pressable accessibilityRole="button" accessibilityLabel={`Close help about ${title}`} onPress={close} style={{ minHeight: 44, minWidth: 44, alignSelf: "flex-start", justifyContent: "center" }}><Text style={{ color: colors.accent, fontSize: 14 }}>Close help</Text></Pressable></View> : null}
+    {open && (!short || !context) ? <View style={{ width: "100%" }}><View testID="report-contextual-help" style={{ width: "100%", maxWidth: 680, padding: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface2, borderRadius: 8, gap: 10 }}>{children}<Pressable ref={closeButton} onFocus={() => context?.reveal?.(closeButton.current, title)} accessibilityRole="button" accessibilityLabel={`Close help about ${title}`} onPress={close} style={{ minHeight: 44, minWidth: 44, alignSelf: "flex-start", justifyContent: "center" }}><Text style={{ color: colors.accent, fontSize: 14 }}>Close help</Text></Pressable></View></View> : null}
   </>;
 }
 export function TokenomicsExplanation({ children }: { children: ReactNode }) { return <>{children}</>; }
