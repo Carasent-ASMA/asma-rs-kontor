@@ -35,21 +35,21 @@ const DESK = [{
 
 describe("review-a regressions", () => {
   it("F1 re-reads a derived Codex account and withholds it when that read cannot be confirmed", async () => {
-    const stale = route("codex-work", ["gpt-stale"]), fresh = route("codex-work", ["gpt-current"]);
+    const stale = route("codex-b", ["gpt-stale"]), fresh = route("codex-b", ["gpt-current"]);
     const snapshot = vi.fn().mockResolvedValueOnce({ entries: [stale] }).mockResolvedValueOnce({ entries: [fresh] });
     const refresh = vi.fn(async () => ({ acknowledged: true }));
     const catalog = await readProviderCatalog({ providers: { snapshot, refresh } }, "/fixture/project", {
-      config: syntheticHost("/fixture"), overrides: { "codex-work": { extends: "codex" } },
+      config: syntheticHost("/fixture"), overrides: { "codex-b": { extends: "codex" } },
     });
-    expect(refresh).toHaveBeenCalledExactlyOnceWith({ cwd: "/fixture/project", providers: ["codex-work"] });
+    expect(refresh).toHaveBeenCalledExactlyOnceWith({ cwd: "/fixture/project", providers: ["codex-b"] });
     expect(modelIds(catalog.entries[0]!)).toEqual(["gpt-current"]);
     expect(catalog.problems).toEqual([]);
 
     const offline = await readProviderCatalog({ providers: { snapshot: async () => ({ entries: [stale] }) } }, "/fixture/project", {
-      config: syntheticHost("/fixture"), overrides: { "codex-work": { extends: "codex" } },
+      config: syntheticHost("/fixture"), overrides: { "codex-b": { extends: "codex" } },
     });
     expect(modelIds(offline.entries[0]!)).toEqual([]);
-    expect(offline.problemFor("codex-work")).toContain("cannot re-read");
+    expect(offline.problemFor("codex-b")).toContain("cannot re-read");
   });
 
   it("F2 withholds an unclassified account in options and in creation when the daemon config cannot be read", async () => {

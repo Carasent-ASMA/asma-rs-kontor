@@ -405,11 +405,11 @@ describe("catalogue freshness at the create surfaces", () => {
 
   it("re-reads a derived Codex account wherever options() sees one", async () => {
     const s = await setup();
-    const account = { ...CODEX_READY.entries.find((entry) => entry.provider === "codex")!, provider: "codex-work", label: "Codex Work" };
+    const account = { ...CODEX_READY.entries.find((entry) => entry.provider === "codex")!, provider: "codex-b", label: "Codex B" };
     s.snapshot.mockResolvedValue({ ...CODEX_READY, entries: [account] } as never);
-    vi.mocked(s.client.config.get).mockResolvedValueOnce({ requestId: "fixture", config: { providers: { "codex-work": { extends: "codex" } } } } as never);
+    vi.mocked(s.client.config.get).mockResolvedValueOnce({ requestId: "fixture", config: { providers: { "codex-b": { extends: "codex" } } } } as never);
     await s.service.options();
-    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex-work"] });
+    expect(s.refresh).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam-anchor", providers: ["codex-b"] });
   });
 
   it("re-reads Codex before a create, and refuses it when the fresh read cannot be confirmed", async () => {
