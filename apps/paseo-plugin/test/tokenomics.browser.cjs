@@ -81,9 +81,12 @@ process.on("beforeExit", () => { if (!completed) { console.error("Browser run en
       console.log(`Checking continuous rows at ${width}px`); await t.navigate("tokenomics-scroll"); await t.ready(); await t.page(17);
       if (width === 390) { await t.click("All 73 rows"); await t.wait("document.querySelector('[data-testid=report-full-rows-delivery-prs]')"); }
       const selector = width === 390 ? "[data-testid=report-full-rows-delivery-prs]" : "[data-testid=report-rows-delivery-prs]";
-      await t.evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollTop=100000`); await pause(500);
-      await t.evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollTop=100000`);
-      await t.wait(`document.querySelector(${JSON.stringify(selector)}).innerText.includes('demo-repo#73')`);
+      const seen = new Set();
+      for (let step = 0; step < 60 && seen.size < 73; step++) {
+        const ids = await t.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});const ids=[...e.innerText.matchAll(/demo-repo#(\\d+)/g)].map(m=>Number(m[1]));e.scrollTop+=e.clientHeight*0.75;return ids})()`);
+        ids.forEach((id) => seen.add(id)); await pause(150);
+      }
+      assert.equal(seen.size, 73, "Every continuously scrolled record is reachable");
       if (width === 390) { await t.key("Escape"); await t.click("Report actions and data information"); await t.click("Export CSV"); }
       await t.click("Copy complete CSV"); await t.wait("document.body.innerText.includes('all matching rows copied')");
       // Browser clipboard write is explicit; no clipboard read is performed. Complete payload is checked by tokenomics-rows.test.ts.
