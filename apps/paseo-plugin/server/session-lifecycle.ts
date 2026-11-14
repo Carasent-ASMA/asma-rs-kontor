@@ -989,7 +989,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         choices = discovery.choices;
         fleetCatalog = discovery.catalog;
       } catch (error) {
-        if (!recorded || chosen) return answer("unknown", `The configured profiles could not be read: ${errorText(error)}.`);
+        // A chosen profile is pointless to retry, and a recorded binding still proceeds on its own chain. With
+        // neither, a model choice is the remaining takeover route; never infer a chain or reach for another source.
+        if (chosen) return answer("unknown", `The configured profiles could not be read: ${errorText(error)}.`);
+        if (!recorded) return answer("choose", `The configured profiles could not be read: ${errorText(error)}. Choose a model for this takeover from the Take over model menu.`);
       }
       association = { bindingKey: recorded, source: recorded ? "recorded" : null, choices: choices ?? [] };
       if (chosen) {

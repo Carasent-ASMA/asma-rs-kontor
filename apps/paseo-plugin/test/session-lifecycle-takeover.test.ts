@@ -602,6 +602,39 @@ describe("takeover review", () => {
     expect(reads).toBe(1);
   });
 
+  it("offers a model choice when operator profiles cannot be read and no chain is recorded", async () => {
+    const h = await host();
+    h.deps.operatorFleetDiscovery = async () => { throw new Error("Source ID is not an authorized Teams adapter entry in the host catalog"); };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(review).toMatchObject({ state: "choose", successor: null, association: { bindingKey: null, source: null, choices: [] } });
+    expect(review.message).toContain("Source ID is not an authorized Teams adapter entry in the host catalog");
+    expect(review.message).toContain("Take over model menu");
+    expect([h.effects.archive, h.effects.create, h.effects.send, h.effects.resolve, h.effects.detach]).toEqual([[], [], [], [], []]);
+    expect([...h.agents.keys()]).toEqual(["agent-1"]);
+  });
+
+  it("keeps the recorded chain when operator profiles cannot be read", async () => {
+    const h = await host();
+    await makeDirectory(h.root, { recursive: true });
+    await writeFile(join(h.root, `association-${hash("agent-1")}.json`), JSON.stringify({ agentId: "agent-1", bindingKey: KEY, reviewId: randomUUID() }));
+    h.deps.operatorFleetDiscovery = async () => { throw new Error("catalog unavailable"); };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    // Today's recorded path swallows the profile-read error and proceeds on the recorded binding; it stops only at
+    // the separate account-catalog guard, never at "The configured profiles could not be read".
+    expect(review).toMatchObject({ state: "unknown", association: { bindingKey: KEY, source: "recorded", choices: [] } });
+    expect(review.message).toContain("The configured account catalog could not be read");
+    expect(review.message).not.toContain("The configured profiles could not be read");
+  });
+
+  it("keeps unknown when an explicitly chosen profile cannot be read", async () => {
+    const h = await host();
+    h.deps.operatorFleetDiscovery = async () => { throw new Error("catalog unavailable"); };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review).toMatchObject({ state: "unknown", successor: null, association: { bindingKey: null, source: null, choices: [] } });
+    expect(review.message).toBe("The configured profiles could not be read: catalog unavailable.");
+    expect([h.effects.archive, h.effects.create, h.effects.send, h.effects.resolve, h.effects.detach]).toEqual([[], [], [], [], []]);
+  });
+
   it("readOperatorFleetDiscovery uses one Teams adapter read for profiles and account catalog", async () => {
     const read = vi.fn(async () => ({
       status: "ready" as const, sha256: "fleet-sha", readAt: "2026-10-25T09:00:00.000Z",
