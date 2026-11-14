@@ -41,6 +41,7 @@ export const reportLinePair = (added: string | number | null | undefined, delete
 
 export function reportTableValue(value: string | number | null | undefined, label: string, table: string): string {
   if (/^(review-|reviewer$|submitters$|delivery-|jira-|bug-|bugs$)/.test(table) && (typeof value === "string" && value.endsWith("%") || typeof value === "number" && /%|Churn/i.test(label))) return reportLivePercent(value);
+  if (table === "delivery-prs" && label === "Merged" && typeof value === "string") return value.slice(0, 10);
   if (table === "bug-people" && label === "Bugs" && typeof value === "string") { const keys = value ? value.split(", ") : []; return keys.slice(0, 6).join(", ") + (keys.length > 6 ? ` +${keys.length - 6}` : ""); }
   if (table === "coverage" && typeof value === "number" && !/hours/i.test(label)) return String(value);
   if (table === "prices") return value == null ? "—" : String(value);
