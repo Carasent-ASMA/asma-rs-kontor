@@ -165,7 +165,7 @@ function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, lab
   return <View testID={testID ? `${testID}-layer` : undefined} pointerEvents="box-none" style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 50 }}>
     <Pressable testID={testID ? `${testID}-backdrop` : undefined} accessibilityLabel={`Close ${label}`} importantForAccessibility="no" accessibilityElementsHidden
       onPress={() => { close.current(); restoreFocus(); }} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} />
-    <View ref={panel} testID={testID} role={contentRole ?? (dialog ? "dialog" : selection ? selection === "multiple" ? "group" : "radiogroup" : "menu")} accessibilityLabel={label} accessibilityViewIsModal={Boolean(dialog || selection)} aria-modal={dialog || undefined} tabIndex={dialog ? -1 : undefined}
+    <View ref={panel} testID={testID} role={contentRole ?? (dialog ? "dialog" : selection ? selection === "multiple" ? "group" : "radiogroup" : "menu")} accessibilityLabel={label} accessibilityViewIsModal={Platform.OS !== "web" && Boolean(dialog || selection)} aria-modal={dialog || undefined} tabIndex={dialog ? -1 : undefined}
       style={{ position: "absolute", opacity: frame ? 1 : 0, left: frame?.left ?? 0, width: frame?.width ?? placement.width, ...(frame?.bottom != null ? { bottom: frame.bottom } : { top: frame?.top ?? 0 }), maxHeight: frame?.maxHeight,
         borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 5, backgroundColor: colors.surface1, overflow: "hidden",
         shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 8 }, elevation: 8 }}>
