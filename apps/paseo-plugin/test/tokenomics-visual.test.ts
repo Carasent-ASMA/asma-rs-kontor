@@ -27,6 +27,12 @@ describe("native Tokenomics visual contracts", () => {
       if (String(r.cells[2]).startsWith("▬")) expect(r.cells[3]).toMatch(/active days.*past 3× since/);
     }
   });
+  it("keeps a validated source base for the individual bug links without changing their counts", () => {
+    const d = tokenomicsFixture(), result = buildTokenomics(d, tokenomicsLiveFixture(), query({ page: "dv-bugs" })), t = result.tables.find((t) => t.id === "bug-people")!;
+    const linked = t.rows.filter((r) => r.detail.length); expect(linked.length).toBeGreaterThan(0);
+    for (const r of linked) { expect(r.url).toBe(d.jiraBase); expect(r.cells.at(-1)).toBe(r.detail.join(", ")); }
+    d.jiraBase = "javascript:bad"; expect(buildTokenomics(d, tokenomicsLiveFixture(), query({ page: "dv-bugs" })).tables.find((t) => t.id === "bug-people")!.rows.every((r) => !r.url)).toBe(true);
+  });
   it("keeps complete chart data independent of pagination, search and per-table header sorts", () => {
     const result = buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), query({ page: "activity" })), t = result.tables.find((t) => t.id === "trend")!;
     t.rows = Array.from({ length: 72 }, (_, i) => ({ key: String(i), cells: [`2026-10-${String(i % 28 + 1).padStart(2, "0")}`, "Demo", i], detail: [] }));

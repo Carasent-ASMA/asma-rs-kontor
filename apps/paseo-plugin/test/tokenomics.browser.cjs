@@ -45,13 +45,14 @@ async function tab(width, height, theme) {
           assert.ok(await t.evaluate("(()=>{const e=document.querySelector('[data-testid=report-chart-timeline]'),r=e.getBoundingClientRect();return [...e.querySelectorAll('*')].filter(x=>x.textContent==='● created  ■ resolved  ✓ child issue resolved  ◇ seat launched, tokens unrecoverable  —— idle day').every(x=>x.getBoundingClientRect().right<=r.right+1)})()"));
         }
         if (id === "progress") assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label^=\"From:\"]')) && !document.querySelector('[aria-label^=\"From:\"]').getAttribute('aria-label').includes('None')"));
+        if (id === "dv-bugs") assert.ok(await t.evaluate("document.querySelectorAll('[data-testid=report-table-bug-people] [role=link]').length>0"));
         if (id === "cr-fix") assert.equal(await t.evaluate("document.querySelectorAll('[aria-label^=\"Outcomes:\"]').length"), 3);
         if (id === "pivot") { await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("document.querySelector('[data-testid=report-table-pivot]').innerText.includes('EXAMPLE-102')")); await t.click("Collapse"); await t.ready(); }
         evidence.push({ id, width, height, theme, heading });
       }
       if (width === 1440) {
         await t.call("Emulation.setDeviceMetricsOverride", { width: 1680, height, deviceScaleFactor: 1, mobile: false });
-        for (const id of ["pivot", "data", "dv-people", "dv-repos"]) {
+        for (const id of ["pivot", "data", "dv-people", "dv-repos", "dv-prs"]) {
           await t.evaluate(`document.querySelectorAll('[data-testid=tokenomics-page] [role=tab]')[${pages.findIndex(([key]) => key === id)}].click()`); await t.ready();
           assert.ok(await t.evaluate("[...document.querySelectorAll('[data-testid^=report-table-]')].every(e=>e.scrollWidth<=e.clientWidth+1)"), `${id}: desktop columns exceed report width`);
         }
