@@ -121,6 +121,14 @@ describe("native Tokenomics visual contracts", () => {
     const q = query({ page: "activity", filters: { user: ["Nobody selected"] } }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!, scene = tokenomicsChartScene(t, 1138, colors, q);
     expect(scene.height).toBe(40); expect(scene.parts.join("")).toContain("No recorded activity for the current filters.");
   });
+  it("retains lifetime people and hierarchy when the visible time range is cropped", () => {
+    const d = tokenomicsFixture(), oldIndex = d.seats.length; d.seats.push({ ...d.seats[0]!, id: "old-record", short: "OLD", user: "Older activity person" });
+    const f = [...d.facts[0]!] as typeof d.facts[number]; f[0] = oldIndex; f[1] = Date.parse("2026-08-01T12:00:00Z") / 3600000; d.facts.push(f);
+    const q = query({ page: "activity", range: "30" }), t = paginateTokenomics(buildTokenomics(d, tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!;
+    expect(t.plot!.rows.some((r) => r[0] === "Person" && r[1] === "Older activity person" && r[4] === "2026-08-01")).toBe(true);
+    expect(tokenomicsChartScene(t, 348, colors, q).hits.some((h) => h.toggle === "tl:p:Older activity person")).toBe(true);
+    expect(tokenomicsChartScene(t, 348, colors, q).hits.some((h) => h.label.startsWith("2026-08-01"))).toBe(false);
+  });
   it("defaults timeline range to chart width while retaining an explicit full-lifetime selection", () => {
     const q = query({ page: "activity" }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!;
     expect(q.range).toBe("auto");

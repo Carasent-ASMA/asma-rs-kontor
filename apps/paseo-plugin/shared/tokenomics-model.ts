@@ -553,7 +553,7 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   const today = dayOf(Date.parse(d.generated)), since = q.range === "all" || q.range === "auto" ? "" : addDays(today, 1 - Number(q.range));
   const timeline: Row[] = [];
   const pushDays = (label: string, days: Days, user: string, ws = "", epic = "") => {
-    for (const [day, x] of [...days].sort()) if (day >= since) timeline.push(row(JSON.stringify([label, day, ws, epic]), [label, user, ws, epic ? m.epicLabel(epic) : "", day, x.value.n || (["prs", "cm", "lines", "cpp"].includes(q.metric) && x.prs + x.cm + x.lines) ? value(x) : null, x.value.act / 3600, x.value.cost, tokens(x.value), peak(x), x.prs, x.cm, x.lines, x.value.fresh + x.value.read + x.value.write, x.value.read, x.value.n],
+    for (const [day, x] of [...days].sort()) timeline.push(row(JSON.stringify([label, day, ws, epic]), [label, user, ws, epic ? m.epicLabel(epic) : "", day, x.value.n || (["prs", "cm", "lines", "cpp"].includes(q.metric) && x.prs + x.cm + x.lines) ? value(x) : null, x.value.act / 3600, x.value.cost, tokens(x.value), peak(x), x.prs, x.cm, x.lines, x.value.fresh + x.value.read + x.value.write, x.value.read, x.value.n],
       [`Tasks resolved: ${d.epics.flatMap((e) => e.children.filter((c) => c.resolved === day).map((c) => c.key)).join(", ") || "none recorded"}`]));
   };
   pushDays("Team total", team, "All users");
