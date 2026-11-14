@@ -43,7 +43,7 @@ async function tab(width, height, theme) {
         evidence.push({ id, width, height, theme, heading });
       }
       await t.evaluate("document.querySelector('[data-testid=tokenomics-page]').querySelector('[role=tab]').click()"); await t.ready();
-      await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("document.querySelector('[data-testid=\"report-table-epics:build\"]')"));
+      await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("Boolean(document.querySelector('[data-testid=\"report-table-epics:build\"]'))"));
       await t.click("Copy full CSV"); await t.wait("document.body.innerText.includes('all matching rows copied')");
       await t.select("Period", "Custom dates"); await t.ready();
       await t.evaluate("(()=>{const e=document.querySelector('[aria-label=\"from date YYYY-MM-DD\"]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(e,'2026-11-02');e.dispatchEvent(new Event('input',{bubbles:true}));e.focus();e.blur()})()"); await t.ready();

@@ -143,7 +143,7 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
   const drawSummary = (cy: number, rows: Cell[][], rowFlags: Cell[][], strong: boolean) => {
     if (narrow) return;
     const result = activityChartSummary(rows, query.metric, end, rowFlags, days[0]!);
-    scene.parts.push(text(gx1 + 80, cy + 4, fmt(result.current), strong ? colors.foreground : colors.foregroundMuted, "end", 11, 600), text(gx1 + 152, cy + 4, result.delta, colors.foregroundMuted, "end"));
+    scene.parts.push(text(gx1 + 80, cy + 4, fmt(result.current), strong ? colors.foreground : colors.foregroundMuted, "end", 11, strong ? 600 : 400), text(gx1 + 152, cy + 4, result.delta, colors.foregroundMuted, "end"));
     if (!result.flags.length) { scene.parts.push(text(width - 4, cy + 4, "—", colors.foregroundMuted, "end")); return; }
     const kinds = ["Spike", "Efficiency drop", "Spend without progress", "Overdue"], glyphs = ["▲", "◆", "▬", "▼"];
     let right = width - 4;
@@ -175,7 +175,7 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
       const span = line.depth === 2 ? spans.find((r) => r[1] === line.label) : undefined, recorded = line.data.filter((r) => Number(r[15]) > 0).map((r) => String(r[4])).sort(), start = [span?.[2], recorded[0]].filter((d): d is string => typeof d === "string" && !!d).sort()[0], stop = span?.[6] ? [String(span[6]), recorded.at(-1) ?? ""].sort().at(-1)! : end;
       const relevantFlags = flags.filter((f) => line.depth === 0 ? f[1] === line.person : line.depth === 2 ? line.label.startsWith(String(f[2]) + " ·") : false);
       if (line.depth !== 1 && start && stop >= days[0]!) scene.parts.push(shape("line", { x1: x(start) + cw / 2, x2: x(stop) + cw / 2, y1: cy, y2: cy, stroke: cp.todo, "stroke-width": 2 }));
-      for (const flag of relevantFlags.filter((f) => ["Spend without progress", "Overdue"].includes(String(f[0])))) { if (String(flag[4]) < days[0]!) continue; scene.parts.push(shape("rect", { x: x(String(flag[3])), y: cy - 10, width: Math.max(cw, x(String(flag[4])) + cw - x(String(flag[3]))), height: 20, rx: 4, fill: cp.series[flag[0] === "Overdue" ? 6 : 1]!, opacity: flag[0] === "Overdue" ? .22 : .28 })); }
+      for (const flag of relevantFlags.filter((f) => ["Spend without progress", "Overdue"].includes(String(f[0])))) { if (String(flag[4]) < days[0]!) continue; scene.parts.push(shape("rect", { x: x(String(flag[9] || flag[3])), y: cy - 10, width: Math.max(cw, x(String(flag[4])) + cw - x(String(flag[9] || flag[3]))), height: 20, rx: 4, fill: cp.series[flag[0] === "Overdue" ? 6 : 1]!, opacity: flag[0] === "Overdue" ? .22 : .28 })); }
       for (const day of days) {
         const rows = by.get(day) ?? [], value = rows.length && rows.some((r) => r[5] != null) ? metric(rows) : null, dayFlags = relevantFlags.filter((f) => String(f[3]) <= day && String(f[4]) >= day), spike = dayFlags.some((f) => f[0] === "Spike"), efficiency = dayFlags.some((f) => f[0] === "Efficiency drop"), mx = x(day) + cw / 2;
         if (value != null) { let i = 0; while (i < bins.length && value >= bins[i]!) i++; const h = line.depth === 0 ? 16 : line.depth === 1 ? 12 : 14; scene.parts.push(shape("rect", { x: x(day) + 1, y: cy - h / 2, width: Math.max(1, cw - 2), height: h, rx: Math.min(3, cw / 3), fill: cp.seq[Math.round(i * 4 / Math.max(1, bins.length))]!, ...(spike || efficiency ? { stroke: cp.series[spike ? 7 : 3]!, "stroke-width": 2 } : {}) })); }
@@ -192,12 +192,13 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
         if (span[6] && xi.has(String(span[6]))) scene.parts.push(shape("rect", { x: x(String(span[6])) + cw / 2 - 4, y: cy - 4, width: 8, height: 8, fill: "#0ca30c" }));
         if (span[7] && xi.has(String(span[7]))) { const dx = x(String(span[7])) + cw / 2; scene.parts.push(shape("line", { x1: dx, x2: dx, y1: cy - 9, y2: cy + 11, stroke: cp.series[6]!, "stroke-width": 1.5, "stroke-dasharray": "2 2" }), shape("path", { d: `M${n(dx-4.5)},${n(cy-15)}L${n(dx+4.5)},${n(cy-15)}L${n(dx)},${n(cy-8)}Z`, fill: cp.series[6]! })); }
       }
-      if (!narrow) drawSummary(cy, line.data, relevantFlags, false);
+      if (!narrow) drawSummary(cy, line.data, relevantFlags, line.depth === 0);
 
     }
     yy += line.height;
+    if (lines[lines.indexOf(line) + 1]?.depth === 0 || line === lines.at(-1)) scene.parts.push(shape("line", { x1: 0, x2: width, y1: yy + .5, y2: yy + .5, stroke: colors.border }));
   }
-  scene.legend = [{ label: `Cells — ${table.columns[5]} per day`, color: cp.seq[0]! }, ...bins.map((v, i) => ({ label: i === bins.length - 1 ? `≥ ${fmt(v)}` : `${fmt(v)}–${fmt(bins[i + 1]!)}`, color: cp.seq[Math.round((i + 1) * 4 / Math.max(1, bins.length))]! })), ...(additive ? people.map((label) => ({ label, color: personColor(label) })) : []), ...["▲ spike", "◆ efficiency drop", "▬ spend without progress", "▼ overdue"].map((label, i) => ({ label, color: cp.series[[7, 3, 1, 6][i]!]! }))];
+  scene.legend = [{ label: `Cells — ${table.columns[5]} per day:`, color: "transparent" }, ...bins.flatMap((v, i) => [...(!i ? [{ label: `< ${fmt(v)}`, color: cp.seq[0]! }] : []), { label: i === bins.length - 1 ? `≥ ${fmt(v)}` : `${fmt(v)}–${fmt(bins[i + 1]!)}`, color: cp.seq[Math.round((i + 1) * 4 / Math.max(1, bins.length))]! }]), ...(additive ? [{ label: "Team bars:", color: "transparent" }, ...people.map((label) => ({ label, color: personColor(label) }))] : []), ...["▲ spike", "◆ efficiency drop", "▬ spend without progress", "▼ Jira due date", "overdue (> due + 10 d)"].map((label, i) => ({ label, color: cp.series[[7, 3, 1, 6, 6][i]!]! })), { label: "● created  ■ resolved  ✓ child issue resolved  ◇ seat launched, tokens unrecoverable  —— idle day", color: "transparent" }];
   return scene;
 }
 export function roleShareColor(index: number): string {
@@ -230,7 +231,7 @@ export function TokenomicsChart({table,colors,query,change}:{table:TokenomicsTab
         <Pressable accessibilityRole="button" accessibilityLabel={`Inspect ${table.title}. Exact values are also in Chart data.`} onPress={e=>select(e.nativeEvent.locationX,e.nativeEvent.locationY,true)} onPointerMove={e=>select(e.nativeEvent.offsetX,e.nativeEvent.offsetY)} onPointerLeave={()=>setSelected(null)} style={{position:"absolute",left:0,top:0,width:scene.width,height:scene.height}}/>
         {selected?<View pointerEvents="none" testID="report-chart-tooltip" style={{position:"absolute",left:Math.max(0,Math.min(scene.width-280,selected.x+14)),top:Math.max(0,Math.min(scene.height-90,selected.y+12)),maxWidth:280,padding:9,borderWidth:1,borderRadius:8,borderColor:colors.border,backgroundColor:colors.surface1,gap:3}}><Text style={{color:colors.foregroundMuted,fontSize:12}}>{selected.label}</Text>{selected.values.map((v,i)=><Text key={i} style={{color:colors.foreground,fontSize:12}}>{v}</Text>)}</View>:null}
       </View>
-      <View style={{flexDirection:"row",flexWrap:"wrap",gap:10,marginTop:8}}>{scene.legend.map((s,i)=><View key={`${s.label}-${i}`} style={{flexDirection:"row",alignItems:"center",gap:5}}><View style={{width:10,height:10,borderRadius:2,backgroundColor:s.color}}/><Text style={{fontSize:12,color:colors.foregroundMuted}}>{s.label}</Text></View>)}</View>
+      <View style={{flexDirection:"row",flexWrap:"wrap",gap:10,marginTop:8}}>{scene.legend.map((s,i)=><View key={`${s.label}-${i}`} style={{flexDirection:"row",alignItems:"center",gap:5}}>{s.color === "transparent" ? null : /^[▲◆▼]/.test(s.label) ? <Text style={{ color: s.color, fontSize: 12 }}>{s.label[0]}</Text> : <View style={{width:10,height:10,borderRadius:2,backgroundColor:s.color}}/>}<Text style={{fontSize:12,color:colors.foregroundMuted}}>{/^[▲◆▼]/.test(s.label) ? s.label.slice(2) : s.label}</Text></View>)}</View>
       {selected?<Text accessibilityLiveRegion="polite" style={{fontSize:12,color:colors.foregroundMuted}}>{selected.label}: {selected.values.join(" · ")}</Text>:null}
     </>:null}
   </View>;

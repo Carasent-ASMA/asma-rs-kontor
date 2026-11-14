@@ -586,16 +586,16 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   for (const e of selectedEpics) {
     const days = epics.get(e.key) ?? new Map<string, Day>(), progress = new Set(e.children.map((c) => c.resolved).filter((s): s is string => !!s));
     for (const [day, x] of days) if (x.prs + x.cm) progress.add(day);
-    let run: { from: string; to: string; days: number; cost: number } | null = null;
-    const flush = (open: boolean) => { if (run && run.days >= 3 && run.cost >= 3 * cpi) flags.push(row(`swp-${e.key}-${run.from}`, ["Spend without progress", "", e.key, run.from, open && !e.resolved ? today : run.to, "cost", run.cost, cpi, 3 * cpi], [`${run.days} active days without resolved issue or delivery progress.`])); run = null; };
+    let run: { from: string; to: string; days: number; cost: number; at: string | null } | null = null;
+    const flush = (open: boolean) => { if (run && run.at) flags.push(row(`swp-${e.key}-${run.from}`, ["Spend without progress", "", e.key, run.from, open && !e.resolved ? today : run.to, "cost", run.cost, cpi, 3 * cpi, run.at], [`${run.days} active days without resolved issue or delivery progress.`])); run = null; };
     for (const day of [...new Set([...days.keys(), ...progress])].sort()) {
       if (progress.has(day)) { flush(false); continue; } const x = days.get(day); if (!x?.value.n) continue;
-      run ??= { from: day, to: day, days: 0, cost: 0 }; run.to = day; run.days++; run.cost += x.value.cost;
+      run ??= { from: day, to: day, days: 0, cost: 0, at: null }; run.to = day; run.days++; run.cost += x.value.cost; if (!run.at && run.days >= 3 && run.cost >= 3 * cpi) run.at = day;
     }
     flush(true);
     if (e.due && !e.resolved && today > addDays(e.due, 10)) flags.push(row(`due-${e.key}`, ["Overdue", "", e.key, addDays(e.due, 10), today, "days", elapsedDays(e.due, today), null, 10], [`Jira due date ${e.due}`]));
   }
-  tables.push(table("flags", "Activity flags", ["Flag", "Person", "Epic", "From", "To", "Metric", "Value", "Usual / cost per issue", "Threshold"], flags, "Signals use the existing dashboard thresholds. Missing Jira due dates and missing delivery data remain unknown."));
+  tables.push(table("flags", "Activity flags", ["Flag", "Person", "Epic", "From", "To", "Metric", "Value", "Usual / cost per issue", "Threshold", "Band starts"], flags.map((r) => r.cells.length < 10 ? { ...r, cells: [...r.cells, null] } : r), "Signals use the existing dashboard thresholds. Missing Jira due dates and missing delivery data remain unknown."));
   const flagTable = tables.find((t) => t.id === "flags")!;
   const episodes: { rows: Row[]; from: string; to: string; key: string }[] = [];
   for (const f of [...flags].sort((a, b) => String(a.cells[3]).localeCompare(String(b.cells[3])))) {

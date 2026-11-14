@@ -5,7 +5,7 @@ import { findSvgIconProblem } from "@getpaseo/plugin";
 import { activityChartSummary, activityEveryoneKeys, chartSvgLayers, tokenomicsChartScene, type ChartScene } from "../client/tokenomics-charts";
 import { reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
 import type { Colors } from "../client/page-controls";
-import { buildTokenomics, paginateTokenomics } from "../shared/tokenomics-model";
+import { buildTokenomics, paginateTokenomics, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 import { tokenomicsQuerySchema } from "../shared/tokenomics";
 import { tokenomicsFixture, tokenomicsLiveFixture } from "./fixtures/tokenomics";
 const colors = { surface0: "#f4f3f0", surface1: "#fcfcfb", surface2: "#f0efec", border: "#e2e1dc", foreground: "#0b0b0b", foregroundMuted: "#52514e", accent: "#2a78d6" } as Colors;
@@ -75,6 +75,15 @@ describe("native Tokenomics visual contracts", () => {
     const selected = query({ page: "overview", openWorkstreams: ["build"] }), overview = paginateTokenomics(buildTokenomics(d, live, selected), selected);
     expect(overview.find((t) => t.id === "epics:build")!.rows[0]!.cells).toContain("EXAMPLE-101 · Synthetic epic");
     expect(overview.find((t) => t.id === "workstream-totals")!.rows.find((r) => r.key === "build")!.cells).toContain(1);
+  });
+  it("distinguishes newly completed issues from unchanged net totals and suppresses same-revision comparisons", () => {
+    const d = tokenomicsFixture(), live = tokenomicsLiveFixture();
+    d.epics[0]!.children.push({ ...d.epics[0]!.children[0]!, key: "EXAMPLE-104", status: "To do", cat: "new", resolved: null });
+    d.revs[0]!.tasks["EXAMPLE-104"] = ["done", "Done"]; d.revs[1]!.tasks["EXAMPLE-104"] = ["new", "To do"];
+    d.revs[0]!.epics["EXAMPLE-101"]!.done = 1; d.revs[1]!.epics["EXAMPLE-101"]!.todo = 1;
+    const q = query({ page: "overview", compare: "check-a", rev: "check-b" }), wt = buildTokenomics(d, live, q).tables.find((t) => t.id === "workstream-totals")!, r = wt.rows.find((r) => r.key === "build")!;
+    expect(r.cells[wt.columns.indexOf("Δ done")]).toBe(0); expect(r.cells[wt.columns.indexOf("New done")]).toBe(1);
+    const same = query({ compare: "check-b", rev: "check-b" }); expect(tokenomicsSummary(usageModel(d, same)).compare).toBe("none"); expect(buildTokenomics(d, live, same).tiles.every((t) => !t.delta)).toBe(true);
   });
   it.skipIf(!process.env.KONTOR_TOKENOMICS_VISUAL_ROOT)("validates frozen wide/timeline projections [local visual proof]", async () => {
     const { readTokenomicsSnapshot, tokenomicsView } = await import("../server/tokenomics"), snapshot = await readTokenomicsSnapshot(process.env.KONTOR_TOKENOMICS_VISUAL_ROOT!);
