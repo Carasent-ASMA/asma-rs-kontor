@@ -173,6 +173,36 @@ function progressTables(d: TokenomicsData, q: TokenomicsQuery): Table[] {
 }
 
 export type BuiltTokenomics = { tiles: TokenomicsView["tiles"]; tables: Table[]; notes: string[] };
+export function tokenomicsNotices(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQuery, model: ReturnType<typeof usageModel>, stale: boolean): TokenomicsView["notices"] {
+  const notices: TokenomicsView["notices"] = [];
+  const warn = (text: string) => notices.push({ kind: "warning", text });
+  const scope = (text: string) => notices.push({ kind: "scope", text });
+  if (q.page.startsWith("cr-")) {
+    if (!live.review) warn("Review data is unavailable; findings and costs are unknown.");
+  } else if (q.page.startsWith("dv-")) {
+    const delivery = live.delivery;
+    if (!delivery) warn("Delivery data is unavailable; delivery totals are unknown.");
+    else {
+      if (delivery.bots.length) scope("Bots excluded; delivery totals cover people.");
+      if (!delivery.jira || delivery.errors.length) warn("Collection is incomplete; issue links and delivery totals may be missing.");
+      if (q.page === "dv-prs" && delivery.prs.some((p) => !p.main)) scope("Branch totals are excluded from aggregates; their rows remain available.");
+    }
+  } else {
+    const missing = ["usage", "progress"].includes(q.page) ? 0 : model.scope.filter((s) => s.data !== "ok").length;
+    if (missing) warn(`${missing.toLocaleString("en-US")} sessions lack token data; usage and cost are lower bounds.`);
+    const unpriced = new Set(d.prices.filter((p) => p[7].toLowerCase() === "unpriced").map((p) => p[0]));
+    const seats = new Set(model.facts.filter((f) => unpriced.has(d.models[f[2]]!)).map((f) => f[0]));
+    if (seats.size && !["usage", "progress"].includes(q.page)) warn(`${seats.size.toLocaleString("en-US")} sessions are unpriced; cost excludes their recorded tokens.`);
+    if (q.page === "usage") {
+      if (Object.keys(d.all.missing).length) warn("Some local history is unrecoverable; all-usage totals are lower bounds.");
+      if (d.all.facts.some((f) => unpriced.has(d.all.models[f[4]]!))) warn("Some models are unpriced; cost excludes their recorded tokens.");
+    }
+    if (q.page === "usage" && Object.values(d.all.unknownReasons).some((n) => n > 0)) warn("Unattributed usage stays in Unknown; assignments are incomplete.");
+    if (q.page === "activity" && !live.dev) warn("Delivery timeline data is missing; PR and commit metrics are unavailable.");
+  }
+  if (stale) warn("Report data is over 48 hours old; recent activity may be missing.");
+  return notices;
+}
 export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQuery): BuiltTokenomics {
   const m = usageModel(d, q), a = m.total, tiles: TokenomicsView["tiles"] = [], tables: Table[] = [], notes: string[] = [];
   const tile = (label: string, value: Cell, note = "") => tiles.push({ label, value, note });

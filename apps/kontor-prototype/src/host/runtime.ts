@@ -180,7 +180,7 @@ export async function invokeRpc(method: string, input: unknown): Promise<unknown
   switch (method) {
     case "tokenomics.read":
     case "tokenomics.export": {
-      if (scenario.tokenomicsSource !== "local") return tokenomicsRpc(method, input);
+      if (scenario.tokenomicsSource !== "local") return tokenomicsRpc(method, input, scenario.id === "tokenomics-scroll");
       const response = await fetch("/__kontor_tokenomics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ method, input }), cache: "no-store" });
       if (!response.ok) throw new Error("Local Tokenomics report read failed");
       return response.json();

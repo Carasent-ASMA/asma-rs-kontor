@@ -12,6 +12,16 @@ the reference delta, retained files and remaining boundaries.
 ## Tokenomics report preview
 
 `?scenario=tokenomics` uses synthetic usage, review and delivery fixtures.
+`?scenario=tokenomics-scroll` uses 73 synthetic delivery rows to check continuous
+bounded scrolling and complete exports. Copy CSV explicitly writes to this
+browser’s clipboard when supported; errors are shown and the harness never reads
+the clipboard. Other fixture host effects remain simulated.
+
+For report layout diagnostics, append `&textScale=1.3`, `1.5` or `2`. The default
+is `1`. The banner labels **SIMULATED TEXT SCALE**; only the report’s native Text
+props and layout scale are emulated. Nested Text inherits unscaled sizes to avoid
+double scaling, and opt-out/multiplier caps are respected. This does not qualify
+native Dynamic Type, host chrome, keyboards, touch or physical accessibility.
 To inspect an existing local report, start the development harness with an
 explicit **server-only** root and open `?scenario=tokenomics-local`:
 
@@ -117,6 +127,7 @@ All reference scenario IDs remain available. Each uses fictional data only.
 | ID | Scenario |
 | --- | --- |
 | `tokenomics` | Native Tokenomics: all 18 report pages, synthetic usage/review/delivery data |
+| `tokenomics-scroll` | 73 synthetic delivery rows, continuous bounded reads and complete CSV |
 | `tokenomics-local` | The same native client over the explicit bounded server-side local report source |
 | `tokenomics-offline` | Tokenomics source becomes stale when the synthetic host disconnects |
 | `session-recovery` | Native availability and archive (simulated) |

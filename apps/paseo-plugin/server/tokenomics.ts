@@ -6,7 +6,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { readConfig } from "./config";
 import { exportTokenomics, readTokenomics, tokenomicsDataSchema, tokenomicsLiveSchema, tokenomicsQuerySchema, type TokenomicsData, type TokenomicsLive, type TokenomicsQuery, type TokenomicsView } from "../shared/tokenomics";
-import { buildTokenomics, matchesTokenomicsSearch, paginateTokenomics, pivotRows, tokenomicsCsv, tokenomicsOptions, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
+import { buildTokenomics, matchesTokenomicsSearch, paginateTokenomics, pivotRows, tokenomicsCsv, tokenomicsOptions, tokenomicsNotices, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 
 export const REPORT_MAX_BYTES = 32 * 1024 * 1024;
 export const LIVE_MAX_BYTES = 16 * 1024 * 1024;
@@ -78,31 +78,7 @@ export function tokenomicsView(snapshot: ReportSnapshot, input: TokenomicsQuery)
   if (q.from && q.to && q.from > q.to) return { ...empty, diagnostics: [...snapshot.diagnostics, "Custom period start must not be after its end."] };
   if ((q.rev && !d.revs.some((r) => r.id === q.rev)) || (q.compare && !d.revs.some((r) => r.id === q.compare))) return { ...empty, diagnostics: [...snapshot.diagnostics, "Selected revision is no longer present; choose an available check."] };
   const model = usageModel(d, q), result = buildTokenomics(d, snapshot.live, q);
-  const notices: string[] = [];
-  if (q.page.startsWith("cr-")) {
-    if (!snapshot.live.review) notices.push("Review data is unavailable; findings and costs are unknown.");
-  } else if (q.page.startsWith("dv-")) {
-    const delivery = snapshot.live.delivery;
-    if (!delivery) notices.push("Delivery data is unavailable; delivery totals are unknown.");
-    else {
-      if (delivery.bots.length) notices.push("Bots excluded; delivery totals cover people.");
-      if (!delivery.jira || delivery.errors.length) notices.push("Collection is incomplete; issue links and delivery totals may be missing.");
-      if (q.page === "dv-prs" && delivery.prs.some((p) => !p.main)) notices.push("Branch totals are excluded from aggregates; their rows remain available.");
-    }
-  } else {
-    const missing = ["usage", "progress"].includes(q.page) ? 0 : model.scope.filter((s) => s.data !== "ok").length;
-    if (missing) notices.push(`${missing.toLocaleString("en-US")} sessions lack token data; usage and cost are lower bounds.`);
-    const unpriced = new Set(d.prices.filter((p) => p[7].toLowerCase() === "unpriced").map((p) => p[0]));
-    const seats = new Set(model.facts.filter((f) => unpriced.has(d.models[f[2]]!)).map((f) => f[0]));
-    if (seats.size && !["usage", "progress"].includes(q.page)) notices.push(`${seats.size.toLocaleString("en-US")} sessions are unpriced; cost excludes their recorded tokens.`);
-    if (q.page === "usage") {
-      if (Object.keys(d.all.missing).length) notices.push("Some local history is unrecoverable; all-usage totals are lower bounds.");
-      if (d.all.facts.some((f) => unpriced.has(d.all.models[f[4]]!))) notices.push("Some models are unpriced; cost excludes their recorded tokens.");
-    }
-    if (q.page === "usage" && Object.values(d.all.unknownReasons).some((n) => n > 0)) notices.push("Unattributed usage stays in Unknown; assignments are incomplete.");
-    if (q.page === "activity" && !snapshot.live.dev) notices.push("Delivery timeline data is missing; PR and commit metrics are unavailable.");
-  }
-  if (Date.parse(snapshot.readAt) - Date.parse(d.generated) > STALE_MS) notices.push("Report data is over 48 hours old; recent activity may be missing.");
+  const notices = tokenomicsNotices(d, snapshot.live, q, model, Date.parse(snapshot.readAt) - Date.parse(d.generated) > STALE_MS);
   const options = tokenomicsOptions(d, model);
   if (q.page === "pivot") options.pivotNodes = pivotRows(model, q).filter((r) => r.hasChildren).map((r) => ({ value: r.key, label: r.cells.slice(0, q.groups.length).filter(Boolean).join(" → ") }));
   const view: TokenomicsView = { ...empty, status: snapshot.diagnostics.length ? "partial" : "ready", generated: d.generated,

@@ -6,7 +6,8 @@
  */
 import { forwardRef, useSyncExternalStore, type ReactNode } from "react";
 import * as Lucide from "lucide-react";
-import { FlatList as WebFlatList, Modal as WebModal, Pressable, ScrollView as WebScrollView, Text, TextInput as WebTextInput, useWindowDimensions, View, type StyleProp, type ViewStyle } from "react-native-web";
+import { FlatList as WebFlatList, Modal as WebModal, Pressable, ScrollView as WebScrollView, Text, useWindowDimensions, View, type StyleProp, type ViewStyle } from "react-native-web";
+import { TextInput as ScaledTextInput } from "./react-native";
 import { shellColors } from "./theme";
 import { logHostEvent } from "./event-log";
 
@@ -82,7 +83,7 @@ export function useRevealedText(text: string): string { return text; }
 export const ScrollView = WebScrollView;
 export const FlatList = WebFlatList;
 export const TextInput = forwardRef<unknown, Record<string, unknown>>(function TextInput(props, ref) {
-  return <WebTextInput ref={ref as never} {...props} />;
+  return <ScaledTextInput ref={ref as never} {...props} />;
 });
 
 /** Logs the write; with `clipboard=denied` in the page URL it is refused, as a host whose clipboard refuses writes would. */
@@ -91,5 +92,7 @@ export async function copyText(text: string): Promise<void> {
     logHostEvent("copyText", `SIMULATED: the clipboard refused a write of ${text.length} characters`);
     throw new Error("SIMULATED: the clipboard refused the write");
   }
-  logHostEvent("copyText", `${text.length} characters`);
+  if (typeof navigator.clipboard?.writeText !== "function") throw new Error("Browser clipboard is unavailable");
+  await navigator.clipboard.writeText(text);
+  logHostEvent("copyText", `${text.length} characters written by browser clipboard adapter`);
 }

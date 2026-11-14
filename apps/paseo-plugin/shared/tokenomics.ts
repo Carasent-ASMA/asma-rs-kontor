@@ -131,7 +131,7 @@ export const tableSchema = z.object({ id: text, title: text, note: text, columns
 export type TokenomicsTable = z.infer<typeof tableSchema>;
 export const tokenomicsViewSchema = z.object({
   status: z.enum(["ready", "partial", "unavailable"]), readAt: text, generated: text.nullable(), revision: text.nullable(),
-  diagnostics: z.array(text), notices: z.array(text).max(32).default([]), query: tokenomicsQuerySchema,
+  diagnostics: z.array(text), notices: z.array(z.object({ kind: z.enum(["warning", "scope"]), text })).max(32).default([]), query: tokenomicsQuerySchema,
   options: z.record(text, z.array(z.object({ value: text, label: text })).max(100000)),
   tiles: z.array(z.object({ label: text, value: cellSchema, note: text, delta: text.optional() })).max(32),
   tables: z.array(tableSchema).max(544), notes: z.array(text),

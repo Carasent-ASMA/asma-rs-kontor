@@ -27,11 +27,11 @@ describe("Tokenomics adaptive controls", () => {
   it("projects explicit source-state consequences without changing accounting totals", () => {
     const data = tokenomicsFixture(), live = tokenomicsLiveFixture(), snap = { data, live, revision: "fixed", readAt: "2026-11-03T13:00:00Z", diagnostics: [] };
     const a = tokenomicsView(snap, tokenomicsQuerySchema.parse({}));
-    expect(a.notices.some((n) => n.includes("lower bounds"))).toBe(true); expect(tokenomicsViewSchema.safeParse(a).success).toBe(true);
+    expect(a.notices.some((n) => n.text.includes("lower bounds"))).toBe(true); expect(tokenomicsViewSchema.safeParse(a).success).toBe(true);
     const noReview = tokenomicsView({ ...snap, live: { ...live, review: null } }, tokenomicsQuerySchema.parse({ page: "cr-overview" }));
-    expect(noReview.notices).toContain("Review data is unavailable; findings and costs are unknown."); expect(noReview.tiles).toEqual([]);
+    expect(noReview.notices).toContainEqual({ kind: "warning", text: "Review data is unavailable; findings and costs are unknown." }); expect(noReview.tiles).toEqual([]);
     const b = tokenomicsView({ ...snap, readAt: "2026-11-20T00:00:00Z" }, tokenomicsQuerySchema.parse({}));
-    expect(b.notices.some((n) => n.includes("48 hours"))).toBe(true); expect(b.summary).toEqual(a.summary);
+    expect(b.notices.some((n) => n.text.includes("48 hours"))).toBe(true); expect(b.summary).toEqual(a.summary);
   });
   it("matches the original signal band over the whole timeline without crossing plot bounds", () => {
     const hit = (day: string, who = "", x = 10) => ({ x, y: who ? 100 : 24, width: 8, height: 24, label: `${day}${who ? ` · ${who}` : ""}`, values: [] });

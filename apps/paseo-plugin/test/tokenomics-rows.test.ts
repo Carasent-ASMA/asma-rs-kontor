@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: vi.fn() }));
 import { tokenomicsRowChunk } from "../client/tokenomics-rows";
-import { tokenomicsView } from "../server/tokenomics";
+import { tokenomicsCsvExport, tokenomicsView } from "../server/tokenomics";
 import { tokenomicsQuerySchema, tokenomicsViewSchema } from "../shared/tokenomics";
 import { tokenomicsFixture, tokenomicsLiveFixture } from "./fixtures/tokenomics";
 
@@ -16,6 +16,9 @@ describe("continuous Tokenomics row projections", () => {
     expect(a.rows).toHaveLength(50); expect(b.rows).toHaveLength(23); expect(a.total).toBe(73); expect(b.total).toBe(73);
     expect(new Set([...a.rows, ...b.rows].map((r) => r.key)).size).toBe(73);
     expect(tokenomicsViewSchema.safeParse(firstView).success).toBe(true);
+    const csv = tokenomicsCsvExport(snapshot, { ...query, offsets: { "delivery-prs": 50 } }).content;
+    expect(csv).toContain("demo-repo#1"); expect(csv).toContain("demo-repo#73");
+    expect(csv.split("\n").filter((line) => line.includes("demo-repo#"))).toHaveLength(73);
     expect(() => tokenomicsRowChunk({ ...firstView, revision: "changed" }, "delivery-prs", snapshot.revision, 50)).toThrow("Report changed");
     expect(() => tokenomicsRowChunk({ ...firstView, tables: [{ ...a, rows: [] }] }, "delivery-prs", snapshot.revision, 50)).toThrow("no rows were skipped");
   });
