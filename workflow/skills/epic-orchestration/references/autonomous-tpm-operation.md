@@ -82,6 +82,11 @@ checkpoint age and heartbeat expiry; notify/resume the existing TPM under the
 selected recovery procedure. It cannot become a second task admission or plan
 writer. A failed/stale TPM requires actual state and ownership preflight before
 resume or authorized takeover; age alone cannot retire an occupant.
+If a liveness pass finds a seat stopped on a usage limit while its account pool
+has a ready account and the seat stayed on the limited one, it takes that seat
+over through [seat-takeover](../../seat-takeover/SKILL.md#resume-vs-replacement)
+on the same fleet route; with no ready account it is a legitimate wait, and the
+same seat resumes at the reset time.
 
 On Kontor-governed work, use the existing supported scheduler, checkpoint and
 recovery operations. Do not add a second admission engine, bypass pinned gates
