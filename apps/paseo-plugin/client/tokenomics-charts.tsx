@@ -1,14 +1,21 @@
-import { useMemo, useState } from "react";
-import { Icon } from "@getpaseo/plugin/client/ui";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import { findSvgIconProblem } from "@getpaseo/plugin";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import type { Colors } from "./page-controls";
 import type { TokenomicsQuery, TokenomicsTable } from "../shared/tokenomics";
 import { reportMoney, reportNumber, reportValue } from "./tokenomics-format";
 
 type Cell = string | number | null;
+type Flag = NonNullable<TokenomicsTable["rows"][number]["highlight"]>;
+const ChartInteraction = createContext<{ flag: Flag | null; pin: (flag: Flag | null) => void; hover: (flag: Flag | null) => void; inspect: () => void }>({ flag: null, pin: () => {}, hover: () => {}, inspect: () => {} });
+export const useTokenomicsChartInteraction = () => useContext(ChartInteraction);
+export function TokenomicsChartInteractions({ children, onInspect }: { children: ReactNode; onInspect: () => void }) {
+  const [pinned, setPinned] = useState<Flag | null>(null), [hovered, setHovered] = useState<Flag | null>(null);
+  return <ChartInteraction.Provider value={{ flag: hovered ?? pinned, pin: setPinned, hover: setHovered, inspect: onInspect }}>{children}</ChartInteraction.Provider>;
+}
 type Hit = { x: number; y: number; width: number; height: number; label: string; values: string[]; toggle?: string; open?: boolean };
-export type ChartScene = { width: number; height: number; parts: string[]; hits: Hit[]; legend: { label: string; color: string }[] };
+export type ChartScene = { width: number; height: number; parts: string[]; hits: Hit[]; legend: { label: string; color: string; line?: boolean; opacity?: number }[] };
 const esc = (s: unknown) => String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 const n = (x: number) => { if (!Number.isFinite(x)) throw new Error("Chart coordinate is not finite"); return Math.round(x * 1000) / 1000; };
 const shape = (tag: "rect" | "path" | "line" | "circle", attrs: Record<string, string | number>) => `<${tag} ${Object.entries(attrs).map(([k, v]) => `${k}="${typeof v === "number" ? n(v) : esc(v)}"`).join(" ")}/>`;
@@ -68,8 +75,10 @@ function stacked(table: TokenomicsTable, width: number, colors: Colors, query: T
   scene.legend=series.filter(k=>review ? (totals.get(k)??0)>0 : totals.has(k)||k==="Other").map(label=>({label: table.id === "delivery-trend" && label === "Other" ? "Others" : table.id === "bug-trend" ? ["Introducing commit found", "Fix only adds lines", "Fix outside code", "Changed lines newer than the report", "No fix PR or commit names it"][bugKinds.indexOf(label)] ?? label : label,color:color(label)}));return scene;
 }
 function parallel(table: TokenomicsTable, width: number, colors: Colors): ChartScene {
-  const rows=table.plot?.rows??[],height=340,ml=58,mr=58,mt=28,mb=40,cp=chartColors(colors),scene:ChartScene={width,height,parts:[],hits:[],legend:[{label:"Active seat-hours (left)",color:cp.series[0]!},{label:"Peak parallel seats (right)",color:cp.series[1]!}]};
+  const rows=table.plot?.rows??[],height=340,ml=58,mr=58,mt=28,mb=40,cp=chartColors(colors),scene:ChartScene={width,height,parts:[],hits:[],legend:[{label:"Active seat-hours (left axis)",color:cp.series[0]!},{label:"Peak parallel seats (right axis)",color:cp.series[1]!,line:true},{label:"Idle day",color:cp.idle}]};
   if(!rows.length)return scene;
+  const active = rows.filter((r) => r[3] !== "yes").length;
+  scene.legend.push({ label: `${rows[0]![0]} → ${rows.at(-1)![0]}: ${rows.length} days, ${active} active, ${rows.length - active} idle · max ${Math.max(...rows.map((r) => Number(r[2])))} seats in parallel`, color: "transparent" });
   const sh=nice(Math.max(...rows.map(r=>Number(r[1])),1)/4),sp=Math.max(1,Math.ceil(nice(Math.max(...rows.map(r=>Number(r[2])),1)/4))),topH=Math.ceil(Math.max(...rows.map(r=>Number(r[1])),1)/sh)*sh,topP=Math.ceil(Math.max(...rows.map(r=>Number(r[2])),1)/sp)*sp;
   const yh=(v:number)=>mt+(height-mt-mb)*(1-v/topH),yp=(v:number)=>mt+(height-mt-mb)*(1-v/topP),cw=(width-ml-mr)/rows.length,bw=Math.max(2,Math.min(16,cw-3));
   rows.forEach((r,i)=>{if(r[3]==="yes")scene.parts.push(shape("rect",{x:ml+i*cw,y:mt,width:cw,height:height-mt-mb,fill:cp.idle}));});
@@ -221,21 +230,41 @@ export function tokenomicsChartScene(table:TokenomicsTable,width:number,colors:C
   return stacked(table,width,colors,query);
 }
 export const activityEveryoneKeys = (table: TokenomicsTable) => (table.plot?.order ?? [...new Set(table.plot?.rows.filter((r) => r[0] === "Person").map((r) => String(r[1]))) ?? []]).map((p) => `tl:p:${p}`);
-export function TokenomicsChart({table,colors,query,change}:{table:TokenomicsTable;colors:Colors;query:TokenomicsQuery;change:(q:Partial<TokenomicsQuery>)=>void}){
-  const [width,setWidth]=useState(0),[selected,setSelected]=useState<Hit|null>(null);
-  const built=useMemo(()=>{if(width<100)return null;try{const scene=tokenomicsChartScene(table,width,colors,query);return {scene,layers:chartSvgLayers(scene),error:null};}catch(error){return {error:error instanceof Error?error.message:"Chart unavailable",scene:null,layers:[]};}},[table,width,colors,query]);
-  const scene=built?.scene;
-  const select=(x:number,y:number,press=false)=>{const hit=scene?.hits.find(h=>x>=h.x&&x<h.x+h.width&&y>=h.y&&y<h.y+h.height);if(press&&hit?.toggle){change({expanded:[...query.expanded.filter(k=>k!==hit.toggle&&k!==`closed:${hit.toggle}`),...(hit.open?[`closed:${hit.toggle}`]:[hit.toggle]),"tl:closed"]});setSelected(null);}else setSelected(hit??null);};
-  return <View testID={`report-chart-${table.id}`} onLayout={e=>setWidth(Math.floor(e.nativeEvent.layout.width))}>
-    {built?.error?<Text accessibilityRole="alert" style={{color:colors.foreground,fontSize:12}}>{built.error} The complete values remain available in Chart data and CSV.</Text>:scene?<>
-      <View style={{width:scene.width,height:scene.height,overflow:"hidden"}}>
-        {built.layers.map((svg,i)=><View key={i} pointerEvents="none" accessible={false} style={{position:"absolute",left:0,top:0}}><Icon icon={{svg}} size={Math.max(scene.width,scene.height)} color={colors.foreground}/></View>)}
-        {selected?<View pointerEvents="none" style={{position:"absolute",left:selected.x,top:selected.y,width:Math.max(1,selected.width),height:selected.height,borderWidth:1,borderColor:colors.accent}}/>:null}
-        <Pressable accessibilityRole="button" accessibilityLabel={`Inspect ${table.title}. Exact values are also in Chart data.`} onPress={e=>select(e.nativeEvent.locationX,e.nativeEvent.locationY,true)} onPointerMove={e=>select(e.nativeEvent.offsetX,e.nativeEvent.offsetY)} onPointerLeave={()=>setSelected(null)} style={{position:"absolute",left:0,top:0,width:scene.width,height:scene.height}}/>
-        {selected?<View pointerEvents="none" testID="report-chart-tooltip" style={{position:"absolute",left:Math.max(0,Math.min(scene.width-280,selected.x+14)),top:Math.max(0,Math.min(scene.height-90,selected.y+12)),maxWidth:280,padding:9,borderWidth:1,borderRadius:8,borderColor:colors.border,backgroundColor:colors.surface1,gap:3}}><Text style={{color:colors.foregroundMuted,fontSize:12}}>{selected.label}</Text>{selected.values.map((v,i)=><Text key={i} style={{color:colors.foreground,fontSize:12}}>{v}</Text>)}</View>:null}
+export function flagHighlightFrames(scene: ChartScene, flag: Flag): { x: number; y: number; width: number; height: number }[] {
+  const days = scene.hits.filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h.label)).sort((a, b) => a.label.localeCompare(b.label));
+  if (!days.length) return [];
+  const clip = (day: string) => day < days[0]!.label ? days[0]! : day > days.at(-1)!.label ? days.at(-1)! : days.find((h) => h.label === day)!;
+  if (flag.to < days[0]!.label || flag.from > days.at(-1)!.label) return [];
+  const first = clip(flag.from), last = clip(flag.to), x = Math.max(0, first.x);
+  return [{ x, y: 18, width: Math.min(scene.width, last.x + last.width) - x, height: Math.max(0, scene.height - 22) }];
+}
+export function chartDefaultPoint(points: Hit[]): Hit | undefined {
+  const latest = points.map((h) => h.label.slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().at(-1);
+  return points.find((h) => h.label === latest) ?? points.find((h) => latest && h.label.startsWith(latest)) ?? points.at(-1);
+}
+export function TokenomicsChart({ table, colors, query, change, expanded = false }: { table: TokenomicsTable; colors: Colors; query: TokenomicsQuery; change: (q: Partial<TokenomicsQuery>) => void; expanded?: boolean }) {
+  const [width, setWidth] = useState(0), [selected, setSelected] = useState<Hit | null>(null), [full, setFull] = useState(false), [legend, setLegend] = useState(false);
+  const compact = width > 0 && width < 700 && !expanded, interaction = useTokenomicsChartInteraction();
+  const built = useMemo(() => { if (width < 100) return null; try { const scene = tokenomicsChartScene(table, width, colors, query); return { scene, layers: chartSvgLayers(scene), error: null }; } catch (error) { return { error: error instanceof Error ? error.message : "Chart unavailable", scene: null, layers: [] }; } }, [table, width, colors, query]);
+  const scene = built?.scene, points = scene?.hits.filter((h) => !h.toggle) ?? [], current = selected ?? chartDefaultPoint(points), index = current ? points.indexOf(current) : -1;
+  const select = (x: number, y: number, press = false) => { const hit = scene?.hits.find((h) => x >= h.x && x < h.x + h.width && y >= h.y && y < h.y + h.height); if (press && hit?.toggle) { change({ expanded: [...query.expanded.filter((k) => k !== hit.toggle && k !== `closed:${hit.toggle}`), ...(hit.open ? [`closed:${hit.toggle}`] : [hit.toggle]), "tl:closed"] }); setSelected(null); } else setSelected(hit ?? null); };
+  const action = (label: string, onPress: () => void, disabled = false) => <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} accessibilityState={{ disabled }} onPress={onPress} style={{ minHeight: 44, minWidth: 44, padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6, justifyContent: "center", opacity: disabled ? 0.4 : 1 }}><Text style={{ color: colors.accent, fontSize: 14 }}>{label}</Text></Pressable>;
+  return <View testID={`report-chart-${table.id}`} onLayout={(e) => setWidth(Math.floor(e.nativeEvent.layout.width))}>
+    {built?.error ? <Text accessibilityRole="alert" style={{ color: colors.foreground, fontSize: 13 }}>{built.error} The complete values remain available in Chart data and CSV.</Text> : scene ? <>
+      <View style={{ width: scene.width, height: scene.height, overflow: "hidden" }}>
+        {built.layers.map((svg, i) => <View key={i} pointerEvents="none" accessible={false} style={{ position: "absolute", left: 0, top: 0 }}><Icon icon={{ svg }} size={Math.max(scene.width, scene.height)} color={colors.foreground} /></View>)}
+        {interaction.flag && table.id === "timeline" ? flagHighlightFrames(scene, interaction.flag).map((r, i) => <View key={i} testID="report-flag-highlight" pointerEvents="none" style={{ position: "absolute", left: r.x, top: r.y, width: r.width, height: r.height, borderWidth: 0, borderColor: chartColors(colors).series[interaction.flag!.kind === "Spike" ? 7 : interaction.flag!.kind === "Efficiency drop" ? 3 : interaction.flag!.kind === "Overdue" ? 6 : 1], backgroundColor: chartColors(colors).series[interaction.flag!.kind === "Spike" ? 7 : interaction.flag!.kind === "Efficiency drop" ? 3 : interaction.flag!.kind === "Overdue" ? 6 : 1] + "29" }} />) : null}
+        {selected ? <View pointerEvents="none" style={{ position: "absolute", left: selected.x, top: selected.y, width: Math.max(1, selected.width), height: selected.height, borderWidth: 1, borderColor: colors.accent }} /> : null}
+        <Pressable accessibilityRole="button" accessibilityLabel={`Inspect ${table.title}. Use previous and next point or Chart data for exact values.`} onPress={(e) => select(e.nativeEvent.locationX, e.nativeEvent.locationY, true)} onPointerMove={(e) => { if (!compact) select(e.nativeEvent.offsetX, e.nativeEvent.offsetY); }} style={{ position: "absolute", left: 0, top: 0, width: scene.width, height: scene.height }} />
+        {selected && !compact ? <View testID="report-chart-tooltip" style={{ position: "absolute", left: Math.max(0, Math.min(scene.width - 280, selected.x + 14)), top: Math.max(0, Math.min(scene.height - 90, selected.y + 12)), maxWidth: 280, padding: 9, borderWidth: 1, borderRadius: 8, borderColor: colors.border, backgroundColor: colors.surface1, gap: 3 }}><Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{selected.label}</Text>{selected.values.map((v, i) => <Text key={i} style={{ color: colors.foreground, fontSize: 12 }}>{v}</Text>)}{action("Close inspection", () => setSelected(null))}</View> : null}
       </View>
-      <View style={{flexDirection:"row",flexWrap:"wrap",gap:10,marginTop:8}}>{scene.legend.map((s,i)=><View key={`${s.label}-${i}`} style={{flexDirection:"row",alignItems:"center",gap:5,maxWidth:"100%",flexShrink:1}}>{s.color === "transparent" ? null : /^[▲◆▼]/.test(s.label) ? <Text style={{ color: s.color, fontSize: 12 }}>{s.label[0]}</Text> : <View style={{width:10,height:10,borderRadius:2,backgroundColor:s.color}}/>}<Text style={{fontSize:12,color:colors.foregroundMuted,flexShrink:1}}>{/^[▲◆▼]/.test(s.label) ? s.label.slice(2) : s.label}</Text></View>)}</View>
-      {selected?<Text accessibilityLiveRegion="polite" style={{fontSize:12,color:colors.foregroundMuted}}>{selected.label}: {selected.values.join(" · ")}</Text>:null}
-    </>:null}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: compact ? 10 : 14, rowGap: compact ? 4 : 6, marginTop: 8 }}>
+        {!compact || legend ? scene.legend.map((s, i) => <View key={`${s.label}-${i}`} style={{ flexDirection: "row", alignItems: "center", gap: 5, maxWidth: "100%", flexShrink: 1 }}>{s.color === "transparent" ? null : /^[▲◆▼]/.test(s.label) ? <Text style={{ color: s.color, fontSize: 12 }}>{s.label[0]}</Text> : <View style={{ width: 10, height: s.line ? 2 : 10, borderRadius: s.line ? 0 : 2, opacity: s.opacity ?? 1, backgroundColor: s.color }} />}<Text style={{ fontSize: compact ? 13 : 12, color: colors.foregroundMuted, flexShrink: 1 }}>{/^[▲◆▼]/.test(s.label) ? s.label.slice(2) : s.label}</Text></View>) : <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>Tap a day for values · legend and full-size chart below</Text>}
+      </View>
+      {compact || selected ? <View accessibilityLiveRegion="polite" style={{ paddingVertical: 8, gap: 4 }}><Text style={{ fontSize: 14, lineHeight: 21, color: colors.foreground, fontWeight: "600" }}>{current?.label ?? "No recorded data"}</Text>{current?.values.map((v, i) => <Text key={i} style={{ fontSize: 14, lineHeight: 21, color: colors.foreground }}>{v}</Text>)}</View> : null}
+      {interaction.flag && table.id === "timeline" ? <Text accessibilityLiveRegion="polite" style={{ fontSize: 14, lineHeight: 21, color: colors.foreground }}>{`${interaction.flag.kind}: ${interaction.flag.from} – ${interaction.flag.to} · ${interaction.flag.epic || interaction.flag.person}`}</Text> : null}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: compact ? 4 : 0 }}>{action("Previous point", () => setSelected(points[Math.max(0, index - 1)] ?? null), index <= 0)}{action("Next point", () => setSelected(points[Math.min(points.length - 1, index + 1)] ?? null), index >= points.length - 1)}{compact ? action(legend ? "Hide legend" : "Legend", () => setLegend(!legend)) : null}{!expanded ? action("Expand chart", () => setFull(true)) : null}{interaction.flag ? action("Clear signal highlight", () => interaction.pin(null)) : null}</View>
+    </> : null}
+    {!expanded ? <Modal title={table.title} open={full} onOpenChange={setFull}><Modal.Content contentContainerStyle={{ padding: 12, gap: 8 }}><ScrollView horizontal><View style={{ width: Math.max(1000, width), paddingBottom: 8 }}><TokenomicsChart table={table} colors={colors} query={query} change={change} expanded /></View></ScrollView>{action("Close expanded chart", () => setFull(false))}</Modal.Content></Modal> : null}
   </View>;
 }

@@ -126,12 +126,12 @@ export type TokenomicsLive = z.infer<typeof tokenomicsLiveSchema>;
 const cellSchema = z.union([text, number, z.null()]);
 const plotSchema = z.object({ columns: z.array(text).max(64), rows: z.array(z.array(cellSchema).max(64)).max(100000),
   end: text.optional(), order: z.array(text).max(4096).optional(), workstreams: z.array(text).max(512).optional(), epicOrder: z.array(text).max(10000).optional(), desks: z.array(text).max(512).optional(), events: z.array(z.array(cellSchema).max(4)).max(200000).optional(), flags: z.array(z.array(cellSchema).max(16)).max(10000).optional(), gaps: z.array(z.array(cellSchema).max(8)).max(100000).optional(), spans: z.array(z.array(cellSchema).max(16)).max(10000).optional() });
-const tableRowSchema = z.object({ key: text, cells: z.array(cellSchema).max(64), detail: z.array(text).max(2000).default([]), url: text.optional(), hasChildren: z.boolean().optional(), depth: count.int().optional(), span: count.int().min(1).max(64).optional(), heading: z.boolean().optional() });
-export const tableSchema = z.object({ id: text, title: text, note: text, columns: z.array(text).max(64), rows: z.array(tableRowSchema).max(100), footer: z.array(tableRowSchema).max(8).optional(), total: count, chart: z.boolean().default(false), plot: plotSchema.optional() });
+const tableRowSchema = z.object({ key: text, cells: z.array(cellSchema).max(64), detail: z.array(text).max(2000).default([]), url: text.optional(), hasChildren: z.boolean().optional(), depth: count.int().optional(), span: count.int().min(1).max(64).optional(), heading: z.boolean().optional(), highlight: z.object({ from: day, to: day, person: text, epic: text, kind: text }).optional() });
+export const tableSchema = z.object({ id: text, title: text, note: text, columns: z.array(text).max(64), rows: z.array(tableRowSchema).max(100000), footer: z.array(tableRowSchema).max(8).optional(), total: count, chart: z.boolean().default(false), plot: plotSchema.optional() });
 export type TokenomicsTable = z.infer<typeof tableSchema>;
 export const tokenomicsViewSchema = z.object({
   status: z.enum(["ready", "partial", "unavailable"]), readAt: text, generated: text.nullable(), revision: text.nullable(),
-  diagnostics: z.array(text), query: tokenomicsQuerySchema,
+  diagnostics: z.array(text), notices: z.array(text).max(32).default([]), query: tokenomicsQuerySchema,
   options: z.record(text, z.array(z.object({ value: text, label: text })).max(100000)),
   tiles: z.array(z.object({ label: text, value: cellSchema, note: text, delta: text.optional() })).max(32),
   tables: z.array(tableSchema).max(544), notes: z.array(text),

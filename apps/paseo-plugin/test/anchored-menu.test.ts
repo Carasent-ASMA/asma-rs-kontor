@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 
-import { containedTab, measureMenu, menuFrame, type FocusTarget, type MenuFrame } from "../client/anchored-menu";
+import { consumeEscapeRelease, containedTab, measureMenu, menuFrame, type FocusTarget, type MenuFrame } from "../client/anchored-menu";
 
 const root = { width: 1000, height: 700 };
 
@@ -117,4 +117,12 @@ describe("modal Tab containment", () => {
     expect([containedTab(modal([close]), screenOf(trigger), host, body, false), containedTab(modal([close]), screenOf(trigger), host, body, true)]).toEqual([null, null]);
     expect([containedTab(modal([close], false), screenOf(trigger), trigger, body, false), containedTab(null, screenOf(trigger), trigger, body, false)]).toEqual([null, null]);
   });
+});
+
+it("consumes the Escape release after dismissing a nested popup, leaving its host sheet open", () => {
+  let release: ((event: { key: string; preventDefault(): void; stopPropagation(): void }) => void) | undefined;
+  const removed = vi.fn();
+  consumeEscapeRelease({ addEventListener: (_type, cb) => { release = cb; }, removeEventListener: removed });
+  const event = { key: "Escape", preventDefault: vi.fn(), stopPropagation: vi.fn() };
+  release!(event); expect(event.preventDefault).toHaveBeenCalledOnce(); expect(event.stopPropagation).toHaveBeenCalledOnce(); expect(removed).toHaveBeenCalledWith("keyup", release, true);
 });
