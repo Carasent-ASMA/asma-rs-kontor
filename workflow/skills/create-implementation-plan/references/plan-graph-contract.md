@@ -155,8 +155,10 @@ launch-ready check scoped to that milestone's rows:
   its dependency closure and how many rows outside it are unbound. The receipt
   records the scope as well as the command, exit code, SHA-256, path and
   revision. A scoped PASS never stands for whole-plan readiness.
-- Rows outside the scope stay `null`. Each later milestone needs its own scoped
-  receipt, and a plan edit invalidates earlier receipts as usual.
+- Rows outside the scope's dependency closure need not be bound: existing
+  confirmed bindings are preserved, and unbound future rows may remain `null`.
+  Each later milestone needs its own scoped receipt, and a plan edit invalidates
+  earlier receipts as usual.
 - Final epic closure requires an unscoped launch-ready PASS: every delivered row
   is bound and every dropped row has been removed from the plan.
 - A plan without milestone delivery, or a project whose validator has no scoped
