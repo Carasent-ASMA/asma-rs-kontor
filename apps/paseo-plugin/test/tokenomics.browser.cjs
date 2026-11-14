@@ -16,6 +16,7 @@ const pages = {
   const browser = await chromium.launch({ headless: true });
   const evidence = [];
   const oracle = { checked: false };
+  const local = { checked: false };
   try {
     if (process.env.ORACLE_URL) {
       const page = await browser.newPage(); await page.goto(process.env.ORACLE_URL);
@@ -83,7 +84,22 @@ const pages = {
     assert.equal(await offlineApp.getByRole("button", { name: "Refresh report", exact: true }).getAttribute("aria-disabled"), "true");
     await offlineApp.getByText(/Host offline/).waitFor();
     await offline.screenshot({ path: path.join(output, "tokenomics-offline.png") }); await offline.close();
-    fs.writeFileSync(path.join(output, "native-pages.json"), JSON.stringify({ prototype: true, physicalDevice: false, originalRendererOracle: oracle, pages: evidence }, null, 2));
+    if (process.env.LOCAL_REPORT_URL) {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      const response = page.waitForResponse((r) => new URL(r.url()).pathname === "/__kontor_tokenomics");
+      await page.goto(process.env.LOCAL_REPORT_URL); const received = await response;
+      assert.equal(received.status(), 200); const view = await received.json();
+      const app = page.getByTestId("tokenomics-page"); await app.getByRole("heading", { name: "Epic progress and consumption", exact: true }).waitFor();
+      await page.getByText(/local Tokenomics report; simulated Paseo host/).waitFor();
+      for (const tile of view.tiles) {
+        const card = app.getByRole("heading", { name: tile.label, exact: true }).locator("..");
+        assert.ok((await card.innerText()).includes(String(tile.value ?? "—")), "Local native tile differs from its bounded adapter snapshot");
+      }
+      assert.ok((await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content")).includes("connect-src 'self'"));
+      Object.assign(local, { checked: true, projectionBytes: (await received.body()).length, contentRevision: view.revision, matchedTiles: view.tiles.length, privateValuesRecorded: false });
+      await page.close();
+    }
+    fs.writeFileSync(path.join(output, "native-pages.json"), JSON.stringify({ prototype: true, physicalDevice: false, originalRendererOracle: oracle, localReport: local, pages: evidence }, null, 2));
     console.log(`PASS ${evidence.length} native page renders: 18 pages × compact/desktop × dark/light; pivot drill-down, complete CSV, custom dates/revisions and offline source refusal.`);
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

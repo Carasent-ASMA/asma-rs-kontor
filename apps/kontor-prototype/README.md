@@ -9,6 +9,25 @@ The entry imports `../paseo-plugin/index.client.tsx` directly. There is no copie
 plugin client. [Source-sync audit](SOURCE-SYNC.md) pins the source and records
 the reference delta, retained files and remaining boundaries.
 
+## Tokenomics report preview
+
+`?scenario=tokenomics` uses synthetic usage, review and delivery fixtures.
+To inspect an existing local report, start the development harness with an
+explicit **server-only** root and open `?scenario=tokenomics-local`:
+
+```sh
+KONTOR_PLUGIN_TOKENOMICS_ROOT=/srv/example-tokenomics-report node apps/kontor-prototype/node_modules/vite/bin/vite.js --config apps/kontor-prototype/vite.config.ts --port 58143 --strictPort
+```
+
+The existing native plugin client calls the same bounded report adapter through
+the development server. The server binds loopback, checks Host/Origin, limits
+JSON requests to 2 MiB and replies to 32 MiB, validates native RPC contracts,
+and disables response caching. Missing configuration returns unavailable.
+Report paths and files are never exposed as Vite aliases, allowed filesystem
+roots, client environment variables or bundled assets. Static builds keep the
+synthetic scenarios; local reports require the development server. The frame
+labels local report data and the simulated surrounding Paseo host explicitly.
+
 ## Run
 
 From the repository root:
@@ -86,6 +105,7 @@ All reference scenario IDs remain available. Each uses fictional data only.
 | ID | Scenario |
 | --- | --- |
 | `tokenomics` | Native Tokenomics: all 18 report pages, synthetic usage/review/delivery data |
+| `tokenomics-local` | The same native client over the explicit bounded server-side local report source |
 | `tokenomics-offline` | Tokenomics source becomes stale when the synthetic host disconnects |
 | `session-recovery` | Native availability and archive (simulated) |
 | `compact-icons` | Compact controls: combined review |

@@ -85,15 +85,18 @@ export function tokenomicsView(snapshot: ReportSnapshot, input: TokenomicsQuery)
 export function contributeTokenomics(server: PluginServerContext): void {
   const read = async () => { try { return await readTokenomicsSnapshot(await configuredRoot()); } catch { return { data: null, live: tokenomicsLiveSchema.parse({}), revision: null, diagnostics: ["Tokenomics host configuration is invalid or unreadable."], readAt: new Date().toISOString() }; } };
   server.handle(readTokenomics, async (input) => tokenomicsView(await read(), input));
-  server.handle(exportTokenomics, async (input) => {
-    const snapshot = await read(), view = tokenomicsView(snapshot, input);
-    if (!snapshot.data || !snapshot.revision || view.status === "unavailable") throw new Error("Tokenomics export is unavailable; refresh the source status.");
-    if ((input.page.startsWith("cr-") && !snapshot.live.review) || (input.page.startsWith("dv-") && !snapshot.live.delivery)) throw new Error("The selected live analytics source is unavailable; no export can be produced.");
-    // Exports carry every matching row, independently of the native display page size.
-    const q = tokenomicsQuerySchema.parse(input), result = buildTokenomics(snapshot.data, snapshot.live, q);
-    const tables = result.tables.map((t) => ({ ...t, rows: t.rows.filter((r) => !q.search || [...r.cells, ...r.detail].join(" ").toLowerCase().includes(q.search.trim().toLowerCase())) }));
-    const content = tokenomicsCsv({ ...result, tables });
-    if (Buffer.byteLength(content) > LIVE_MAX_BYTES) throw new Error("Export exceeds the bounded response limit; narrow its filters.");
-    return { filename: `tokenomics-${q.page}.csv`, content, revision: snapshot.revision };
-  });
+  server.handle(exportTokenomics, async (input) => tokenomicsCsvExport(await read(), input));
+}
+
+/** Shared by the native RPC and the optional local review harness; neither writes report data. */
+export function tokenomicsCsvExport(snapshot: ReportSnapshot, input: TokenomicsQuery) {
+  const view = tokenomicsView(snapshot, input);
+  if (!snapshot.data || !snapshot.revision || view.status === "unavailable") throw new Error("Tokenomics export is unavailable; refresh the source status.");
+  if ((input.page.startsWith("cr-") && !snapshot.live.review) || (input.page.startsWith("dv-") && !snapshot.live.delivery)) throw new Error("The selected live analytics source is unavailable; no export can be produced.");
+  // Exports carry every matching row, independently of the native display page size.
+  const q = tokenomicsQuerySchema.parse(input), result = buildTokenomics(snapshot.data, snapshot.live, q);
+  const tables = result.tables.map((t) => ({ ...t, rows: t.rows.filter((r) => !q.search || [...r.cells, ...r.detail].join(" ").toLowerCase().includes(q.search.trim().toLowerCase())) }));
+  const content = tokenomicsCsv({ ...result, tables });
+  if (Buffer.byteLength(content) > LIVE_MAX_BYTES) throw new Error("Export exceeds the bounded response limit; narrow its filters.");
+  return { filename: `tokenomics-${q.page}.csv`, content, revision: snapshot.revision };
 }
