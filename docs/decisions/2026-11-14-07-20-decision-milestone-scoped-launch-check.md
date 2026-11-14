@@ -35,8 +35,9 @@ milestone until the end, which defeats milestone delivery.
   over more than one plan.
 - The scope equals the milestone's mapped rows on the authoritative saved
   revision. The PASS line and the receipt name the scope and its dependency
-  closure. Rows outside the scope stay unbound. Each milestone needs its own
-  scoped receipt.
+  closure. Rows outside that closure need not be bound: existing confirmed
+  bindings are preserved, and unbound future rows may remain `null`. Each
+  milestone needs its own scoped receipt.
 - Final epic closure requires an unscoped launch-ready PASS.
 - The scope is an explicit task list. The plan graph gets no milestone field.
 
