@@ -117,11 +117,11 @@ describe("harness catalogue", () => {
   });
 
   it("reads an account route as its harness: a Claude account keeps Anthropic models and a Codex account keeps OpenAI models", async () => {
-    const h = await host([route("claude-work", ["claude-opus-5-5", "gpt-6.1-sol"]), route("codex-personal", ["gpt-6.1-sol", "claude-opus-5-5"])]);
-    const catalog = await readProviderCatalog(h.client, h.cwd, { config: h.deps, overrides: { "claude-work": { extends: "claude" }, "codex-personal": { extends: "codex" } } });
+    const h = await host([route("claude-b", ["claude-opus-5-5", "gpt-6.1-sol"]), route("codex-a", ["gpt-6.1-sol", "claude-opus-5-5"])]);
+    const catalog = await readProviderCatalog(h.client, h.cwd, { config: h.deps, overrides: { "claude-b": { extends: "claude" }, "codex-a": { extends: "codex" } } });
     const shown = Object.fromEntries(catalog.entries.map((entry) => [entry.provider, entry.models!.map((model) => model.id)]));
-    expect(shown["claude-work"]).toEqual(["claude-opus-5-5"]);
-    expect(shown["codex-personal"]).toEqual(["gpt-6.1-sol"]);
+    expect(shown["claude-b"]).toEqual(["claude-opus-5-5"]);
+    expect(shown["codex-a"]).toEqual(["gpt-6.1-sol"]);
   });
 
   it("keeps DeepSeek on its own harness and on OpenCode, and GLM on its agent and on OpenCode, without merging the routes", async () => {
