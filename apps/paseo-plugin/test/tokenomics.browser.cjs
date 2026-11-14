@@ -47,6 +47,7 @@ async function tab(width, height, theme) {
         if (pages[index] === "activity") assert.ok(await t.evaluate("document.querySelector('[aria-label^=\"Range:\"]')?.textContent.includes('Full lifetime')||document.querySelector('[aria-label^=\"Range:\"]')?.textContent.includes('Last 30 days')"));
         evidence.push({ id: pages[index], width, height, theme });
       }
+      if (width === 390) { await t.select("Period", "Custom dates"); assert.ok(await t.evaluate("document.querySelector('[aria-label=\"from date YYYY-MM-DD\"]')&&document.querySelector('[aria-label=\"to date YYYY-MM-DD\"]')")); await t.select("Period", "All time"); }
       await t.page(0);
       if (width === 390) {
         assert.ok(await t.evaluate("[...document.querySelectorAll('[data-testid^=report-kpi-]')].slice(0,6).every(e=>e.getBoundingClientRect().bottom<=innerHeight-60)"), "first viewport KPIs");

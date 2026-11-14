@@ -76,7 +76,7 @@ export function tokenomicsView(snapshot: ReportSnapshot, input: TokenomicsQuery)
   if (q.compare === "previous") q.compare = d.revs.at(-2)?.id ?? null;
   if (q.rev === null) q.rev = d.revs.at(-1)?.id ?? null;
   if (q.from && q.to && q.from > q.to) return { ...empty, diagnostics: [...snapshot.diagnostics, "Custom period start must not be after its end."] };
-  if ((q.rev && !d.revs.some((r) => r.id === q.rev)) || (q.compare && !d.revs.some((r) => r.id === q.compare))) return { ...empty, diagnostics: [...snapshot.diagnostics, "Selected revision is no longer present; choose an available check."] };
+  if ((q.rev && !d.revs.some((r) => r.id === q.rev)) || (q.compare && !d.revs.some((r) => r.id === q.compare))) return { ...empty, options: { revisions: d.revs.map((r) => ({ value: r.id, label: r.label })) }, diagnostics: [...snapshot.diagnostics, "Selected revision is no longer present; choose an available check."] };
   const model = usageModel(d, q), result = buildTokenomics(d, snapshot.live, q);
   const notices = tokenomicsNotices(d, snapshot.live, q, model, Date.parse(snapshot.readAt) - Date.parse(d.generated) > STALE_MS);
   const options = tokenomicsOptions(d, model);

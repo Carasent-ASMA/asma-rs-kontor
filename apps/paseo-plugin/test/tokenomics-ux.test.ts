@@ -30,6 +30,8 @@ describe("Tokenomics adaptive controls", () => {
     expect(a.notices.some((n) => n.text.includes("lower bounds"))).toBe(true); expect(tokenomicsViewSchema.safeParse(a).success).toBe(true);
     const noReview = tokenomicsView({ ...snap, live: { ...live, review: null } }, tokenomicsQuerySchema.parse({ page: "cr-overview" }));
     expect(noReview.notices).toContainEqual({ kind: "warning", text: "Review data is unavailable; findings and costs are unknown." }); expect(noReview.tiles).toEqual([]);
+    const removed = tokenomicsView(snap, tokenomicsQuerySchema.parse({ rev: "removed-check" }));
+    expect(removed.status).toBe("unavailable"); expect(removed.options.revisions?.map((r) => r.value)).toEqual(data.revs.map((r) => r.id));
     const b = tokenomicsView({ ...snap, readAt: "2026-11-20T00:00:00Z" }, tokenomicsQuerySchema.parse({}));
     expect(b.notices.some((n) => n.text.includes("48 hours"))).toBe(true); expect(b.summary).toEqual(a.summary);
   });
