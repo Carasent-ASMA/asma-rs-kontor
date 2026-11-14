@@ -11,6 +11,9 @@ the reference delta, retained files and remaining boundaries.
 
 ## Tokenomics report preview
 
+The candidate targets Paseo 0.13.2 or later, matching the SDK used for the native
+UI/scrolling contracts and host compiler checks. This preview does not install it.
+
 `?scenario=tokenomics` uses synthetic usage, review and delivery fixtures.
 `?scenario=tokenomics-scroll` uses 73 synthetic delivery rows to check continuous
 bounded scrolling and complete exports. Copy CSV explicitly writes to this
