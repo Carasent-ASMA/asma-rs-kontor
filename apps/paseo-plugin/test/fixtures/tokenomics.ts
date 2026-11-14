@@ -1,0 +1,34 @@
+import { tokenomicsDataSchema, tokenomicsLiveSchema, type UsageFact } from "../../shared/tokenomics";
+
+export const fixtureHour = (s: string) => Date.parse(s) / 3600000;
+const fact = (s: number, time: string, model: number, basis = 0): UsageFact => [s, fixtureHour(time), model, 100, 200, 10, 0, 40, 10, 1, basis === 6 ? 0 : 2, 120, basis, basis === 3 ? 0 : 0.5, 0.2, 0.3, 1, 0.8, 20];
+const captured = (tok: number, cost: number) => ({ seats: 2, n: 2, act: 240, miss: 100, hit: 200, write: 10, out: 40, tok, cost });
+/** Entirely synthetic accounting and people; safe for public tests and the native review harness. */
+export function tokenomicsFixture() {
+  const seat = { id: "seat-a", short: "A", title: "Synthetic builder", ws: "build", epic: "EXAMPLE-101", task: "EXAMPLE-102", role: "SWE", rg: "Build", rc: "SWE", acct: "synthetic", model: "demo-model", vendor: "Demo", user: "Person A", created: "2026-10-25T00:00:00Z", updated: "2026-11-03T12:00:00Z", status: "open", data: "ok", adam: false, root: "", open_h: 10, first: "2026-10-25", last: "2026-11-03" };
+  const issue = { key: "EXAMPLE-102", summary: "Synthetic delivery", status: "Done", cat: "done", created: "2026-10-25", resolved: "2026-11-02" };
+  const progress = { status: "In progress", cat: "indeterminate", done: 1, wip: 0, todo: 0 };
+  const revision = { id: "check-a", label: "2026-11-01 13:00 · daily", generated: "2026-11-01T12:00:00Z", cut: "2026-11-01T12:00:00Z", scope: "workstreams@2", epics: { "EXAMPLE-101": { ...progress, done: 0, todo: 1 } }, tasks: { "EXAMPLE-102": ["new", "To do"] }, usage: { overall: captured(123, 1), ws: { build: captured(123, 1) } } };
+  return tokenomicsDataSchema.parse({ schema: "consumption/data@2", generated: "2026-11-03T12:30:00Z", jiraBase: "https://issues.example.test/browse/", sensModel: "demo-model", dashboardPeriod: "all", rollingDays: [7, 14, 30], activeNowDays: 7,
+    ws: { build: { name: "Demo build", kind: "workstream", epics: ["EXAMPLE-101"], status: "open", completedAt: null, spans: [["2026-10-25", null]] }, review: { name: "Review desk", kind: "desk", epics: [], status: "open", completedAt: null, spans: [] }, idle: { name: "Idle work", kind: "workstream", epics: [], status: "open", completedAt: null, spans: [["2026-10-01", null]] } },
+    rows: { "desk:RSW • demo-repo#1": "demo-repo#1 review" },
+    seats: [seat, { ...seat, id: "seat-b", short: "B", user: "Person B", rc: "UNKNOWN", data: "transcript-missing", model: "future-model", acct: "missing" }, { ...seat, id: "seat-c", short: "C", ws: "review", epic: "desk:RSW • demo-repo#1", role: "REV A", rc: "AUD", adam: true }],
+    models: ["demo-model", "future-model"], mvendor: ["Demo", "Unknown vendor"],
+    facts: [fact(0, "2026-10-31T12:00:00Z", 0), fact(0, "2026-11-02T12:00:00Z", 0, 3), fact(0, "2026-11-03T11:00:00Z", 1, 6), fact(0, "2026-11-03T12:00:00Z", 0), fact(2, "2026-11-02T13:00:00Z", 0)],
+    epics: [{ key: "EXAMPLE-101", ws: "build", summary: "Synthetic epic", status: "In progress", cat: "indeterminate", created: "2026-10-25", resolved: null, due: "2026-10-20", children: [issue] }],
+    prices: [["demo-model", "Demo", 1, 0.2, 1.25, 2, 4, "API-equivalent list"], ["future-model", "Unknown vendor", 0, 0, 0, 0, 0, "unpriced"]],
+    revs: [revision, { ...revision, id: "check-b", label: "2026-11-03 13:00 · daily", generated: "2026-11-03T12:00:00Z", cut: "2026-11-03T12:00:00Z", epics: { "EXAMPLE-101": progress }, tasks: { "EXAMPLE-102": ["done", "Done"] }, usage: { overall: captured(999, 5), ws: { build: captured(999, 5) } } }],
+    all: { ledger: [{ epic: "EXAMPLE-101", title: "Synthetic epic", tokens: 500, cost: 3, sessions: 1, first: "2026-10-25", last: "2026-11-03" }, { epic: "UNKNOWN", title: "Unknown epic", tokens: 200, cost: 1, sessions: 1, first: "2026-10-25", last: "2026-11-03" }], unknownReasons: { "No ticket": 200 }, ledgerTotal: 700, ledgerLinked: 500,
+      cats: [["A", "Registered workstreams", "Orchestrated"], ["D", "Direct CLI", "Ad-hoc"]], subs: ["Build", "Unlinked"], stores: ["demo-store"], models: ["demo-model"], mvendor: ["Demo"], facts: [["2026-10-25", 0, 0, 0, 0, 100, 200, 10, 40, 1, 120, 2, 0.5, 0.2, 0.3, 1, 0], ["2026-11-03", 1, 1, 0, 0, 100, 200, 10, 40, 1, 120, 2, 0.5, 0.2, 0.3, 1, 0]],
+      sessions: { total: 2, cat: { "0": 1, "1": 1 }, sub: { "0|0": 1, "1|1": 1 }, grp: { Orchestrated: 1, "Ad-hoc": 1 } }, coverage: { "demo-store": { first: "2026-10-25", last: "2026-11-03", sessions: 2, tok: 700 } }, firstKS: "2026-10-25", cut: "2026-11-03T12:00:00Z", missing: { "demo-store": "Earlier transcripts unavailable" } },
+  });
+}
+export function tokenomicsLiveFixture() {
+  const pr = { ref: "demo-repo#1", a: "person-a", t: "Synthetic pull request", st: "merged", dr: false, c: "2026-10-31", m: "2026-11-02", hc: "2026-10-31T12:00:00Z", hm: "2026-11-02T12:00:00Z", base: "master", cm: 2, keys: ["EXAMPLE-102"], main: true, la: 1000, ld: 100, ta: 100, td: 5, da: 20, dd: 0, rw: 30 };
+  return tokenomicsLiveSchema.parse({ review: { schema: "consumption/review@1", org: "example", since: "2026-10-01", asOf: "2026-11-03T12:00:00Z", prs: { "demo-repo#1": { repo: "example/demo-repo", n: 1, key: "EXAMPLE-102", title: "Synthetic pull request", author: "person-a", status: "merged", created: "2026-10-31", draft: false, judge: "PASS" } }, findings: [{ pr: "demo-repo#1", r: "1", d: "2026-11-01", dl: "2026-11-02", seats: ["REV A", "REV B"], lab: "blocking", file: "src/demo.ts", line: "12", out: "fixed" }, { pr: "demo-repo#1", r: "1", d: "2026-11-01", dl: "2026-11-01", seats: ["REV A"], lab: "suggestion", file: "README.md", line: "3", out: "open" }], fixes: [{ pr: "demo-repo#1", r: 1, st: "merged", d: "2026-11-02", n: 1, fx: 1, fixPr: 2 }] },
+    delivery: { schema: "consumption/delivery@1", org: "example", since: "2026-10-01", asOf: "2026-11-03T12:00:00Z", churnDays: 21, viewer: "Person A", repos: ["demo-repo"], people: { "person-a": "Person A" }, bots: ["demo-bot"], prs: [pr, { ...pr, ref: "demo-repo#3", a: "demo-bot", la: 99999 }], direct: [], churn: [["2026-11-02", "demo-repo", "person-a", "other", 20]],
+      issues: { "EXAMPLE-102": { t: "Task", s: "Done", cat: "done", sum: "Synthetic delivery", c: "2026-10-25", st: "2026-10-30", r: "2026-11-02", e: "EXAMPLE-101" } },
+      bugs: [{ key: "EXAMPLE-103", sum: "Synthetic bug", c: "2026-11-03", r: null, s: "Open", cat: "new", pri: "Medium", asg: "Person A", e: "EXAMPLE-101", cause: ["EXAMPLE-102"], fix: [{ c: "fix-commit", repo: "demo-repo", pr: "demo-repo#4", a: "person-a", d: "2026-11-03" }], intro: [{ c: "intro-commit", repo: "demo-repo", pr: "demo-repo#1", a: "person-a", d: "2026-11-02", n: 10, s: "Synthetic change", keys: ["EXAMPLE-102"] }], why: "traced" }], jira: true, errors: [] },
+    dev: { schema: "consumption/dev@1", rows: [["Person A", "2026-11-02", "EXAMPLE-101", 1, 2, 1000, 100]] },
+  });
+}

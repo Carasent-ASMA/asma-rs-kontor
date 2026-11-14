@@ -1,3 +1,4 @@
+import { tokenomicsRpc } from "../fixtures/tokenomics";
 import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../../../paseo-plugin/shared/organization";
 import { DEFAULT_KEYBOARD_SETTINGS, keyboardSettingsSchema, type KeyboardSettings } from "../../../paseo-plugin/shared/keyboard";
@@ -177,6 +178,8 @@ export async function invokeRpc(method: string, input: unknown): Promise<unknown
   const reads = scenario.sources ? SOURCE_READS : [];
   const catalog = { sources: reads.map((read) => read.source), diagnostics: [], registry: { path: "fixtures/workstreams.json", revision: "fixture-registry-1", workstreams: { kontor: { name: "Kontor" } }, desks: { review: { name: "Review desk" } }, diagnostics: [] } };
   switch (method) {
+    case "tokenomics.read":
+    case "tokenomics.export": return tokenomicsRpc(method, input);
     case "sources.list":
       return catalog;
     case "sources.summaries":

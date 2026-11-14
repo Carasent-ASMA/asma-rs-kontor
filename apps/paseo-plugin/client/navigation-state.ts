@@ -2,7 +2,7 @@ import { readSessionView, writeSessionView, type SessionViewState } from "./sess
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import { sourceEpic, sourceInProject } from "./source-scope";
 
-export const DESTINATIONS = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"] as const;
+export const DESTINATIONS = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery", "Tokenomics", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"] as const;
 export type Destination = (typeof DESTINATIONS)[number];
 export type KontorRoute = { tab: Destination; projectId: string | null; epicKey: string | null; sourceId: string | null; originAgentId: string | null; sourceRevision: string | null };
 export const INITIAL_ROUTE: KontorRoute = { tab: "Sessions", projectId: null, epicKey: null, sourceId: null, originAgentId: null, sourceRevision: null };

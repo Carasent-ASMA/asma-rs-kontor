@@ -85,6 +85,8 @@ All reference scenario IDs remain available. Each uses fictional data only.
 
 | ID | Scenario |
 | --- | --- |
+| `tokenomics` | Native Tokenomics: all 18 report pages, synthetic usage/review/delivery data |
+| `tokenomics-offline` | Tokenomics source becomes stale when the synthetic host disconnects |
 | `session-recovery` | Native availability and archive (simulated) |
 | `compact-icons` | Compact controls: combined review |
 | `compact-icons-stale` | Compact controls: stale inventory |
