@@ -48,3 +48,8 @@ export function reportTableValue(value: string | number | null | undefined, labe
   if (table === "all-months" && typeof value === "string" && /^\d+(?:\.\d+)? · \$/.test(value)) { const [tokens, cost] = value.split(" · "); return `${reportNumber(Number(tokens))} · ${reportMoney(Number(cost!.slice(1).replaceAll(",", "")))}`; }
   return reportValue(value, label);
 }
+
+export function reportComparedChange(value: number, label: string): string {
+  const formatted = reportValue(Math.abs(value), label);
+  return formatted === reportValue(0, label) ? "±0" : `${value > 0 ? "+" : "−"}${formatted}`;
+}

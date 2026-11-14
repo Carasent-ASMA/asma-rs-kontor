@@ -3,7 +3,7 @@ vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "Vi
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon" }));
 import { findSvgIconProblem } from "@getpaseo/plugin";
 import { activityChartSummary, activityEveryoneKeys, chartSvgLayers, tokenomicsChartScene, type ChartScene } from "../client/tokenomics-charts";
-import { reportLinePair, reportLivePercent, reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
+import { reportComparedChange, reportLinePair, reportLivePercent, reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
 import type { Colors } from "../client/page-controls";
 import { buildTokenomics, paginateTokenomics, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 import { tokenomicsQuerySchema } from "../shared/tokenomics";
@@ -13,7 +13,7 @@ const query = (input: object = {}) => tokenomicsQuerySchema.parse(input);
 describe("native Tokenomics visual contracts", () => {
   it("matches web formatting without changing accounting values", () => {
     expect(reportNumber(65432109876)).toBe("65.43B"); expect(reportMoney(12345.67)).toBe("$12,346"); expect(reportMoney(6)).toBe("$6.00"); expect(reportTableValue(0.25, "Cache read", "prices")).toBe("0.25"); expect(reportLivePercent("100.0%")).toBe("100%"); expect(reportLivePercent(13.123)).toBe("13%"); expect(reportLivePercent(5.9)).toBe("5.9%");
-    expect(reportTableValue("2026-11-03T12:34:00Z", "Merged", "delivery-prs")).toBe("2026-11-03"); expect(reportLinePair(0, 0)).toBe("—"); expect(reportLinePair(null, null)).toBe("—"); expect(reportLinePair(1234, 100)).toBe("+1.2K / −100"); expect(reportTableValue(1608, "With token data", "coverage")).toBe("1608"); expect(reportTableValue("A, B, C, D, E, F, G", "Bugs", "bug-people")).toBe("A, B, C, D, E, F +1");
+    expect(reportTableValue("2026-11-03T12:34:00Z", "Merged", "delivery-prs")).toBe("2026-11-03"); expect(reportComparedChange(0.001, "API cost ($)")).toBe("±0"); expect(reportComparedChange(-0.002, "Cache hit (pp)")).toBe("±0"); expect(reportComparedChange(1.234, "Active seat-hours")).toBe("+1.2 h"); expect(reportLinePair(0, 0)).toBe("—"); expect(reportLinePair(null, null)).toBe("—"); expect(reportLinePair(1234, 100)).toBe("+1.2K / −100"); expect(reportTableValue(1608, "With token data", "coverage")).toBe("1608"); expect(reportTableValue("A, B, C, D, E, F, G", "Bugs", "bug-people")).toBe("A, B, C, D, E, F +1");
     expect(reportValue(1234567890, "Codex Auto Review")).toBe("1.23B"); expect(reportValue(13.123456789, "Churn (%)")).toBe("13.1%"); expect(reportValue(1.2345, "Bugs per 1K code lines")).toBe("1.23");
     const d = tokenomicsFixture(), before = JSON.stringify(d); buildTokenomics(d, tokenomicsLiveFixture(), query()); expect(JSON.stringify(d)).toBe(before);
   });
@@ -92,6 +92,15 @@ describe("native Tokenomics visual contracts", () => {
     const q = query({ page: "overview", compare: "check-a", rev: "check-b" }), wt = buildTokenomics(d, live, q).tables.find((t) => t.id === "workstream-totals")!, r = wt.rows.find((r) => r.key === "build")!;
     expect(r.cells[wt.columns.indexOf("Δ done")]).toBe(0); expect(r.cells[wt.columns.indexOf("New done")]).toBe(1);
     const same = query({ compare: "check-b", rev: "check-b" }); expect(tokenomicsSummary(usageModel(d, same)).compare).toBe("none"); expect(buildTokenomics(d, live, same).tiles.every((t) => !t.delta)).toBe(true);
+  });
+  it("keeps registered overview epics before activity-ranked desk rows without changing raw export rows", () => {
+    const d = tokenomicsFixture(), base = d.epics[0]!, zero = { ...base, key: "EXAMPLE-099", summary: "Registered zero-usage epic", children: [] };
+    d.epics.unshift(zero); d.ws.build!.epics.unshift(zero.key);
+    const q = query({ page: "overview", openWorkstreams: ["build"] }), built = buildTokenomics(d, tokenomicsLiveFixture(), q), projected = paginateTokenomics(built, q).find((t) => t.id === "epics:build")!;
+    expect(projected.rows[0]!.cells[1]).toBe("EXAMPLE-099 · Registered zero-usage epic");
+    const wt = built.tables.find((t) => t.id === "workstream-totals")!, build = wt.rows.find((r) => r.key === "build")!; expect(build.cells[wt.columns.indexOf("Before Jira captured")]).toBe(1);
+    d.ws.build!.epics = []; const missing = buildTokenomics(d, tokenomicsLiveFixture(), q).tables.find((t) => t.id === "workstream-totals")!; expect(missing.rows.find((r) => r.key === "build")!.cells[missing.columns.indexOf("Before Jira captured")]).toBe(0);
+    expect(built.tables.find((t) => t.id === "epics")!.rows).toHaveLength(3);
   });
   it("computes workstream cache-hit deltas from full values before display rounding", () => {
     const d = tokenomicsFixture(); d.facts = d.facts.slice(0, 2);

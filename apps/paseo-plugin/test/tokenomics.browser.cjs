@@ -52,7 +52,11 @@ async function tab(width, height, theme) {
         assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label=\"Range: Last 14 days\"]'))"));
       }
       await t.evaluate("document.querySelector('[data-testid=tokenomics-page]').querySelector('[role=tab]').click()"); await t.ready();
+      assert.ok(await t.evaluate("[...document.querySelectorAll('[data-testid=report-progress]')].length>0 && [...document.querySelectorAll('[data-testid=report-progress]')].every(e=>e.getBoundingClientRect().height===12 && e.getBoundingClientRect().width>=160)"));
+      assert.ok(await t.evaluate("Boolean(document.querySelector('[data-testid=report-workstream-change-Done]')) && document.querySelector('[data-testid=report-workstream-change-Done]').textContent!=='not captured'"));
       await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("Boolean(document.querySelector('[data-testid=\"report-table-epics:build\"]'))"));
+      assert.ok(await t.evaluate("document.querySelectorAll('[data-testid=report-epic-change]').length>0"));
+      assert.ok(await t.evaluate("[...document.querySelectorAll('[data-testid=report-progress]')].length>0 && [...document.querySelectorAll('[data-testid=report-progress]')].every(e=>e.getBoundingClientRect().height===12)"));
       await t.click("Copy full CSV"); await t.wait("document.body.innerText.includes('all matching rows copied')");
       await t.select("Period", "Custom dates"); await t.ready();
       await t.evaluate("(()=>{const e=document.querySelector('[aria-label=\"from date YYYY-MM-DD\"]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(e,'2026-11-02');e.dispatchEvent(new Event('input',{bubbles:true}));e.focus();e.blur()})()"); await t.ready();
