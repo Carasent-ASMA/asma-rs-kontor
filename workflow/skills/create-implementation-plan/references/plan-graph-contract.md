@@ -149,7 +149,10 @@ launch-ready check scoped to that milestone's rows:
   prerequisite without a tracker issue cannot have its completion verified.
 - The validator refuses an empty scope, an unknown task, a scope on a plan
   without exactly one `delivery_strategy: milestone`, and a scoped run over
-  more than one plan.
+  more than one plan. Admission also refuses a scope that does not equal
+  exactly one milestone's mapped rows: a subset, a superset or a mix across
+  milestones. The graph carries no milestone field, so the validator cannot
+  detect this; the coordinator checks the printed scope against the map.
 - The scope equals that milestone's rows as mapped in the plan's milestone
   section, on the authoritative saved revision. The PASS line names the scope,
   its dependency closure and how many rows outside it are unbound. The receipt

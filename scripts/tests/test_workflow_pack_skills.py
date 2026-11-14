@@ -1357,6 +1357,43 @@ class LinkTests(unittest.TestCase):
         self.assertIn(fragment, anchors(read(path)))
 
 
+class MilestoneScopedLaunchTests(unittest.TestCase):
+    """The scoped launch check names every refusal in both of its homes."""
+
+    REFUSALS = (
+        "an empty scope",
+        "an unknown task",
+        "without exactly one delivery_strategy: milestone",
+        "more than one plan",
+        "does not equal exactly one milestone's mapped rows",
+    )
+
+    def test_the_contract_names_all_five_refusals(self) -> None:
+        text = read(
+            SKILLS
+            / "create-implementation-plan"
+            / "references"
+            / "plan-graph-contract.md"
+        )
+        section = text.split("## Milestone-scoped launch check", 1)[1]
+        section = re.sub(r"\s+", " ", section.split("\n## ", 1)[0])
+        for refusal in self.REFUSALS:
+            with self.subTest(refusal=refusal):
+                self.assertIn(refusal, section.replace("`", ""))
+
+    def test_the_decision_names_the_scope_equality_refusal(self) -> None:
+        record = read(
+            REPO_ROOT
+            / "docs"
+            / "decisions"
+            / "2026-11-14-07-20-decision-milestone-scoped-launch-check.md"
+        )
+        self.assertIn(
+            "does not equal exactly one milestone's mapped rows",
+            re.sub(r"\s+", " ", record),
+        )
+
+
 class RuleOwnershipTests(unittest.TestCase):
     def setUp(self) -> None:
         self.readme = read(SKILLS / "README.md")

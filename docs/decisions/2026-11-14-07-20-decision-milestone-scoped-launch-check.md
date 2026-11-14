@@ -32,7 +32,9 @@ milestone until the end, which defeats milestone delivery.
   on the epic, on the named tasks and on the transitive closure of their
   `depends_on`, plus Kontor IDs for the same set on governed work. It refuses an
   empty or unknown scope, a plan without milestone delivery, and a scoped run
-  over more than one plan.
+  over more than one plan. Admission also refuses a scope that does not equal
+  exactly one milestone's mapped rows; without a milestone field the validator
+  cannot detect that, so the coordinator checks the printed scope.
 - The scope equals the milestone's mapped rows on the authoritative saved
   revision. The PASS line and the receipt name the scope and its dependency
   closure. Rows outside that closure need not be bound: existing confirmed
