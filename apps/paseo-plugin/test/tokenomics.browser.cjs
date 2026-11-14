@@ -11,10 +11,11 @@ async function tab(width, height, theme) {
   let id = 0;
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
   socket.onmessage = ({ data }) => { const x = JSON.parse(data); if (x.id) { const p = pending.get(x.id); pending.delete(x.id); x.error ? p?.reject(Error(JSON.stringify(x.error))) : p?.resolve(x.result); } else if (x.method === "Runtime.exceptionThrown") errors.push(x.params.exceptionDetails.text); };
+  socket.onclose = () => { for (const p of pending.values()) p.reject(Error("Chrome target closed before responding")); pending.clear(); };
   const call = (method, params = {}) => new Promise((resolve, reject) => { const key = ++id; pending.set(key, { resolve, reject }); socket.send(JSON.stringify({ id: key, method, params })); });
   const evaluate = async (expression) => { const r = await call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true }); if (r.exceptionDetails) throw Error(JSON.stringify(r.exceptionDetails)); return r.result.value; };
   const wait = async (expression) => { for (let i = 0; i < 120; i++) { if (await evaluate(`Boolean(${expression})`).catch(() => false)) return; await pause(250); } throw Error(`Timed out: ${expression}`); };
-  await call("Page.enable"); await call("Runtime.enable"); await call("Network.enable"); await call("Network.setCacheDisabled", { cacheDisabled: true });
+  await call("Page.enable"); await call("Page.bringToFront"); await call("Runtime.enable"); await call("Network.enable"); await call("Network.setCacheDisabled", { cacheDisabled: true });
   await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
   const ready = async () => { await pause(); await wait("document.querySelector('[data-testid=tokenomics-page] [aria-label=\"Refresh report\"]') && !document.body.innerText.includes('Updating selection…')"); };
   const click = (prefix) => evaluate(`(()=>{const e=[...document.querySelectorAll('[role=button],button')].find(e=>e.getAttribute('aria-label')?.startsWith(${JSON.stringify(prefix)}));if(!e)throw Error('Missing '+${JSON.stringify(prefix)});e.click()})()`);
@@ -24,9 +25,11 @@ async function tab(width, height, theme) {
     async key(key) { await call("Input.dispatchKeyEvent", { type: "keyDown", key, code: key }); await call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key }); await pause(); },
     async select(label, text) { await click(`${label}:`); await wait("document.querySelector('[data-testid=tokenomics-choice-popup] [role=radio]')"); await evaluate(`[...document.querySelectorAll('[data-testid=tokenomics-choice-popup] [role=radio]')].find(e=>e.textContent.includes(${JSON.stringify(text)})).click()`); await ready(); },
     async shot(name) { const r = await call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }); await fs.writeFile(path.join(output, name), Buffer.from(r.data, "base64")); },
-    async close() { await call("Page.close"); socket.close(); },
+    async close() { socket.send(JSON.stringify({ id: ++id, method: "Page.close" })); socket.close(); },
   };
 }
+let completed = false;
+process.on("beforeExit", () => { if (!completed) { console.error("Browser run ended before its final receipt"); process.exitCode = 1; } });
 (async () => {
   await fs.mkdir(output, { recursive: true }); const evidence = [];
   for (const [width, height] of [[390, 844], [1440, 900]]) for (const theme of ["dark", "light"]) {
@@ -47,7 +50,7 @@ async function tab(width, height, theme) {
         if (pages[index] === "activity") assert.ok(await t.evaluate("document.querySelector('[aria-label^=\"Range:\"]')?.textContent.includes('Full lifetime')||document.querySelector('[aria-label^=\"Range:\"]')?.textContent.includes('Last 30 days')"));
         evidence.push({ id: pages[index], width, height, theme });
       }
-      if (width === 390) { await t.select("Period", "Custom dates"); assert.ok(await t.evaluate("document.querySelector('[aria-label=\"from date YYYY-MM-DD\"]')&&document.querySelector('[aria-label=\"to date YYYY-MM-DD\"]')")); await t.select("Period", "All time"); }
+      if (width === 390) { await t.select("Period", "Custom dates"); assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label=\"from date YYYY-MM-DD\"]')&&document.querySelector('[aria-label=\"to date YYYY-MM-DD\"]'))")); await t.select("Period", "All time"); }
       await t.page(0);
       if (width === 390) {
         assert.ok(await t.evaluate("[...document.querySelectorAll('[data-testid^=report-kpi-]')].slice(0,6).every(e=>e.getBoundingClientRect().bottom<=innerHeight-60)"), "first viewport KPIs");
@@ -75,7 +78,7 @@ async function tab(width, height, theme) {
   for (const width of [390, 1440]) {
     const t = await tab(width, 844, "light");
     try {
-      await t.navigate("tokenomics-scroll"); await t.ready(); await t.page(17);
+      console.log(`Checking continuous rows at ${width}px`); await t.navigate("tokenomics-scroll"); await t.ready(); await t.page(17);
       if (width === 390) { await t.click("All 73 rows"); await t.wait("document.querySelector('[data-testid=report-full-rows-delivery-prs]')"); }
       const selector = width === 390 ? "[data-testid=report-full-rows-delivery-prs]" : "[data-testid=report-rows-delivery-prs]";
       await t.evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollTop=100000`); await pause(500);
@@ -90,5 +93,6 @@ async function tab(width, height, theme) {
   const offline = await tab(390, 844, "dark");
   try { await offline.navigate("tokenomics-offline"); await offline.wait("document.body.innerText.includes('Host offline')"); for (const label of ["Copy complete CSV", "Refresh report"]) assert.equal(await offline.evaluate(`[...document.querySelectorAll('[aria-label]')].find(e=>e.getAttribute('aria-label')===${JSON.stringify(label)}).getAttribute('aria-disabled')`), "true"); await offline.shot("tokenomics-offline.png"); } finally { await offline.close(); }
   await fs.writeFile(path.join(output, "native-pages.json"), JSON.stringify({ prototype: true, physicalDevice: false, pages: evidence, checks: ["all 18 destinations", "first viewport KPIs", "floating selector and nested Escape", "staged apply/cancel", "filter persistence", "continuous bounded rows", "complete CSV", "pivot drill-down", "custom dates", "revision/comparison", "offline refusal"] }, null, 2));
+  completed = true;
   console.log(`PASS ${evidence.length} page/continuous-row records and adaptive interactions; prototype only.`);
 })().catch((error) => { console.error(error); process.exitCode = 1; });
