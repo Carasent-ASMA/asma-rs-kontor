@@ -233,16 +233,16 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
   } else if (q.page === "roles") {
     const shareGroups = new Map<string, Aggregate>();
     for (const f of m.facts) { const key = m.dim(q.share, f, d.seats[f[0]]!), a = shareGroups.get(key) ?? blank(); add(a, f); shareGroups.set(key, a); }
-    const share = table("share", "Role consumption share", [DIMENSION_LABELS[q.share]!, "Tokens", "Share of tokens", "API cost ($)", "Responses", "Cache hit", "Seats"], [...shareGroups].map(([key, a]) => row(key, [key, tokens(a), ratio(tokens(a), tokens(m.total)), a.cost, a.n, ratio(a.read, a.fresh + a.read + a.write), a.seats.size])), "Share of consumed tokens by role in the current selection. Colours are stable per role; the tail is grouped as Other. Inspect a segment for its share, tokens, cost and responses; exact values are below.", true);
+    const share = table("share", "Role consumption share", [DIMENSION_LABELS[q.share]!, "Tokens", "Share of tokens", "API cost ($)", "Responses", "Cache hit", "Seats"], [...shareGroups].map(([key, a]) => row(key, [key, tokens(a), ratio(tokens(a), tokens(m.total)), a.cost, a.n, ratio(a.read, a.fresh + a.read + a.write), a.seats.size])), "Share of consumed tokens by role in the current selection — the period, filters and revision at the top all apply. Colours are stable per role (ranked over the whole period); the tail of small roles is grouped as “Other”. Inspect a segment for its share, tokens, cost and responses; the table below has the exact numbers.", true);
     share.rows.sort((a, b) => Number(b.cells[1]) - Number(a.cells[1]));
-    share.footer = [row("__total__", ["Total", tokens(m.total), "100.0%", m.total.cost, m.total.n, ratio(m.total.read, m.total.fresh + m.total.read + m.total.write), m.total.seats.size])];
+    share.footer = [row("__total__", ["Total", tokens(m.total), "100.0%", m.total.cost, m.total.n, "", ""])];
     tables.push(share);
     tables.push(table("adams", "Adam sessions (orchestrator hours)", ["Workstream", "Adam session", "Account", "Model", "Created", "Last activity", "Status", "Open hours", ...METRIC_COLUMNS], d.seats.flatMap((s, index) => {
       if (!s.adam || !m.wsOn(s.ws)) return [];
       const captured = m.rev !== d.revs.at(-1) ? m.rev?.seats?.[s.id] : undefined, updated = captured?.[1] || s.updated, status = captured?.[0] || s.status;
       const a = aggregate(m.facts.filter((f) => f[0] === index));
       return [row(s.id, [d.ws[s.ws]!.name, `${s.short} · ${s.title}`, s.acct, s.model, s.created, updated, status, captured ? Math.max(0, (Date.parse(updated) - Date.parse(s.created)) / 3600000) : s.open_h, ...metricCells(a)])];
-    }), "Open = created to last observed activity; older checks use captured lifecycle observations where present. Active uses measured durations/capped gaps. An Adam without recorded tokens remains visible."));
+    }), "Open = created → last activity (wall clock). Active = gaps between model responses capped at 5 min (OpenCode: exact response time)."));
     const adams = tables.find((t) => t.id === "adams")!, adamTotal = aggregate(m.facts.filter((f) => d.seats[f[0]]!.adam));
     adams.rows.sort((a, b) => String(a.cells[0]).localeCompare(String(b.cells[0])) || String(a.cells[4]).localeCompare(String(b.cells[4])));
     adams.footer = [row("__total__", ["Total", "", "", "", "", "", "", adams.rows.reduce((n, r) => n + Number(r.cells[7]), 0), ...metricCells(adamTotal)])];
@@ -251,7 +251,7 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
     mix.rows = mix.rows.map((r) => { const a = aggregate(m.facts.filter((f) => d.models[f[2]] === r.cells[0])); return { ...r, cells: [...r.cells, a.cF + a.cU, a.cR, a.cW, a.cO, d.mvendor[d.models.indexOf(String(r.cells[0]))] ?? "Unknown"] }; });
     mix.rows.sort((a, b) => Number(b.cells[1]) - Number(a.cells[1]));
     mix.footer = [row("__total__", ["Total", ...metricCells(m.total), m.total.cF + m.total.cU, m.total.cR, m.total.cW, m.total.cO, ""])];
-    mix.note = "Output includes reasoning. Billed OpenRouter totals with no split remain in input cost. The price table shows each valuation basis."; tables.push(mix);
+    mix.note = "Cache miss = uncached input; cache hit = cached input read; cache write = prompt-cache creation (Claude 5m/1h; OpenAI writes). Output includes reasoning."; tables.push(mix);
   } else if (q.page === "data") {
     notes.push("Seats without transcripts remain counted with zero recorded tokens. Actual usage is unknown; totals are floors.");
     tables.push(table("coverage", "Data coverage", ["Workstream", "Seats", "With tokens", "Transcript missing", "No token store", "No session ID", "Open hours without data"], Object.entries(d.ws).map(([w, def]) => {
@@ -264,7 +264,7 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
       { ...row("missing-heading", ["Seats without recoverable token data (counted as seats, zero tokens)"]), span: 7, heading: true },
       ...m.scope.filter((s) => s.data !== "ok").sort((a, b) => a.created.localeCompare(b.created)).map((s) => ({ ...row(s.id, [`${s.short} · ${s.title} · ${s.acct}/${s.model}`, null, null, null, s.data, s.created.slice(0, 10), s.open_h]), span: 4 })),
     ] };
-    coverage.note = "Seats counted in a workstream are those whose Paseo record falls in the selected period. Purged transcripts and sources without local token counts leave unrecoverable usage; totals are therefore floors for the earliest periods.";
+    coverage.note = "Seats counted in a workstream are those whose Paseo record falls in the selected period. Claude Code deletes transcripts after its retention period and some old Codex archives were pruned, so tokens for those seats are unrecoverable; Cursor and DeepSeek Harness keep no local token counts. Totals above are therefore floors for the earliest periods.";
     tables.push(table("prices", "Price table used (USD per 1M tokens)", ["Model", "Vendor", "Input miss", "Cache read", "Write 5m", "Write 1h", "Output", "Basis"], d.prices.map((p, i) => row(String(i), p)), priceNote));
   } else if (q.page === "usage") return allUsageTables(d, q);
   else if (q.page === "activity") return activityTables(d, live, q, m);
@@ -315,7 +315,7 @@ function allUsageTables(d: TokenomicsData, q: TokenomicsQuery): BuiltTokenomics 
   const groups = [...new Set(all.cats.map((c) => c[2]))], before = sum(all.facts.filter((f) => f[0] < all.firstKS));
   const tiles: TokenomicsView["tiles"] = [{ label: "Total known usage", value: tokens(total), note: `${usd(total.cost)} · ${all.sessions.total} sessions` },
     ...groups.map((g) => { const a = sum(all.facts.filter((f) => all.cats[f[1]]![2] === g)); return { label: g, value: tokens(a), note: `${usd(a.cost)} · ${ratio(a.cost, total.cost)} of cost` }; }),
-    { label: "Before orchestrated work began", value: tokens(before), note: `Before ${all.firstKS}; recoverable evidence only · ${usd(before.cost)}` },
+    { label: "Before orchestrated work began", value: tokens(before), note: `${usd(before.cost)} · before ${all.firstKS} (recoverable only)` },
     { label: "Registered workstreams", value: tokens(sum(all.facts.filter((f) => f[1] === 0))), note: `${Object.keys(d.ws).length} registered` },
     { label: "Cache hit rate (all)", value: ratio(total.read, total.fresh + total.read + total.write), note: "Recorded tokens only" }];
   const stack = (f: typeof all.facts[number]) => q.allStack === "c" ? all.cats[f[1]]![1] : q.allStack === "g" ? all.cats[f[1]]![2] : q.allStack === "s" ? all.subs[f[2]]! : q.allStack === "st" ? all.stores[f[3]]! : all.mvendor[f[4]]!;
@@ -353,6 +353,9 @@ function allUsageTables(d: TokenomicsData, q: TokenomicsQuery): BuiltTokenomics 
   const ledger = result.tables.find((t) => t.id === "ledger")!;
   ledger.note = `${ratio(all.ledgerLinked, all.ledgerTotal)} of all recoverable tokens (${all.ledgerTotal}) is linked to a Jira epic; the rest is carried as Unknown epic. Unknown reasons: ${Object.entries(all.unknownReasons).map(([k, v]) => `${k} — ${v}`).join(" · ") || "—"}. Every recoverable token in the local stores is counted exactly once.`;
   ledger.display = { columns: ledger.columns, rows: ledger.rows.flatMap((r) => [r, ...(r.cells[0] === "UNKNOWN" ? Object.entries(all.unknownReasons).map(([k, v]) => ({ ...row(`unknown-${k}`, [k, "", v, null, null, ratio(v, all.ledgerTotal), "", ""]), depth: 1 })) : [])]) };
+  const dateLabel = (value: string | null | undefined) => value ? new Date(Date.parse(value)).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Europe/Oslo" }) : "?";
+  const firstStore = (prefix: string) => Object.entries(all.coverage).filter(([k]) => k.startsWith(prefix)).map(([, v]) => v.first).filter(Boolean).sort()[0];
+  result.notes.push(`Paseo's own records begin ${dateLabel(all.firstKS)}, and Claude Code transcripts before ${dateLabel(firstStore("claude"))} are gone — the early numbers are what survives, not what was used.`);
   const chart = result.tables.find((t) => t.id === "all-chart")!;
   const ranked = new Map<string, number>(); for (const f of all.facts) ranked.set(stack(f), (ranked.get(stack(f)) ?? 0) + f[11]);
   chart.plot = { columns: chart.columns, rows: [], order: q.allStack === "c" ? all.cats.map((c) => c[1]) : q.allStack === "g" ? groups : [...ranked].sort((a, b) => b[1] - a[1]).map(([k]) => k), events: [[all.firstKS, "orchestrated work begins"]] };
@@ -409,7 +412,7 @@ function reviewTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQuer
   if (q.page === "cr-submitters") tables.push(table("submitters", "Submitters", ["Submitter", ...cols], group((p) => rv.prs[p.key]?.author ?? "unknown")));
   if (q.page === "cr-repos") tables.push(table("review-repos", "Repositories", ["Repository", ...cols], group((p) => rv.prs[p.key]?.repo.split("/").at(-1) ?? p.key.split("#")[0]!)));
   if (q.page === "cr-prs") tables.push(table("review-prs", "Pull requests", ["PR", "Title", "Author", "Status", "Jira key", ...cols], [...prs.values()].map((p) => { const meta = rv.prs[p.key]; return row(p.key, [p.key, meta?.title ?? "", meta?.author ?? "unknown", `${meta?.status ?? "unknown"}${meta?.draft ? " (draft)" : ""}${meta?.judge ? ` · JUDGE ${meta.judge}` : ""}`, meta?.key ?? "", ...cells(p)], detail(p), meta ? safeLink(`https://github.com/${meta.repo}/pull/`, String(meta.n)) : undefined); })));
-  return { tiles, tables, notes: [`Live desk state as of ${rv.asOf ?? "unknown"}; since ${rv.since ?? "unknown"}. Only Period applies; revisions and other filters do not.`, "Fix rate = fixed ÷ decided (every finding except open). Review costs come from existing PR-workspace usage, with coordination separate."] };
+  return { tiles, tables, notes: [`PR desk state as of ${(rv.asOf ?? "unknown").replace("T", " ").slice(0, 16)} UTC (desk running since ${(rv.since ?? "unknown").slice(0, 10)}); ${q.period === "all" ? "All time" : `${pd?.[0] ?? "beginning"} → ${pd?.[1] ?? "today"}`}. Live data: the revision picker and the other filters do not apply.`, "Fix rate = fixed ÷ decided (every finding except open). Review costs come from existing PR-workspace usage, with coordination separate."] };
 }
 
 function deliveryTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQuery): BuiltTokenomics {
@@ -460,13 +463,13 @@ function deliveryTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
     return table(id, title, [weekly ? "Week" : "Day", "Series", "Count"], [...groups].sort().map(([k, g]) => row(k, [g.day, g.who, g.n])), "Exact values accompany native bars.", true);
   };
   if (q.page === "dv-overview") {
-    tiles.push({ label: "PRs merged", value: all.prs, note: `${all.opened} opened in period · ${dv.prs.filter((p) => p.st === "open" && !bots.has(p.a)).length} open now` },
+    tiles.push({ label: "PRs merged", value: all.prs, note: `${all.opened} opened in the period · ${dv.prs.filter((p) => p.st === "open" && !bots.has(p.a)).length} open now` },
       { label: "Code lines added", value: all.la, note: `−${all.ld} deleted · tests +${all.ta}/−${all.td} · docs +${all.da}/−${all.dd}` },
       { label: "Median time to merge", value: median(all.ttm), note: `median PR ${median(all.size) ?? "—"} lines of code and tests` },
-      { label: "Churn (%)", value: churn(all), note: `${all.own} lines rewritten within ${dv.churnDays} days` },
+      { label: "Churn (%)", value: churn(all), note: `${all.own} lines rewritten within ${dv.churnDays} days of landing` },
       { label: "PRs without Jira key", value: ratio(all.nokey, all.prs), note: `${all.nokey} of ${all.prs} merged · ${all.direct} direct commits` },
-      { label: "Bugs reported", value: bugs.length, note: `${bugs.filter((b) => b.why === "traced").length} traced` },
-      { label: "Bugs per 1K code lines", value: perK(all), note: `${all.bin.toFixed(1)} bugs traced to code merged in period` });
+      { label: "Bugs reported", value: bugs.length, note: `${bugs.filter((b) => b.why === "traced").length} traced to the commit that introduced them` },
+      { label: "Bugs per 1K code lines", value: perK(all), note: `${all.bin.toFixed(1)} bugs traced to code merged in the period` });
     tables.push(daily("delivery-trend", "PRs merged over time by author", merged.map((p) => ({ day: p.m!, key: name(p.a) }))));
   }
   if (q.page === "dv-people" || q.page === "dv-repos") {
@@ -476,10 +479,10 @@ function deliveryTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   if (q.page === "dv-prs") tables.push(table("delivery-prs", "Pull requests", prCols, prRows(prs), "Only Period applies. PRs merged to a non-default branch retain unknown line counts."));
   if (q.page === "dv-bugs") {
     const traced = bugs.filter((b) => b.why === "traced"), lag = traced.map((b) => elapsedDays(b.intro.map((i) => i.d).sort().at(-1), b.c)).filter((v): v is number => v !== null && v >= 0);
-    tiles.push({ label: "Bugs reported", value: bugs.length, note: `${bugs.filter((b) => b.cat === "done").length} done in Jira` }, { label: "With a fix in git", value: bugs.filter((b) => b.fix.length).length, note: "Merged PR or commit names the bug" },
-      { label: "Traced", value: ratio(traced.length, bugs.length), note: "Introducing commit found" }, { label: "Introduction → report", value: median(lag) == null ? null : `${median(lag)} d`, note: "median days from the code landing to the bug being reported" }, { label: "Linked in Jira", value: bugs.filter((b) => b.cause.length).length, note: "Has an is-caused-by link" });
+    tiles.push({ label: "Bugs reported", value: bugs.length, note: `${bugs.filter((b) => b.cat === "done").length} done in Jira` }, { label: "With a fix in git", value: bugs.filter((b) => b.fix.length).length, note: "a merged PR or mainline commit names the bug" },
+      { label: "Traced", value: ratio(traced.length, bugs.length), note: `${traced.length} bugs: the commit that introduced them was found` }, { label: "Introduction → report", value: median(lag) == null ? null : `${median(lag)} d`, note: "median days from the code landing to the bug being reported" }, { label: "Linked in Jira", value: bugs.filter((b) => b.cause.length).length, note: 'bugs with an “is caused by” link to the issue that caused them' });
     tables.push(daily("bug-trend", "Bugs reported by trace result", bugs.map((b) => ({ day: b.c, key: b.why }))));
-    tables.push(table("bug-people", "Who introduced and fixed bugs", ["Person", ...cols, "Bugs"], [...people].filter(([, a]) => a.bin || a.bfix || a.la).map(([k, a]) => row(k, [name(k), ...cells(a), [...a.bugs].join(", ")])), quality));
+    tables.push(table("bug-people", "Who introduced and fixed bugs", ["Person", ...cols, "Bugs"], [...people].filter(([, a]) => a.bin || a.bfix || a.la).map(([k, a]) => row(k, [name(k), ...cells(a), [...a.bugs].join(", ")], [...a.bugs])), quality));
     tables.push(table("bugs", "Bugs", ["Bug", "Summary", "Priority", "State", "Reported", "Introduced by", "Days to report", "Fixed by", "Trace"], bugs.map((b) => row(b.key, [b.key, b.sum, b.pri ?? null, b.s, b.c, [...new Set(b.intro.map((i) => name(i.a)))].join(", ") || null, elapsedDays(b.intro[0]?.d, b.c), [...new Set(b.fix.map((f) => name(f.a)))].join(", ") || null, b.why],
       [...b.cause.map((k) => `Jira: is caused by ${k} · ${dv.issues[k]?.sum ?? ""}`), ...b.intro.map((i) => `${ratio(i.n, b.intro.reduce((n, x) => n + x.n, 0))} of blamed lines (${i.n}) · ${name(i.a)} · ${i.d} · ${i.repo} · ${i.pr ?? i.c} · ${i.keys.join(", ")} · ${i.s}`), ...b.fix.map((f) => `Fix · ${name(f.a)} · ${f.d} · ${f.repo} · ${f.pr ?? f.c}`)], safeLink(d.jiraBase ?? "", b.key))), "Bugs by reported day. Introduction attribution is shared by blamed lines and charged on the introducing code's merge day."));
   }
@@ -506,7 +509,7 @@ function deliveryTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
     tables.push(table("jira-epics", "By epic", ["Epic", "Issues", "Done", "PRs merged", "Code added", "Code deleted", "Rework", "Flagged", "AI cost ($)", "AI cost / PR ($)"], [...epicGroups].map(([k, g]) => row(k, [k, g.issues, g.done, g.prs.size, g.la, g.ld, g.rw, g.flags, cost.get(k) ?? 0, g.prs.size && cost.get(k) ? cost.get(k)! / g.prs.size : null])), "AI cost is this machine's usage in the period; revision and other filters do not apply."));
     tables.push(table("jira-issues", "By issue", ["Issue", "Summary", "Epic", "Jira status", "Assignee", "Created", "Started", "Done", "First PR", "Last merge", "Start → PR (days)", "PR → merge (days)", "Merge → done (days)", "Merged PRs", "All PRs", "Code added", "Code deleted", "Flag"], rows.filter((x) => x.j?.t !== "Epic").map((x) => row(x.key, [x.key, x.j?.sum ?? "not readable", x.j?.e ?? null, x.j?.s ?? null, x.j?.asg ?? null, x.j?.c ?? null, x.j?.st ?? null, x.j?.r ?? null, x.first, x.last, elapsedDays(x.j?.st, x.first), elapsedDays(x.first, x.last), elapsedDays(x.last, x.j?.r), x.merged.length, x.prs.length, x.la, x.ld, x.flag], x.prs.map((p) => `${p.ref} · ${name(p.a)} · ${p.st}${p.dr ? " (draft)" : ""} · opened ${p.c} · merged ${p.m ?? "—"} · ${p.t}`), safeLink(d.jiraBase ?? "", x.key))), "Issues may belong to several PRs. A PR counts once per epic. Existing unresolved flags remain visible across periods."));
   }
-  return { tiles, tables, notes: [`Live GitHub ${dv.org}: ${dv.repos.length} repositories, PRs since ${dv.since}; as of ${dv.asOf}. Only Period applies; bots excluded.${dv.jira ? "" : " Jira was unavailable on the last collection, so issue, bug and epic coverage is incomplete."}`, ...(dv.jira ? [] : ["Jira was unavailable on the last collection; issue/bug coverage is incomplete."]), ...dv.errors, quality] };
+  return { tiles, tables, notes: [`GitHub ${dv.org}: ${dv.repos.length} repositories, pull requests since ${dv.since}, as of ${dv.asOf.replace("T", " ").slice(0, 16)} UTC; ${q.period === "all" ? "All time" : `${pd?.[0] ?? "beginning"} → ${pd?.[1] ?? "today"}`}. Live data: the revision picker and the other filters do not apply. Bots are left out.${dv.jira ? "" : " Jira was unavailable on the last collection, so issue, bug and epic coverage is incomplete."}`, ...(dv.jira ? [] : ["Jira was unavailable on the last collection; issue/bug coverage is incomplete."]), ...dv.errors, quality] };
 }
 
 function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQuery, m: ReturnType<typeof usageModel>): BuiltTokenomics {

@@ -39,6 +39,7 @@ async function tab(width, height, theme) {
         await t.evaluate(`document.querySelector('[data-testid=tokenomics-page]').querySelectorAll('[role=tab]')[${index}].click()`); await t.ready();
         assert.ok(await t.evaluate(`[...document.querySelectorAll('[data-testid=tokenomics-page] [role=heading]')].some(e=>e.textContent===${JSON.stringify(heading)})`), id);
         assert.ok(await t.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"), `${id}: page overflow`);
+        if (id === "progress") assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label^=\"From:\"]')) && !document.querySelector('[aria-label^=\"From:\"]').getAttribute('aria-label').includes('None')"));
         if (id === "pivot") { await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("document.querySelector('[data-testid=report-table-pivot]').innerText.includes('EXAMPLE-102')")); await t.click("Collapse"); await t.ready(); }
         evidence.push({ id, width, height, theme, heading });
       }
@@ -63,6 +64,6 @@ async function tab(width, height, theme) {
   }
   const offline = await tab(390, 844, "dark");
   try { await offline.navigate(`${root}?embed=1&scenario=tokenomics-offline&theme=dark`); await offline.wait("document.body.innerText.includes('Host offline')"); for (const label of ["Copy full CSV", "Refresh report"]) assert.equal(await offline.evaluate(`document.querySelector('[aria-label=${JSON.stringify(label)}]').getAttribute('aria-disabled')`), "true"); await offline.screenshot("tokenomics-offline.png"); } finally { await offline.close(); }
-  await fs.writeFile(path.join(output, "native-pages.json"), JSON.stringify({ prototype: true, physicalDevice: false, pages: evidence, checks: ["complete CSV", "pivot drill-down", "workstream expansion", "custom dates", "revision selection", "comparison selection", "offline export/read refusal"] }, null, 2));
+  await fs.writeFile(path.join(output, "native-pages.json"), JSON.stringify({ prototype: true, physicalDevice: false, pages: evidence, checks: ["responsive auto/manual timeline range", "complete CSV", "pivot drill-down", "workstream expansion", "custom dates", "revision selection", "comparison selection", "offline export/read refusal"] }, null, 2));
   console.log(`PASS ${evidence.length} native page renders and selection/export/offline interactions; prototype only.`);
 })().catch((error) => { console.error(error); process.exitCode = 1; });

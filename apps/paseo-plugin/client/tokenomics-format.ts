@@ -37,8 +37,12 @@ export function reportLivePercent(value: string | number | null | undefined): st
   return `${percent.toFixed(percent && percent < 10 ? 1 : 0)}%`;
 }
 
+export const reportLinePair = (added: string | number | null | undefined, deleted: string | number | null | undefined): string => added == null || deleted == null || !Number(added) && !Number(deleted) ? "—" : `+${reportNumber(Number(added))} / −${reportNumber(Number(deleted))}`;
+
 export function reportTableValue(value: string | number | null | undefined, label: string, table: string): string {
   if (/^(review-|reviewer$|submitters$|delivery-|jira-|bug-|bugs$)/.test(table) && (typeof value === "string" && value.endsWith("%") || typeof value === "number" && /%|Churn/i.test(label))) return reportLivePercent(value);
+  if (table === "bug-people" && label === "Bugs" && typeof value === "string") { const keys = value ? value.split(", ") : []; return keys.slice(0, 6).join(", ") + (keys.length > 6 ? ` +${keys.length - 6}` : ""); }
+  if (table === "coverage" && typeof value === "number" && !/hours/i.test(label)) return String(value);
   if (table === "prices") return value == null ? "—" : String(value);
   if (table === "all-months" && typeof value === "string" && /^\d+(?:\.\d+)? · \$/.test(value)) { const [tokens, cost] = value.split(" · "); return `${reportNumber(Number(tokens))} · ${reportMoney(Number(cost!.slice(1).replaceAll(",", "")))}`; }
   return reportValue(value, label);

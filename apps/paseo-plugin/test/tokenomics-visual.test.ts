@@ -3,7 +3,7 @@ vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "Vi
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon" }));
 import { findSvgIconProblem } from "@getpaseo/plugin";
 import { activityChartSummary, activityEveryoneKeys, chartSvgLayers, tokenomicsChartScene, type ChartScene } from "../client/tokenomics-charts";
-import { reportLivePercent, reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
+import { reportLinePair, reportLivePercent, reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
 import type { Colors } from "../client/page-controls";
 import { buildTokenomics, paginateTokenomics, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 import { tokenomicsQuerySchema } from "../shared/tokenomics";
@@ -13,6 +13,7 @@ const query = (input: object = {}) => tokenomicsQuerySchema.parse(input);
 describe("native Tokenomics visual contracts", () => {
   it("matches web formatting without changing accounting values", () => {
     expect(reportNumber(65432109876)).toBe("65.43B"); expect(reportMoney(12345.67)).toBe("$12,346"); expect(reportMoney(6)).toBe("$6.00"); expect(reportTableValue(0.25, "Cache read", "prices")).toBe("0.25"); expect(reportLivePercent("100.0%")).toBe("100%"); expect(reportLivePercent(13.123)).toBe("13%"); expect(reportLivePercent(5.9)).toBe("5.9%");
+    expect(reportLinePair(0, 0)).toBe("—"); expect(reportLinePair(null, null)).toBe("—"); expect(reportLinePair(1234, 100)).toBe("+1.2K / −100"); expect(reportTableValue(1608, "With token data", "coverage")).toBe("1608"); expect(reportTableValue("A, B, C, D, E, F, G", "Bugs", "bug-people")).toBe("A, B, C, D, E, F +1");
     expect(reportValue(1234567890, "Codex Auto Review")).toBe("1.23B"); expect(reportValue(13.123456789, "Churn (%)")).toBe("13.1%"); expect(reportValue(1.2345, "Bugs per 1K code lines")).toBe("1.23");
     const d = tokenomicsFixture(), before = JSON.stringify(d); buildTokenomics(d, tokenomicsLiveFixture(), query()); expect(JSON.stringify(d)).toBe(before);
   });
