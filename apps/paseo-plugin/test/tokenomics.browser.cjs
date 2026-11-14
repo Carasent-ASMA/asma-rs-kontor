@@ -42,6 +42,14 @@ async function tab(width, height, theme) {
         if (id === "pivot") { await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("document.querySelector('[data-testid=report-table-pivot]').innerText.includes('EXAMPLE-102')")); await t.click("Collapse"); await t.ready(); }
         evidence.push({ id, width, height, theme, heading });
       }
+      if (width === 1440) {
+        await t.evaluate("document.querySelector('[data-testid=tokenomics-page]').querySelectorAll('[role=tab]')[2].click()"); await t.ready();
+        assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label=\"Range: Full lifetime\"]'))"));
+        await t.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }); await t.ready();
+        assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label=\"Range: Last 30 days\"]'))"));
+        await t.select("Range", "Last 14 days"); await t.call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await t.ready();
+        assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label=\"Range: Last 14 days\"]'))"));
+      }
       await t.evaluate("document.querySelector('[data-testid=tokenomics-page]').querySelector('[role=tab]').click()"); await t.ready();
       await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("Boolean(document.querySelector('[data-testid=\"report-table-epics:build\"]'))"));
       await t.click("Copy full CSV"); await t.wait("document.body.innerText.includes('all matching rows copied')");

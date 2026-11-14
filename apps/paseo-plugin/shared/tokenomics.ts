@@ -38,7 +38,7 @@ export const tokenomicsQuerySchema = z.object({
   share: z.enum(["rg", "rc", "seat"]).default("rg"), split: z.boolean().default(false),
   expanded: z.array(text).max(100000).default([]),
   metric: z.enum(["act", "cost", "tok", "peak", "cph", "hit", "prs", "cm", "lines", "cpp"]).default("act"),
-  range: z.enum(["all", "60", "30", "14"]).default("all"), dual: text.default("all"),
+  range: z.enum(["auto", "all", "60", "30", "14"]).default("auto"), dual: text.default("all"),
   allMeasure: z.enum(["cost", "tok"]).default("cost"), allStack: z.enum(["c", "g", "s", "st", "v"]).default("c"),
   allGranularity: z.enum(["week", "day"]).default("week"), allFrom: z.enum(["first", "aug"]).default("first"),
   search: text.default(""), sort: text.default(""), descending: z.boolean().default(true),

@@ -98,6 +98,14 @@ describe("native Tokenomics visual contracts", () => {
     const q = query({ page: "activity", filters: { user: ["Nobody selected"] } }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!, scene = tokenomicsChartScene(t, 1138, colors, q);
     expect(scene.height).toBe(40); expect(scene.parts.join("")).toContain("No recorded activity for the current filters.");
   });
+  it("defaults timeline range to chart width while retaining an explicit full-lifetime selection", () => {
+    const q = query({ page: "activity" }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!;
+    expect(q.range).toBe("auto");
+    t.plot!.end = "2026-12-31";
+    const auto = tokenomicsChartScene(t, 348, colors, q), full = tokenomicsChartScene(t, 348, colors, { ...q, range: "all" });
+    expect(auto.hits.some((h) => h.label.startsWith("2026-10-31"))).toBe(false);
+    expect(full.hits.some((h) => h.label.startsWith("2026-10-31"))).toBe(true);
+  });
   it.skipIf(!process.env.KONTOR_TOKENOMICS_VISUAL_ROOT)("validates frozen wide/timeline projections [local visual proof]", async () => {
     const { readTokenomicsSnapshot, tokenomicsView } = await import("../server/tokenomics"), snapshot = await readTokenomicsSnapshot(process.env.KONTOR_TOKENOMICS_VISUAL_ROOT!);
     expect(snapshot.data).not.toBeNull(); const q = query({ page: "activity" }), view = tokenomicsView(snapshot, q), timeline = view.tables.find((t) => t.id === "timeline")!, parallel = view.tables.find((t) => t.id === "parallel")!;

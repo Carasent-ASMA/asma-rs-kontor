@@ -110,7 +110,8 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
   const narrow = width < 700, labelW = Math.round(Math.max(104, Math.min(300, width * (narrow ? 0.34 : 0.21)))), gx1 = width - (narrow ? 0 : 262) - 6;
   const observed = data.map((r) => String(r[4])).filter(Boolean).sort(), end = table.plot?.end ?? observed.at(-1) ?? "";
   const first = [...observed, ...spans.map((r) => r[2]).filter((v): v is string => typeof v === "string" && !!v)].sort()[0] ?? end;
-  const since = query.range === "all" ? first : new Date(Date.parse(end) + (1 - Number(query.range)) * 86400000).toISOString().slice(0, 10);
+  const range = query.range === "auto" ? narrow ? "30" : "all" : query.range;
+  const since = range === "all" ? first : new Date(Date.parse(end) + (1 - Number(range)) * 86400000).toISOString().slice(0, 10);
   const days = first ? daysBetween(first < since ? since : first, end) : [], cw = (gx1 - labelW) / Math.max(1, days.length), xi = new Map(days.map((d, i) => [d, i]));
   type Line = { label: string; data: Cell[][]; depth: number; person: string; toggle?: string; open?: boolean; heading?: boolean; height: number };
   const lines: Line[] = [], closed = (key: string, defaultOpen: boolean) => query.expanded.includes(`closed:${key}`) || (!query.expanded.includes(key) && !defaultOpen);
