@@ -54,3 +54,9 @@ export function reportComparedChange(value: number, label: string): string {
   const formatted = reportValue(Math.abs(value), label);
   return formatted === reportValue(0, label) ? "±0" : `${value > 0 ? "+" : "−"}${formatted}`;
 }
+
+/** Keep whole labels/numbers readable; excess columns scroll rather than split a value. */
+export function reportTableWidths(natural: number[], minimum: number[], available: number): number[] {
+  const factor = Math.max(available >= 1100 ? 0.9 : 1, (available - 2) / natural.reduce((a, b) => a + b, 0));
+  return natural.map((width, i) => Math.max(width * factor, minimum[i] ?? 0));
+}

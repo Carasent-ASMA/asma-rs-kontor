@@ -3,7 +3,7 @@ vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "Vi
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon" }));
 import { findSvgIconProblem } from "@getpaseo/plugin";
 import { activityChartSummary, activityEveryoneKeys, chartSvgLayers, tokenomicsChartScene, type ChartScene } from "../client/tokenomics-charts";
-import { reportComparedChange, reportLinePair, reportLivePercent, reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
+import { reportComparedChange, reportLinePair, reportLivePercent, reportMoney, reportNumber, reportTableValue, reportTableWidths, reportValue } from "../client/tokenomics-format";
 import type { Colors } from "../client/page-controls";
 import { buildTokenomics, paginateTokenomics, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 import { tokenomicsQuerySchema } from "../shared/tokenomics";
@@ -11,6 +11,18 @@ import { tokenomicsFixture, tokenomicsLiveFixture } from "./fixtures/tokenomics"
 const colors = { surface0: "#f4f3f0", surface1: "#fcfcfb", surface2: "#f0efec", border: "#e2e1dc", foreground: "#0b0b0b", foregroundMuted: "#52514e", accent: "#2a78d6" } as Colors;
 const query = (input: object = {}) => tokenomicsQuerySchema.parse(input);
 describe("native Tokenomics visual contracts", () => {
+  it("keeps native table values whole instead of shrinking below readable widths", () => {
+    expect(reportTableWidths([54, 70], [56, 74], 1100).reduce((a, b) => a + b, 0)).toBeCloseTo(1098);
+    const natural = Array.from({ length: 20 }, () => 70), minimum = natural.map(() => 74);
+    expect(reportTableWidths(natural, minimum, 1138)).toEqual(minimum);
+    expect(reportTableWidths([100, 100], [80, 120], 150)).toEqual([100, 120]);
+  });
+  it("labels unpriced Auto Review separately from its hypothetical rate comparison", () => {
+    const data = tokenomicsFixture(), before = JSON.stringify(data), built = buildTokenomics(data, tokenomicsLiveFixture(), query());
+    const tile = built.tiles.find((t) => t.label === "Codex Auto Review")!;
+    expect(tile.note).toContain("Unpriced; excluded from cost estimate."); expect(tile.note).toContain("Hypothetical"); expect(tile.note).not.toContain("$0");
+    expect(usageModel(data, query()).total.cost).toBe(6); expect(JSON.stringify(data)).toBe(before);
+  });
   it("matches web formatting without changing accounting values", () => {
     expect(reportNumber(65432109876)).toBe("65.43B"); expect(reportMoney(12345.67)).toBe("$12,346"); expect(reportMoney(6)).toBe("$6.00"); expect(reportTableValue(0.25, "Cache read", "prices")).toBe("0.25"); expect(reportLivePercent("100.0%")).toBe("100%"); expect(reportLivePercent(13.123)).toBe("13%"); expect(reportLivePercent(5.9)).toBe("5.9%");
     expect(reportTableValue("2026-11-03T12:34:00Z", "Merged", "delivery-prs")).toBe("2026-11-03"); expect(reportComparedChange(0.001, "API cost ($)")).toBe("±0"); expect(reportComparedChange(-0.002, "Cache hit (pp)")).toBe("±0"); expect(reportComparedChange(1.234, "Active seat-hours")).toBe("+1.2 h"); expect(reportLinePair(0, 0)).toBe("—"); expect(reportLinePair(null, null)).toBe("—"); expect(reportLinePair(1234, 100)).toBe("+1.2K / −100"); expect(reportTableValue(1608, "With token data", "coverage")).toBe("1608"); expect(reportTableValue("A, B, C, D, E, F, G", "Bugs", "bug-people")).toBe("A, B, C, D, E, F +1");

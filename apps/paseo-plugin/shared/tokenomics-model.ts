@@ -227,7 +227,7 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
     overviewTile("Active seat-hours", hours(a.act), "all seats; Codex/Claude gaps capped at 5 min, OpenCode exact", delta(a.act, prior?.act, hours));
     overviewTile("Orchestrator active hours", hours(adamAct(m.facts)), "Adam sessions only", delta(adamAct(m.facts), m.compare ? adamAct(m.filtered(m.compare)) : undefined, hours));
     overviewTile("Sub-thread tokens", ratio(a.sub, tokens(a)), `${number(a.sub)} from Codex guardian / spawned sub-agents`, delta(sub(a), prior ? sub(prior) : undefined, (n) => `${n.toFixed(1)} pp`, 0.05));
-    overviewTile("Codex Auto Review", a.ar, `no public price → $0; at ${d.sensModel} rates ≈ ${usd(a.sens)}`, delta(a.ar, prior?.ar, number));
+    overviewTile("Codex Auto Review", a.ar, `Unpriced; excluded from cost estimate. Hypothetical ${d.sensModel} list-rate estimate: ${usd(a.sens)}.`, delta(a.ar, prior?.ar, number));
     const values = m.grouped(m.facts, ["ws", "epic"]);
     for (const [w, def] of Object.entries(d.ws)) if (m.wsOn(w)) for (const key of new Set([...def.epics, ...m.scope.filter((s) => s.ws === w).map((s) => s.epic)])) {
       const labels = [def.name, m.epicLabel(key)]; if (!values.some((r) => r.cells[0] === labels[0] && r.cells[1] === labels[1])) values.push(row(JSON.stringify(labels), [...labels, ...metricCells(blank())]));
