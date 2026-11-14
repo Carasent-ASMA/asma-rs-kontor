@@ -6,7 +6,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { readConfig } from "./config";
 import { exportTokenomics, readTokenomics, tokenomicsDataSchema, tokenomicsLiveSchema, tokenomicsQuerySchema, type TokenomicsData, type TokenomicsLive, type TokenomicsQuery, type TokenomicsView } from "../shared/tokenomics";
-import { buildTokenomics, paginateTokenomics, pivotRows, tokenomicsCsv, tokenomicsOptions, usageModel } from "../shared/tokenomics-model";
+import { buildTokenomics, paginateTokenomics, pivotRows, tokenomicsCsv, tokenomicsOptions, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 
 export const REPORT_MAX_BYTES = 32 * 1024 * 1024;
 export const LIVE_MAX_BYTES = 16 * 1024 * 1024;
@@ -79,7 +79,7 @@ export function tokenomicsView(snapshot: ReportSnapshot, input: TokenomicsQuery)
   const options = tokenomicsOptions(d, model);
   if (q.page === "pivot") options.pivotNodes = pivotRows(model, q).filter((r) => r.hasChildren).map((r) => ({ value: r.key, label: r.cells.slice(0, q.groups.length).filter(Boolean).join(" → ") }));
   return { ...empty, status: snapshot.diagnostics.length ? "partial" : "ready", generated: d.generated,
-    options, tiles: result.tiles, tables: paginateTokenomics(result, q), notes: result.notes };
+    options, summary: tokenomicsSummary(model), tiles: result.tiles, tables: paginateTokenomics(result, q), notes: result.notes };
 }
 
 export function contributeTokenomics(server: PluginServerContext): void {

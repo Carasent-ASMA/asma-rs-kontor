@@ -31,6 +31,7 @@ export const tokenomicsQuerySchema = z.object({
   show: z.enum(["usage", "idle", "all", "report"]).default("usage"),
   workstreams: z.array(text).max(512).nullable().default(null),
   filters: z.partialRecord(z.enum(FILTER_DIMENSIONS), z.array(text).max(100000)).default({}),
+  sorts: z.record(text, z.object({ column: text, descending: z.boolean() })).default({}),
   groups: z.array(z.enum(DIMENSIONS)).min(1).max(4).default(["ws", "epic", "task", "seat"]),
   measure: z.enum(["cost", "tok", "act"]).default("cost"), stack: z.enum(DIMENSIONS).default("ws"),
   share: z.enum(["rg", "rc", "seat"]).default("rg"), split: z.boolean().default(false),
@@ -119,9 +120,12 @@ export const tokenomicsLiveSchema = z.object({
 });
 export type TokenomicsLive = z.infer<typeof tokenomicsLiveSchema>;
 const cellSchema = z.union([text, number, z.null()]);
+const plotSchema = z.object({ columns: z.array(text).max(64), rows: z.array(z.array(cellSchema).max(64)).max(100000),
+  end: text.optional(), order: z.array(text).max(4096).optional(), desks: z.array(text).max(512).optional(), events: z.array(z.array(cellSchema).max(4)).max(200000).optional(), flags: z.array(z.array(cellSchema).max(16)).max(10000).optional(), gaps: z.array(z.array(cellSchema).max(8)).max(100000).optional(), spans: z.array(z.array(cellSchema).max(16)).max(10000).optional() });
 export const tableSchema = z.object({ id: text, title: text, note: text, columns: z.array(text).max(64),
   rows: z.array(z.object({ key: text, cells: z.array(cellSchema).max(64), detail: z.array(text).max(2000).default([]), url: text.optional(), hasChildren: z.boolean().optional(), depth: count.int().optional() })).max(100),
   total: count, chart: z.boolean().default(false),
+  plot: plotSchema.optional(),
 });
 export type TokenomicsTable = z.infer<typeof tableSchema>;
 export const tokenomicsViewSchema = z.object({
@@ -130,6 +134,7 @@ export const tokenomicsViewSchema = z.object({
   options: z.record(text, z.array(z.object({ value: text, label: text })).max(100000)),
   tiles: z.array(z.object({ label: text, value: cellSchema, note: text })).max(32),
   tables: z.array(tableSchema).max(32), notes: z.array(text),
+  summary: z.object({ cost: count, tokens: count, responses: count, hours: count, cached: count, seats: count, scope: count, hit: text, revision: text, compare: text }).optional(),
 });
 export type TokenomicsView = z.infer<typeof tokenomicsViewSchema>;
 export const readTokenomics = defineRpc({ name: "tokenomics.read", input: tokenomicsQuerySchema, output: tokenomicsViewSchema });

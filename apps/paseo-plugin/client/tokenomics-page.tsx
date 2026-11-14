@@ -1,141 +1,148 @@
-import { useMemo, useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRpc } from "@getpaseo/plugin/client";
-import { TextInput } from "@getpaseo/plugin/client/react-native";
-import { Linking, ScrollView, Text, View } from "react-native";
-import { Action, Card, Copy, Disclosure, type Colors } from "./page-controls";
-import { ACTIVITY_METRICS, DIMENSION_LABELS, FILTER_DIMENSIONS, TOKENOMICS_PAGES, exportTokenomics, readTokenomics, tokenomicsQuerySchema, type TokenomicsPage as Page, type TokenomicsQuery, type TokenomicsTable } from "../shared/tokenomics";
+import { Modal, TextInput } from "@getpaseo/plugin/client/ui";
+import { Linking, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import type { Colors } from "./page-controls";
+import { TokenomicsChart } from "./tokenomics-charts";
+import { reportMoney, reportNote, reportNumber, reportValue } from "./tokenomics-format";
+import { ACTIVITY_METRICS, DIMENSION_LABELS, FILTER_DIMENSIONS, TOKENOMICS_PAGES, exportTokenomics, readTokenomics, tokenomicsQuerySchema, type TokenomicsPage as Page, type TokenomicsQuery, type TokenomicsTable, type TokenomicsView } from "../shared/tokenomics";
 
 type Option = { value: string; label: string };
 const choices = (values: readonly string[]): Option[] => values.map((value) => ({ value, label: value }));
-function DateField({ label, value, colors, onDate }: { label: string; value: string | null; colors: Colors; onDate: (value: string | null) => void }) {
-  const [draft, setDraft] = useState(value ?? ""), [error, setError] = useState(false);
-  return <View><TextInput accessibilityLabel={`${label} date YYYY-MM-DD`} placeholder={`${label}: YYYY-MM-DD`} value={draft} onChangeText={setDraft} onBlur={() => {
-    const valid = tokenomicsQuerySchema.shape.from.safeParse(draft || null);
-    setError(!valid.success); if (valid.success) onDate(valid.data);
-  }} style={{ color: colors.foreground, borderColor: colors.border, borderWidth: 1, padding: 9, minHeight: 44, minWidth: 170 }} />
-  {error ? <Copy colors={colors} small>Enter a valid date as YYYY-MM-DD.</Copy> : null}</View>;
+const navLabel = (id: string) => ({ "cr-fix": "Fix rate analytics", "cr-submitters": "Submitter analytics", "cr-repos": "Repository analytics", "cr-prs": "PR analytics" })[id] ?? TOKENOMICS_PAGES[id as Page][1];
+const palette = (base: Colors, dark: boolean): Colors => ({ ...base, surface0: dark ? "#121211" : "#f4f3f0", surface1: dark ? "#1a1a19" : "#fcfcfb", surface2: dark ? "#262624" : "#f0efec", border: dark ? "#383835" : "#e2e1dc", foreground: dark ? "#ffffff" : "#0b0b0b", foregroundMuted: dark ? "#c3c2b7" : "#52514e", accent: dark ? "#3987e5" : "#2a78d6" });
+function Txt({ children, colors, muted = false, size = 14, bold = false }: { children: ReactNode; colors: Colors; muted?: boolean; size?: number; bold?: boolean }) {
+  return <Text selectable style={{ color: muted ? colors.foregroundMuted : colors.foreground, fontSize: size, lineHeight: size * 1.45, fontWeight: bold ? "600" : "400", fontVariant: ["tabular-nums"] }}>{children}</Text>;
 }
-export function TokenomicsChoice({ label, options, value, onChange, colors, multiple = false }: {
-  label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; colors: Colors; multiple?: boolean;
-}) {
+function Button({ label, onPress, colors, selected = false, disabled = false, compact = false, tab = false }: { label: string; onPress: () => void; colors: Colors; selected?: boolean; disabled?: boolean; compact?: boolean; tab?: boolean }) {
+  return <Pressable accessibilityRole={tab ? "tab" : "button"} accessibilityLabel={label} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} hitSlop={compact ? 6 : 2} style={{ minHeight: compact ? 34 : 30, paddingHorizontal: 9, paddingVertical: 4, borderWidth: 1, borderColor: selected ? colors.accent : colors.border, backgroundColor: selected ? colors.surface2 : colors.surface1, borderRadius: 6, justifyContent: "center", opacity: disabled ? 0.45 : 1 }}><Txt colors={colors} size={13} bold={selected}>{label}</Txt></Pressable>;
+}
+function Section({ title, children, colors, compact, actions }: { title: string; children: ReactNode; colors: Colors; compact: boolean; actions?: ReactNode }) {
+  return <View testID={`report-section-${title}`} style={{ marginVertical: compact ? 5 : 8, padding: compact ? 10 : 16, borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface1, gap: 10 }}><View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: compact ? 15 : 16, fontWeight: "600" }}>{title}</Text>{actions}</View>{children}</View>;
+}
+export function TokenomicsChoice({ label, options, value, onChange, colors, multiple = false, compact = false, joined = false }: { label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; colors: Colors; multiple?: boolean; compact?: boolean; joined?: boolean }) {
   const [open, setOpen] = useState(false), [search, setSearch] = useState(""), [offset, setOffset] = useState(0);
   const filtered = options.filter((o) => o.label.toLowerCase().includes(search.toLowerCase()));
-  const summary = multiple ? `${value.length} selected` : options.find((o) => value.includes(o.value))?.label ?? "None";
-  return <Disclosure label={`${label}: ${summary}`} colors={colors} open={open} onToggle={setOpen}>
-    <TextInput accessibilityLabel={`Find ${label}`} placeholder={`Find ${label}`} value={search} onChangeText={(text) => { setSearch(text); setOffset(0); }} style={{ color: colors.foreground, backgroundColor: colors.surface0, borderColor: colors.border, borderWidth: 1, padding: 9, minHeight: 44 }} />
-    {multiple ? <View style={{ flexDirection: "row", flexWrap: "wrap" }}><Action small colors={colors} label="All" onPress={() => onChange(options.map((o) => o.value))} /><Action small colors={colors} label="Clear" onPress={() => onChange([])} /></View> : null}
-    {filtered.slice(offset, offset + 40).map((o) => <Action key={o.value} small colors={colors} label={o.label} selected={value.includes(o.value)} onPress={() => {
-      onChange(multiple ? value.includes(o.value) ? value.filter((v) => v !== o.value) : [...value, o.value] : [o.value]); if (!multiple) setOpen(false);
-    }} />)}
-    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}>
-      <Action small colors={colors} label="Previous options" disabled={!offset} onPress={() => setOffset(Math.max(0, offset - 40))} />
-      <Copy colors={colors} small>{`${Math.min(offset + 1, filtered.length)}–${Math.min(offset + 40, filtered.length)} of ${filtered.length}`}</Copy>
-      <Action small colors={colors} label="More options" disabled={offset + 40 >= filtered.length} onPress={() => setOffset(offset + 40)} />
-    </View>
-  </Disclosure>;
+  const plain = multiple && label !== "Workstreams";
+  const summary = multiple ? value.length === options.length ? "All" : `${value.length}/${options.length}` : options.find((o) => value.includes(o.value))?.label ?? "None";
+  return <>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${label}: ${summary}`} accessibilityState={{ expanded: open }} hitSlop={compact ? 6 : 2} onPress={() => setOpen(true)} style={{ minHeight: compact ? 34 : 30, paddingHorizontal: 9, borderWidth: joined ? 0 : 1, borderColor: colors.border, borderRadius: joined ? 0 : 6, backgroundColor: colors.surface1, flexDirection: "row", alignItems: "center", gap: 7, maxWidth: "100%", flexShrink: joined ? 1 : 0, flexGrow: joined && compact ? 1 : 0, minWidth: compact || plain || multiple ? 0 : label === "User" ? 126 : label === "Revision" ? 250 : label === "vs" ? 230 : label === "Period" ? 280 : 0, width: compact && ["User", "Period"].includes(label) ? "100%" : undefined }}>
+      <Text style={{ color: plain || multiple ? colors.foreground : colors.foregroundMuted, fontSize: plain || multiple ? 13 : 11, textTransform: plain || multiple ? "none" : "uppercase" }}>{label === "Workstreams" ? `Workstreams (${value.length}/${options.length})` : label}</Text>{label !== "Workstreams" && !(plain && value.length === options.length) ? <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 13, flexShrink: 1 }}>{summary}</Text> : null}<Text style={{ color: colors.foregroundMuted }}>▾</Text>
+    </Pressable>
+    <Modal title={label} open={open} onOpenChange={setOpen}><Modal.Content contentContainerStyle={{ padding: 8, gap: 4 }}>
+      <TextInput accessibilityLabel={`Find ${label}`} placeholder={`Find ${label}`} value={search} onChangeText={(text) => { setSearch(text); setOffset(0); }} style={{ color: colors.foreground, backgroundColor: colors.surface1, borderColor: colors.border, borderWidth: 1, borderRadius: 6, padding: 8, minHeight: 40 }} />
+      {multiple ? <View style={{ flexDirection: "row", gap: 6 }}><Button colors={colors} label="All" onPress={() => onChange(options.map((o) => o.value))} /><Button colors={colors} label="Clear" onPress={() => onChange([])} /></View> : null}
+      {filtered.slice(offset, offset + 40).map((o) => <Pressable key={o.value} accessibilityRole={multiple ? "checkbox" : "radio"} accessibilityState={{ checked: value.includes(o.value) }} onPress={() => { onChange(multiple ? value.includes(o.value) ? value.filter((v) => v !== o.value) : [...value, o.value] : [o.value]); if (!multiple) setOpen(false); }} style={{ minHeight: 40, padding: 8, backgroundColor: value.includes(o.value) ? colors.surface2 : colors.surface1, borderRadius: 4 }}><Txt colors={colors} size={13}>{`${value.includes(o.value) ? "✓ " : ""}${o.label}`}</Txt></Pressable>)}
+      {filtered.length > 40 ? <View style={{ flexDirection: "row", gap: 6 }}><Button colors={colors} label="Previous options" disabled={!offset} onPress={() => setOffset(Math.max(0, offset - 40))} /><Button colors={colors} label="More options" disabled={offset + 40 >= filtered.length} onPress={() => setOffset(offset + 40)} /></View> : null}
+    </Modal.Content></Modal>
+  </>;
 }
-
-export function TokenomicsTableView({ table, colors, compact, query, change, enabled, onLink }: { table: TokenomicsTable; colors: Colors; compact: boolean; query: TokenomicsQuery; change: (patch: Partial<TokenomicsQuery>) => void; enabled: boolean; onLink: (url: string) => void }) {
-  const offset = query.offsets[table.id] ?? query.offset;
-  const numeric = table.id === "timeline" ? 5 : table.columns.findIndex((_, i) => table.rows.some((r) => typeof r.cells[i] === "number"));
-  const max = Math.max(0, ...table.rows.map((r) => typeof r.cells[numeric] === "number" ? Math.abs(r.cells[numeric] as number) : 0));
-  const format = (value: string | number | null | undefined) => value == null ? "—" : typeof value === "number" ? value.toLocaleString("en-US", { maximumFractionDigits: 3 }) : value;
-  return <Card title={table.title} colors={colors}>
-    {table.note ? <Copy colors={colors} muted small>{table.note}</Copy> : null}
-    {table.chart ? <Copy colors={colors} muted small>Bars scale to the visible rows; every value is available below. Search or page to inspect the full series.</Copy> : null}
-    <TokenomicsChoice label={`Sort ${table.title}`} options={choices(table.columns)} value={query.sort ? [query.sort] : []} colors={colors} onChange={(v) => change({ sort: v[0]!, descending: query.sort === v[0] ? !query.descending : true, offsets: {} })} />
-    <Action small colors={colors} label={query.descending ? "Sort descending" : "Sort ascending"} onPress={() => change({ descending: !query.descending })} />
-    {table.rows.length ? table.rows.map((r) => <View key={r.key} style={{ borderTopWidth: 1, borderColor: colors.border, paddingVertical: 8, gap: 4 }}>
-      <Text selectable style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{r.cells.slice(0, Math.max(1, numeric)).map(format).join(" · ")}</Text>
-      {r.hasChildren ? <Action small colors={colors} label={`${query.expanded.includes(r.key) ? "Collapse" : "Expand"} ${r.cells.slice(0, (r.depth ?? 0) + 1).map(format).join(" → ")}`} expanded={query.expanded.includes(r.key)} onPress={() => change({ expanded: query.expanded.includes(r.key) ? query.expanded.filter((key) => key !== r.key) : [...query.expanded, r.key] })} /> : null}
-      {table.chart && max > 0 && typeof r.cells[numeric] === "number" ? <View accessibilityRole="image" accessibilityLabel={`${table.columns[numeric]}: ${format(r.cells[numeric])}`} style={{ height: 8, backgroundColor: colors.surface2, borderRadius: 4 }}><View style={{ height: 8, width: `${Math.max(0, Math.min(100, 100 * Math.abs(r.cells[numeric] as number) / max))}%`, backgroundColor: colors.accent, borderRadius: 4 }} /></View> : null}
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: compact ? 6 : 12 }}>
-        {r.cells.map((c, i) => <View key={i} style={{ width: compact ? "47%" : 172, minWidth: 100, gap: 2 }}><Copy colors={colors} muted small>{table.columns[i]}</Copy><Copy colors={colors}>{format(c)}</Copy></View>)}
-      </View>
-      {r.detail.length ? <Disclosure label={`Details: ${format(r.cells[0])}`} colors={colors}>{r.detail.map((text, i) => <Copy key={i} colors={colors} small>{text}</Copy>)}</Disclosure> : null}
-      {r.url ? <Action small colors={colors} label="Open source" onPress={() => onLink(r.url!)} /> : null}
-    </View>) : <Copy colors={colors} muted>Nothing matches this page and selection. Missing sources are described above.</Copy>}
-    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-      <Action small colors={colors} label={`Previous ${table.title}`} disabled={!enabled || offset === 0} onPress={() => change({ offsets: { ...query.offsets, [table.id]: Math.max(0, offset - 50) } })} />
-      <Copy small colors={colors}>{`${Math.min(offset + 1, table.total)}–${Math.min(offset + 50, table.total)} of ${table.total}`}</Copy>
-      <Action small colors={colors} label={`Next ${table.title}`} disabled={!enabled || offset + 50 >= table.total} onPress={() => change({ offsets: { ...query.offsets, [table.id]: offset + 50 } })} />
-    </View>
-  </Card>;
+function DateField({ label, value, colors, onDate }: { label: string; value: string | null; colors: Colors; onDate: (value: string | null) => void }) {
+  const [draft, setDraft] = useState(value ?? ""), [error, setError] = useState(false);
+  return <View><TextInput accessibilityLabel={`${label} date YYYY-MM-DD`} placeholder={`${label}: YYYY-MM-DD`} value={draft} onChangeText={setDraft} onBlur={() => { const valid = tokenomicsQuerySchema.shape.from.safeParse(draft || null); setError(!valid.success); if (valid.success) onDate(valid.data); }} style={{ color: colors.foreground, backgroundColor: colors.surface1, borderColor: error ? "#e34948" : colors.border, borderWidth: 1, borderRadius: 6, paddingHorizontal: 9, height: 34, minWidth: 150 }} />{error ? <Txt colors={colors} size={12}>Enter YYYY-MM-DD.</Txt> : null}</View>;
 }
-
-export function TokenomicsPage({ hostId, online, colors, compact, initialQuery, onQuery, onCopy, initialOffset = 0, onScroll }: {
-  hostId: string; online: boolean; colors: Colors; compact: boolean; initialQuery?: TokenomicsQuery;
-  onQuery: (q: TokenomicsQuery) => void; onCopy: (text: string) => Promise<void>; initialOffset?: number; onScroll: (offset: number) => void;
-}) {
-  const [query, setQuery] = useState(() => tokenomicsQuerySchema.parse(initialQuery ?? {}));
-  const [exporting, setExporting] = useState(false), [exportNote, setExportNote] = useState<string | null>(null);
+const compactHeader = (s: string) => ({ "API-equivalent cost ($)": "API cost", "API cost ($)": "API cost", "Active seat-hours": "Active", "Seats with data": "Seats", "Reasoning (included in output)": "Reasoning", "Median time to merge (h)": "Median merge", "Bugs / 1K code lines": "Bugs / 1K lines" })[s] ?? s;
+function tableColumns(table: TokenomicsTable): number[] {
+  const hide = table.id === "mix" ? ["Reasoning (included in output)"] : [];
+  return table.columns.map((_, i) => i).filter((i) => !hide.includes(table.columns[i]!));
+}
+export function TokenomicsTableView({ table, colors, compact, query, change, enabled, onLink, plain = false, indices }: { table: TokenomicsTable; colors: Colors; compact: boolean; query: TokenomicsQuery; change: (patch: Partial<TokenomicsQuery>) => void; enabled: boolean; onLink: (url: string) => void; plain?: boolean; indices?: number[] }) {
+  const [chartData, setChartData] = useState(false);
+  const [details, setDetails] = useState<Set<string>>(() => new Set());
+  const selected = indices ?? tableColumns(table), offset = query.offsets[table.id] ?? query.offset;
+  const { height } = useWindowDimensions();
+  const numeric = (i: number) => table.rows.some((r) => typeof r.cells[i] === "number");
+  const widths = selected.map((i, n) => n === 0 ? compact ? 180 : 240 : numeric(i) ? /cost|tokens|hours|lines|%/i.test(table.columns[i]!) ? 100 : 78 : /summary|title|epic|status|model|person|workstream|seat|author/i.test(table.columns[i]!) ? 180 : 118);
+  const sort = query.sorts[table.id] ?? { column: query.sort, descending: query.descending };
+  const toggle = (key: string) => setDetails((prior) => { const next = new Set(prior); next.has(key) ? next.delete(key) : next.add(key); return next; });
+  const content = <>
+    {table.note ? <Txt colors={colors} muted size={12}>{reportNote(table.note)}</Txt> : null}
+    {table.chart && table.plot ? <><TokenomicsChart table={table} colors={colors} query={query} change={change} /><Button colors={colors} compact={compact} label={chartData ? "Hide chart data" : "Chart data"} onPress={() => setChartData(!chartData)} /></> : null}
+    {!table.chart || chartData ? <ScrollView horizontal testID={`report-table-${table.id}`} style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8 }}>
+      <ScrollView stickyHeaderIndices={[0]} style={{ width: widths.reduce((a, b) => a + b, 0), maxHeight: compact ? height * 0.6 : 640 }}>
+        <View style={{ flexDirection: "row", backgroundColor: colors.surface1 }}>
+          {selected.map((i, n) => <Pressable key={i} accessibilityRole="button" accessibilityLabel={`Sort ${table.title} by ${table.columns[i]}`} onPress={() => change({ sorts: { ...query.sorts, [table.id]: { column: table.columns[i]!, descending: sort.column === table.columns[i] ? !sort.descending : numeric(i) } } })} hitSlop={4} style={{ width: widths[n], minHeight: 32, justifyContent: "center", paddingVertical: 6, paddingHorizontal: compact ? 6 : 8, borderBottomWidth: 1, borderColor: colors.border }}><Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600", textAlign: n ? "right" : "left" }}>{compactHeader(table.columns[i]!)}{sort.column === table.columns[i] ? sort.descending ? " ▾" : " ▴" : ""}</Text></Pressable>)}
+        </View>
+        {table.rows.map((row) => <View key={row.key}>
+          <View style={{ flexDirection: "row", borderBottomWidth: 1, borderColor: colors.border }}>
+            {selected.map((i, n) => <View key={i} style={{ width: widths[n], paddingHorizontal: compact ? 6 : 8, paddingVertical: compact ? 5 : 6, justifyContent: "center" }}>
+              {n === 0 ? <View style={{ flexDirection: "row", gap: 4, paddingLeft: (row.depth ?? 0) * 16 }}>
+                <Pressable accessibilityRole="button" accessibilityLabel={row.hasChildren ? `${query.expanded.includes(row.key) ? "Collapse" : "Expand"} ${row.cells.filter((c) => typeof c === "string").slice(0, (row.depth ?? 0) + 1).join(" → ")}` : `Details: ${row.cells[i]}`} onPress={() => row.hasChildren ? change({ expanded: query.expanded.includes(row.key) ? query.expanded.filter((k) => k !== row.key) : [...query.expanded, row.key] }) : toggle(row.key)} style={{ flex: 1 }} hitSlop={5}><Text selectable style={{ color: colors.foreground, fontSize: compact ? 12 : 14, lineHeight: compact ? 17.4 : 20.3, fontWeight: row.hasChildren ? "600" : "400" }}>{row.hasChildren ? query.expanded.includes(row.key) ? "▾ " : "▸ " : row.detail.length ? "▸ " : ""}{reportValue(row.cells[i], table.columns[i])}</Text></Pressable>
+                {row.url ? <Pressable accessibilityLabel={`Open source ${row.cells[i]}`} onPress={() => onLink(row.url!)} hitSlop={6}><Text style={{ color: colors.accent }}>↗</Text></Pressable> : null}
+              </View> : <Text selectable style={{ color: colors.foreground, textAlign: "right", fontSize: compact ? 12 : 14, lineHeight: compact ? 17.4 : 20.3, fontVariant: ["tabular-nums"] }}>{reportValue(row.cells[i], table.columns[i])}</Text>}
+            </View>)}
+          </View>
+          {details.has(row.key) ? <View style={{ padding: 10, backgroundColor: colors.surface2, gap: 4 }}>{row.detail.length ? row.detail.map((text, i) => <Txt key={i} size={12} colors={colors}>{reportNote(text)}</Txt>) : <Txt colors={colors} size={12}>{row.cells.map((v, i) => `${table.columns[i]}: ${reportValue(v, table.columns[i])}`).join(" · ")}</Txt>}</View> : null}
+        </View>)}
+        {!table.rows.length ? <View style={{ padding: 8 }}><Txt colors={colors} muted size={12}>Nothing in the period.</Txt></View> : null}
+      </ScrollView>
+    </ScrollView> : null}
+    {(!table.chart || chartData) && table.total > 50 ? <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}><Button colors={colors} compact={compact} label={`Previous ${table.title}`} disabled={!enabled || !offset} onPress={() => change({ offsets: { ...query.offsets, [table.id]: Math.max(0, offset - 50) } })} /><Txt colors={colors} size={12}>{`${offset + 1}–${Math.min(offset + 50, table.total)} of ${table.total.toLocaleString("en-US")}`}</Txt><Button colors={colors} compact={compact} label={`Next ${table.title}`} disabled={!enabled || offset + 50 >= table.total} onPress={() => change({ offsets: { ...query.offsets, [table.id]: offset + 50 } })} /></View> : null}
+  </>;
+  return plain ? <View style={{ gap: 8 }}>{content}</View> : <Section colors={colors} compact={compact} title={table.title}>{content}</Section>;
+}
+function Tiles({ tiles, colors, compact, summary }: { tiles: TokenomicsView["tiles"]; colors: Colors; compact: boolean; summary?: TokenomicsView["summary"] }) {
+  const [width, setWidth] = useState(0), gap = compact ? 8 : 12, columns = Math.max(1, Math.floor((width + gap) / ((compact ? 128 : 170) + gap)));
+  const notes: Record<string, string> = { "API-equivalent cost": "list-price equivalent; billed OpenRouter and blended GLM rows per the price table", "Tokens processed": `${summary?.responses.toLocaleString("en-US") ?? "—"} model responses`, "Cache hit rate": `${reportNumber(summary?.cached ?? 0)} read from cache`, "Active seat-hours": "all seats; Codex/Claude gaps capped at 5 min, OpenCode exact", "Orchestrator active hours": "Adam sessions only" };
+  return <View testID="report-kpis" onLayout={(e) => setWidth(e.nativeEvent.layout.width)} style={{ flexDirection: "row", flexWrap: "wrap", gap, marginTop: compact ? 10 : 16, marginBottom: 8 }}>{tiles.map((tile) => <View key={tile.label} testID={`report-kpi-${tile.label}`} style={{ width: width ? (width - gap * (columns - 1)) / columns : compact ? "47%" : 180, borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface1, paddingVertical: compact ? 8 : 12, paddingHorizontal: compact ? 10 : 14, gap: 1 }}><Txt colors={colors} muted size={compact ? 11 : 12}>{tile.label}</Txt><Text selectable style={{ color: colors.foreground, fontSize: compact ? 18 : 24, fontWeight: "600", lineHeight: (compact ? 18 : 24) * 1.45, fontVariant: ["tabular-nums"] }}>{reportValue(tile.value, tile.label)}</Text>{notes[tile.label] ? <Txt colors={colors} muted size={compact ? 11 : 12}>{notes[tile.label]}</Txt> : null}{tile.note ? <Txt colors={colors} muted size={compact ? 11 : 12}>{reportNote(tile.note).replace(/(?: ·)+$/, "")}</Txt> : null}</View>)}</View>;
+}
+export function TokenomicsPage({ hostId, online, colors: hostColors, compact: hostCompact, initialQuery, onQuery, onCopy, initialOffset = 0, onScroll }: { hostId: string; online: boolean; colors: Colors; compact: boolean; initialQuery?: TokenomicsQuery; onQuery: (q: TokenomicsQuery) => void; onCopy: (text: string) => Promise<void>; initialOffset?: number; onScroll: (offset: number) => void }) {
+  const [width, setWidth] = useState(0), compact = width ? width <= 760 : hostCompact;
+  const [query, setQuery] = useState(() => tokenomicsQuerySchema.parse(initialQuery ?? { range: hostCompact ? "30" : "all" }));
+  const [theme, setTheme] = useState<boolean | null>(null), [sourceOpen, setSourceOpen] = useState(false), [exporting, setExporting] = useState(false), [exportNote, setExportNote] = useState<string | null>(null), [openWs, setOpenWs] = useState<Set<string>>(() => new Set());
+  const baseDark = parseInt(hostColors.surface0.replace("#", "").slice(0, 2), 16) < 128, colors = palette(hostColors, theme ?? baseDark);
   const read = useRpc(readTokenomics), exportCsv = useRpc(exportTokenomics);
   const result = useQuery({ queryKey: ["tokenomics", hostId, query], queryFn: () => read(query), enabled: online, retry: false });
-  const view = result.data, options = view?.options ?? {};
-  const change = (patch: Partial<TokenomicsQuery>) => {
-    const next = tokenomicsQuerySchema.parse({ ...query, offsets: {}, ...patch }); setQuery(next); onQuery(next); setExportNote(null);
-  };
-  const picker = (label: string, key: keyof TokenomicsQuery, items: Option[], selected: string) => <TokenomicsChoice key={label} label={label} colors={colors} options={items} value={[selected]} onChange={(v) => change({ [key]: (key === "rev" || key === "compare") && !v[0] ? null : v[0] })} />;
-  const pageGroup = TOKENOMICS_PAGES[query.page][0], livePage = query.page.startsWith("cr-") || query.page.startsWith("dv-"), unfiltered = query.page === "progress" || query.page === "usage";
-  const pageOptions = useMemo(() => Object.entries(TOKENOMICS_PAGES).filter(([, p]) => p[0] === pageGroup).map(([value, p]) => ({ value, label: p[1] })), [pageGroup]);
-  const link = (url: string) => { if (/^https:\/\//.test(url)) void Linking.openURL(url).catch(() => setExportNote("This device could not open the source link.")); };
-  return <ScrollView testID="tokenomics-page" contentOffset={{ x: 0, y: initialOffset }} onScroll={(event) => onScroll(event.nativeEvent.contentOffset.y)} scrollEventThrottle={100} style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: compact ? 10 : 18, gap: 12 }}>
-    <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: compact ? 20 : 24, fontWeight: "600" }}>Tokenomics</Text>
-    <Copy colors={colors} muted>Read-only report on this host. Tokenomics filters are independent of the Kontor project and epic header.</Copy>
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{["Tokenomics", "Code Review", "Delivery"].map((group) => <Action key={group} colors={colors} label={group} selected={group === pageGroup} onPress={() => change({ page: Object.entries(TOKENOMICS_PAGES).find(([, p]) => p[0] === group)![0] as Page, search: "", sort: "" })} />)}</View>
-    <View accessibilityRole="tablist" style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{pageOptions.map((p) => <Action tab key={p.value} colors={colors} label={p.label} selected={query.page === p.value} onPress={() => change({ page: p.value as Page, search: "", sort: "" })} />)}</View>
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-      <Action colors={colors} small label={result.isFetching ? "Refreshing…" : "Refresh report"} disabled={!online || result.isFetching} onPress={() => { void result.refetch(); }} />
-      <Action colors={colors} small label={exporting ? "Preparing CSV…" : "Copy full CSV"} disabled={!online || !view || view.status === "unavailable" || exporting || result.isError || result.isFetching} onPress={() => {
-        setExporting(true); setExportNote(null);
-        void exportCsv(query).then(async (value) => { if (value.revision !== view?.revision) { setExportNote("Report changed since this view. Refresh before exporting."); return; } await onCopy(value.content); setExportNote(`${value.filename}: all matching rows copied as CSV, including rows beyond display pages.`); }).catch(() => setExportNote("CSV export or clipboard copy failed. Refresh the report and retry.")).finally(() => setExporting(false));
-      }} />
-    </View>
-    {!online ? <Copy colors={colors}>Host offline. Any retained snapshot below is stale; refresh and exports are unavailable.</Copy> : result.isError ? <Copy colors={colors}>Report read failed. Any retained snapshot below is stale. Refresh to retry.</Copy> : result.isPending ? <Copy colors={colors}>Reading Tokenomics report…</Copy> : null}
-    {view ? <Card title={`Source: ${!online || result.isError ? "stale" : view.status}`} colors={colors}>
-      <Copy colors={colors} small>{`Generated ${view.generated ?? "unknown"} · read ${view.readAt} · content ${view.revision?.slice(0, 12) ?? "unavailable"}`}</Copy>
-      {view.diagnostics.map((text, i) => <Copy key={i} colors={colors} small>{text}</Copy>)}
-    </Card> : null}
-    {exportNote ? <Copy colors={colors}>{exportNote}</Copy> : null}
-    <Card title="Filters and view" colors={colors}>
-      {!unfiltered ? picker("Period", "period", options.period ?? [], query.period) : <Copy colors={colors} muted>This page ignores Period and the other Tokenomics filters.</Copy>}
-      {!unfiltered && query.period === "custom" ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{(["from", "to"] as const).map((key) => <DateField key={`${key}-${query[key]}`} label={key} value={query[key]} colors={colors} onDate={(date) => change({ [key]: date })} />)}</View> : null}
-      {!livePage && query.page !== "usage" ? <>
-        {picker(query.page === "progress" ? "To check" : "At revision", "rev", [{ value: "", label: "Latest check" }, ...(options.revisions ?? [])], query.rev ?? "")}
-        {picker(query.page === "progress" ? "From check" : "Compare revision", "compare", [{ value: "", label: query.page === "progress" ? "Previous check" : "No comparison" }, ...(options.revisions ?? [])], query.compare ?? "")}
-      </> : null}
-      {!livePage && !unfiltered ? <Disclosure label="Workstreams, users and dimensions" colors={colors}>
-        {picker("Workstreams shown", "show", [{ value: "usage", label: "Open, with usage" }, { value: "idle", label: "Open, no usage" }, { value: "report", label: "With usage" }, { value: "all", label: "All registered" }], query.show)}
-        <TokenomicsChoice multiple label="Workstreams" options={options.workstreams ?? []} value={query.workstreams ?? (options.workstreams ?? []).map((o) => o.value)} colors={colors} onChange={(value) => change({ workstreams: value })} />
-        {FILTER_DIMENSIONS.map((key) => <TokenomicsChoice key={key} multiple label={DIMENSION_LABELS[key]!} options={options[key] ?? []} value={query.filters[key] ?? (options[key] ?? []).map((o) => o.value)} colors={colors} onChange={(value) => change({ filters: { ...query.filters, [key]: value } })} />)}
-        <Action small colors={colors} label="Reset report filters" onPress={() => change({ filters: {}, workstreams: null, show: "usage", period: "all", from: null, to: null })} />
-      </Disclosure> : null}
-      {livePage ? <Copy colors={colors} muted>Live analytics use Period only. The revision, workstream and user selections do not apply.</Copy> : null}
-      {query.page === "pivot" ? <>
-        <View style={{ flexDirection: "row", flexWrap: "wrap" }}><Action small colors={colors} label="Expand all groups" onPress={() => change({ expanded: (options.pivotNodes ?? []).map((o) => o.value) })} /><Action small colors={colors} label="Collapse all groups" onPress={() => change({ expanded: [] })} /></View>
-        {query.groups.map((g, i) => <TokenomicsChoice key={i} label={`Group ${i + 1}`} options={options.groups ?? []} value={[g]} colors={colors} onChange={(value) => change({ groups: query.groups.map((v, n) => n === i ? value[0] as typeof g : v) })} />)}
-        <View style={{ flexDirection: "row", flexWrap: "wrap" }}><Action small colors={colors} label="Add group" disabled={query.groups.length >= 4} onPress={() => change({ groups: [...query.groups, "model"] })} /><Action small colors={colors} label="Remove last group" disabled={query.groups.length <= 1} onPress={() => change({ groups: query.groups.slice(0, -1) })} /><Action small colors={colors} label="Split cost by token type" selected={query.split} onPress={() => change({ split: !query.split })} /></View>
-        <TokenomicsChoice label="Pivot preset" colors={colors} value={[]} options={choices(["ws,epic,task,seat", "ws,rg,seat", "model,ws", "vendor,model,tt", "seat,model", "acct,model", "day,ws", "task,rg"])} onChange={(v) => change({ groups: v[0]!.split(",") as TokenomicsQuery["groups"] })} />
-      </> : null}
-      {query.page === "roles" ? picker("Role share", "share", ["rg", "rc", "seat"].map((value) => ({ value, label: DIMENSION_LABELS[value]! })), query.share) : null}
-      {query.page === "activity" ? <>
-        {picker("Timeline metric", "metric", Object.entries(ACTIVITY_METRICS).map(([value, label]) => ({ value, label })), query.metric)}
-        {picker("Timeline range", "range", choices(["all", "60", "30", "14"]), query.range)}
-        {picker("Parallel work scope", "dual", options.dual ?? [], query.dual)}
-        {picker("Daily measure", "measure", choices(["cost", "tok", "act"]), query.measure)}
-        {picker("Daily stack", "stack", (options.groups ?? []).filter((o) => ["ws", "user", "tt", "vendor", "acct", "rg", "epic", "model"].includes(o.value)), query.stack)}
-      </> : null}
-      {query.page === "usage" ? <>
-        {picker("All usage measure", "allMeasure", choices(["cost", "tok"]), query.allMeasure)}
-        {picker("All usage stack", "allStack", [{ value: "c", label: "Category" }, { value: "g", label: "Workstreams / ad-hoc" }, { value: "s", label: "Sub-category" }, { value: "st", label: "Store / account" }, { value: "v", label: "Vendor" }], query.allStack)}
-        {picker("All usage bars", "allGranularity", choices(["week", "day"]), query.allGranularity)}
-        {picker("All usage from", "allFrom", [{ value: "first", label: "First recoverable data" }, { value: "aug", label: "Orchestrated era" }], query.allFrom)}
-      </> : null}
-    </Card>
-    <TextInput accessibilityLabel="Search current Tokenomics page" placeholder="Search rows, people, PRs, issues or details" value={query.search} onChangeText={(search) => change({ search })} style={{ color: colors.foreground, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, padding: 10, minHeight: 44 }} />
-    {view?.notes.map((note, i) => <Copy key={i} colors={colors} muted small>{note}</Copy>)}
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>{view?.tiles.map((tile) => <View key={tile.label} style={{ width: compact ? "47%" : 230 }}><Card title={tile.label} colors={colors}><Text selectable style={{ color: colors.foreground, fontSize: 20 }}>{tile.value ?? "—"}</Text>{tile.note ? <Copy colors={colors} muted small>{tile.note}</Copy> : null}</Card></View>)}</View>
-    {view?.tables.map((table) => <TokenomicsTableView key={table.id} table={table} query={query} change={change} colors={colors} compact={compact} enabled={online && !result.isFetching} onLink={link} />)}
-  </ScrollView>;
+  const view = result.data, options = view?.options ?? {}, group = TOKENOMICS_PAGES[query.page][0], livePage = query.page.startsWith("cr-") || query.page.startsWith("dv-"), unfiltered = query.page === "progress" || query.page === "usage";
+  const change = (patch: Partial<TokenomicsQuery>) => { const next = tokenomicsQuerySchema.parse({ ...query, offsets: {}, ...patch }); setQuery(next); onQuery(next); setExportNote(null); };
+  const picker = (label: string, key: keyof TokenomicsQuery, items: Option[], selected: string) => <TokenomicsChoice key={label} label={label} colors={colors} compact={compact} joined={label === "Revision" || label === "vs"} options={items} value={[selected]} onChange={(v) => change({ [key]: (key === "rev" || key === "compare") && !v[0] ? null : v[0] })} />;
+  const visibleWorkstreams = (options.workstreams ?? []).filter((o) => ({ usage: ["active"], idle: ["idle"], all: ["active", "idle", "used", "hist"], report: ["active", "used"] })[query.show].some((c) => o.label.endsWith(` · ${c}`)));
+  const selectedWorkstreams = visibleWorkstreams.filter((o) => query.workstreams === null || query.workstreams.includes(o.value));
+  const link = (url: string) => { if (/^https:\/\//.test(url)) void Linking.openURL(url).catch(() => setExportNote("Could not open the source link.")); };
+  const table = (t: TokenomicsTable, plain = false, indices?: number[]) => <TokenomicsTableView key={`${t.id}-${indices?.join()}`} table={t} colors={colors} compact={compact} query={query} change={change} enabled={online && !result.isFetching} onLink={link} plain={plain} indices={indices} />;
+  const search = <TextInput accessibilityLabel="Search current Tokenomics page" placeholder="Filter: key, title, author, repository or result" value={query.search} onChangeText={(search) => change({ search })} style={{ color: colors.foreground, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 6, paddingHorizontal: 9, height: 32, minWidth: compact ? 0 : 300, flexGrow: 1 }} />;
+  const actions = <View style={{ flexDirection: "row", gap: 6 }}><Button colors={colors} compact={compact} label={result.isFetching ? "Refreshing…" : "Refresh report"} disabled={!online || result.isFetching} onPress={() => { void result.refetch(); }} /><Button colors={colors} compact={compact} label={exporting ? "Preparing CSV…" : "Copy full CSV"} disabled={!online || !view || view.status === "unavailable" || exporting || result.isError || result.isFetching} onPress={() => {
+    setExporting(true); setExportNote(null); void exportCsv(query).then(async (value) => { if (value.revision !== view?.revision) { setExportNote("Report changed. Refresh before exporting."); return; } await onCopy(value.content); setExportNote(`${value.filename}: all matching rows copied, including rows beyond display pages.`); }).catch(() => setExportNote("CSV export or clipboard copy failed. Refresh and retry.")).finally(() => setExporting(false));
+  }} /></View>;
+  const nav = <View style={{ width: compact ? "100%" : 220, paddingTop: compact ? 10 : 24, paddingLeft: compact ? 10 : 14, paddingRight: 10, paddingBottom: 16, flexDirection: compact ? "row" : "column", flexWrap: "wrap", gap: compact ? 3 : 1, borderBottomWidth: compact ? 1 : 0, borderColor: colors.border }}>{["Tokenomics", "Code Review", "Delivery"].map((g, n) => <View key={g} style={{ width: "100%", flexDirection: compact ? "row" : "column", flexWrap: "wrap", gap: compact ? 3 : 1, marginTop: n ? compact ? 6 : 22 : 0 }}><Text style={{ width: "100%", color: colors.foregroundMuted, fontSize: 11, fontWeight: "600", letterSpacing: 0.55, textTransform: "uppercase", paddingHorizontal: compact ? 4 : 10, marginTop: compact ? 0 : 4, lineHeight: 16, marginBottom: compact ? 2 : 6 }}>{g === "Tokenomics" ? g : `${g} analytics`}</Text>{Object.entries(TOKENOMICS_PAGES).filter(([, p]) => p[0] === g).map(([id]) => <Pressable key={id} accessibilityRole="tab" accessibilityLabel={navLabel(id)} accessibilityState={{ selected: query.page === id }} onPress={() => change({ page: id as Page, search: "", sort: "" })} hitSlop={compact ? 5 : 1} style={{ marginVertical: 1, paddingVertical: compact ? 5 : 7, paddingHorizontal: compact ? 9 : 10, borderRadius: 8, backgroundColor: query.page === id ? colors.surface2 : "transparent" }}><Txt colors={colors} muted={query.page !== id} bold={query.page === id} size={14}>{navLabel(id)}</Txt></Pressable>)}</View>)}</View>;
+  const filterRow = (label: string, children: ReactNode) => <View style={{ flexDirection: compact ? "column" : "row", alignItems: compact ? "stretch" : "flex-start", gap: compact ? 4 : 16 }}><Text style={{ width: compact ? undefined : 90, color: colors.foregroundMuted, fontSize: 11, lineHeight: compact ? 16 : 30, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</Text><View style={{ flex: compact ? undefined : 1, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>{children}</View></View>;
+  const body = <View style={{ paddingHorizontal: compact ? 10 : 24, paddingTop: compact ? 14 : 24, paddingBottom: 24, maxWidth: 1440, width: "100%", alignSelf: "center" }}>
+    <View style={{ flexDirection: compact ? "column" : "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}><View style={{ flex: compact ? undefined : 1 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: compact ? 17 : 22, lineHeight: compact ? 25 : 32, fontWeight: "700", marginBottom: 4 }}>Tokenomics dashboard — {group === "Tokenomics" ? "workstreams: seats, hours, tokens and API-equivalent cost" : group === "Code Review" ? "code review analytics: findings, fixes and review cost" : "delivery analytics: pull requests, code, churn and bugs"}</Text>
+      {!livePage && !unfiltered ? <View style={{ gap: 2 }}><Txt colors={colors} muted size={13}>{`USER  ${query.filters.user?.join(", ") || "all users (aggregated)"}  ·  WORKSTREAMS  ${selectedWorkstreams.length} ${query.show === "usage" ? "open, with usage" : "selected"}  ·  PERIOD  ${options.period?.find((p) => p.value === query.period)?.label ?? query.period}  ·  REVISION  ${view?.summary?.revision ?? "Latest check"} vs ${view?.summary?.compare ?? "none"}`}</Txt>{view?.summary ? <Txt colors={colors} muted size={13}>{`${reportMoney(view.summary.cost)} · ${reportNumber(view.summary.tokens)} tokens · ${view.summary.responses.toLocaleString("en-US")} responses · ${view.summary.hours.toFixed(1)} h active · ${view.summary.seats}/${view.summary.scope} seats · ${view.summary.hit} cache hit`}</Txt> : null}<Txt colors={colors} muted size={12}>Paseo seats attributed to registered workstreams through ws:&lt;key&gt; labelled Jira epics (Jira keys, Kontor bindings, paths, parent seats) and desk projects · data from Codex / Claude Code / OpenCode transcripts · API-equivalent list prices · generated {view?.generated?.replace("T", " ") ?? "unknown"}</Txt></View> : null}
+    </View><Button colors={colors} compact={compact} label="◐ Theme" onPress={() => setTheme(!(theme ?? baseDark))} /></View>
+    {!unfiltered ? <View testID="report-filters" style={{ paddingVertical: 10, backgroundColor: colors.surface0, borderBottomWidth: 1, borderColor: colors.border, gap: 8 }}>
+      {filterRow("View", <>{!livePage ? <>{<TokenomicsChoice label="User" colors={colors} compact={compact} options={[{ value: "", label: "All users" }, ...(options.user ?? [])]} value={[query.filters.user?.[0] ?? ""]} onChange={(v) => change({ filters: { ...query.filters, user: v[0] ? v : undefined } })} />}</> : null}{!livePage ? <View style={{ flexDirection: "row", gap: 0, width: compact ? "100%" : undefined, borderWidth: 1, borderColor: colors.border, borderRadius: 6, overflow: "hidden", backgroundColor: colors.surface1 }}>{picker("Revision", "rev", options.revisions ?? [], query.rev ?? options.revisions?.at(-1)?.value ?? "")}<Pressable accessibilityRole="button" accessibilityLabel="Swap revision and comparison" onPress={() => change({ rev: query.compare, compare: query.rev ?? options.revisions?.at(-1)?.value ?? null })} hitSlop={5} style={{ width: 35, minHeight: compact ? 34 : 30, justifyContent: "center", alignItems: "center", borderLeftWidth: 1, borderRightWidth: 1, borderColor: colors.border }}><Txt colors={colors} size={13}>⇄</Txt></Pressable>{picker("vs", "compare", [{ value: "", label: "— none —" }, ...(options.revisions ?? [])], query.compare ?? "")}</View> : null}{picker("Period", "period", options.period ?? [], query.period)}{query.period === "custom" ? (["from", "to"] as const).map((key) => <DateField key={`${key}-${query[key]}`} label={key} value={query[key]} colors={colors} onDate={(date) => change({ [key]: date })} />) : null}</>)}
+      {!livePage ? <>{filterRow("Workstreams", <><View style={{ flexDirection: "row" }}>{[{ value: "usage", label: "Open, with usage" }, { value: "idle", label: "Open, no usage" }, { value: "all", label: "All" }].map((o) => <Button key={o.value} compact={compact} colors={colors} label={o.label} selected={query.show === o.value} onPress={() => change({ show: o.value as TokenomicsQuery["show"] })} />)}</View><TokenomicsChoice multiple compact={compact} label="Workstreams" options={visibleWorkstreams.map((o) => ({ ...o, label: o.label.replace(/ · (active|idle|used|hist)$/, "") }))} value={selectedWorkstreams.map((o) => o.value)} colors={colors} onChange={(workstreams) => change({ workstreams: [...(options.workstreams ?? []).filter((o) => !visibleWorkstreams.some((v) => v.value === o.value) && (query.workstreams === null || query.workstreams.includes(o.value))).map((o) => o.value), ...workstreams] })} /></>)}
+        {filterRow("Filters", <>{FILTER_DIMENSIONS.filter((key) => key !== "user").map((key) => <TokenomicsChoice key={key} multiple compact={compact} label={DIMENSION_LABELS[key]!} options={options[key] ?? []} value={query.filters[key] ?? (options[key] ?? []).map((o) => o.value)} colors={colors} onChange={(value) => change({ filters: { ...query.filters, [key]: value } })} />)}<Button compact={compact} colors={colors} label="Reset" onPress={() => change({ filters: {}, workstreams: null, show: "usage", period: "all", from: null, to: null })} /></>)}</> : null}
+    </View> : null}
+    {!online || result.isError || view?.status === "unavailable" ? <View style={{ paddingVertical: 8 }}><Txt colors={colors} size={13}>{!online ? "Host offline. Retained data is stale; refresh and exports are unavailable." : result.isError ? "Report read failed. Retained data is stale. Refresh to retry." : view?.diagnostics.join(" ")}</Txt></View> : null}
+    {result.isPending && online ? <Txt colors={colors}>Reading Tokenomics report…</Txt> : null}
+    {exportNote ? <Txt colors={colors} size={12}>{exportNote}</Txt> : null}
+    {view?.tiles.length ? <Tiles tiles={view.tiles} colors={colors} compact={compact} summary={view.summary} /> : null}
+    {query.page === "overview" && view ? <Section title="Epic progress and consumption" colors={colors} compact={compact}>
+      <View style={{ flexDirection: "row", gap: 8 }}><Button colors={colors} label="Expand all" onPress={() => setOpenWs(new Set(view.tables.find((t) => t.id === "workstream-totals")?.rows.map((r) => String(r.cells[0])) ?? []))} /><Button colors={colors} label="Collapse all" onPress={() => setOpenWs(new Set())} /></View>
+      <Txt colors={colors} muted size={12}>Each workstream shows its numbers At the selected revision and a Change since row when a vs revision is chosen. Progress = Jira child issues: Done · In progress · To do. The striped part moved since the comparison. Consumption follows the period and filters above. Open a workstream with its ▸ caret; open an epic to list its child issues.</Txt>
+      {view.tables.find((t) => t.id === "workstream-totals")?.rows.map((r) => { const name = String(r.cells[0]), t = view.tables.find((t) => t.id === "epics"), open = openWs.has(name); return <View key={r.key} style={{ paddingTop: 8, gap: 8 }}><Pressable accessibilityRole="button" accessibilityLabel={`${open ? "Collapse" : "Expand"} workstream ${name}`} accessibilityState={{ expanded: open }} onPress={() => setOpenWs((old) => { const next = new Set(old); open ? next.delete(name) : next.add(name); return next; })}><Txt colors={colors} bold>{`${open ? "▾" : "▸"} ${name}`}</Txt></Pressable><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 20 }}>{["Seats with data", "Responses", "Active seat-hours", "Tokens", "API-equivalent cost ($)"].map((label) => { const i = view.tables.find((t) => t.id === "workstream-totals")!.columns.indexOf(label); return <View key={label}><Txt colors={colors} muted size={11}>{compactHeader(label).toUpperCase()}</Txt><Txt colors={colors} bold size={15}>{reportValue(r.cells[i], label)}</Txt></View>; })}</View>{open && t ? table({ ...t, rows: t.rows.filter((row) => row.cells[0] === name) }, true, t.columns.map((_, i) => i).filter((i) => i !== 0)) : null}</View>; })}
+    </Section> : null}
+    {query.page === "pivot" ? <Section title="Pivot — group token consumption any way" colors={colors} compact={compact}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{query.groups.map((g, i) => <TokenomicsChoice key={i} compact={compact} label={`Group ${i + 1}`} options={options.groups ?? []} value={[g]} colors={colors} onChange={(value) => change({ groups: query.groups.map((v, n) => n === i ? value[0] as typeof g : v) })} />)}<Button colors={colors} label="Add group" disabled={query.groups.length >= 4} onPress={() => change({ groups: [...query.groups, "model"] })} /><Button colors={colors} label="Remove last group" disabled={query.groups.length <= 1} onPress={() => change({ groups: query.groups.slice(0, -1) })} /><Button colors={colors} label="Split cost by token type" selected={query.split} onPress={() => change({ split: !query.split })} /><Button colors={colors} label="Expand all groups" onPress={() => change({ expanded: (options.pivotNodes ?? []).map((o) => o.value) })} /><Button colors={colors} label="Collapse all groups" onPress={() => change({ expanded: [] })} />{actions}</View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{["ws,epic,task,seat", "ws,rg,seat", "model,ws", "vendor,model,tt", "seat,model", "acct,model", "day,ws", "task,rg"].map((s) => <Button key={s} colors={colors} label={s.split(",").map((key) => DIMENSION_LABELS[key]).join(" → ")} onPress={() => change({ groups: s.split(",") as TokenomicsQuery["groups"] })} />)}</View>{view?.tables.map((t) => table(t, true))}
+    </Section> : null}
+    {query.page !== "overview" && query.page !== "pivot" ? <>
+      {query.page === "progress" ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 }}>{picker("From check", "compare", [{ value: "", label: "Previous check" }, ...(options.revisions ?? [])], query.compare ?? "")}{picker("To check", "rev", options.revisions ?? [], query.rev ?? options.revisions?.at(-1)?.value ?? "")}</View> : null}
+      {livePage && !view?.tables.length ? <Section title={navLabel(query.page)} colors={colors} compact={compact}>{view?.notes.map((n, i) => <Txt key={i} colors={colors} muted size={12}>{n}</Txt>)}</Section> : null}
+      {view?.tables.map((t) => <View key={t.id}>
+        {query.page === "roles" && t.id === "share" ? <View style={{ flexDirection: "row", marginTop: 12 }}>{picker("Group by", "share", ["rg", "rc", "seat"].map((value) => ({ value, label: DIMENSION_LABELS[value]! })), query.share)}</View> : null}
+        {query.page === "activity" && t.id === "timeline" ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 12 }}>{picker("Metric", "metric", Object.entries(ACTIVITY_METRICS).map(([value, label]) => ({ value, label })), query.metric)}{picker("Range", "range", ["all", "60", "30", "14"].map((value) => ({ value, label: value === "all" ? "Full lifetime" : `Last ${value} days` })), query.range)}</View> : null}
+        {query.page === "activity" && t.id === "parallel" ? picker("Scope", "dual", options.dual ?? [], query.dual) : null}
+        {query.page === "activity" && t.id === "trend" ? <View style={{ flexDirection: "row", gap: 6 }}>{picker("Measure", "measure", choices(["cost", "tok", "act"]), query.measure)}{picker("Stack by", "stack", (options.groups ?? []).filter((o) => ["ws", "user", "tt", "vendor", "acct", "rg", "epic", "model"].includes(o.value)), query.stack)}</View> : null}
+        {query.page === "usage" && t.id === "all-chart" ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 12 }}>{picker("Measure", "allMeasure", [{ value: "cost", label: "API cost ($)" }, { value: "tok", label: "Tokens" }], query.allMeasure)}{picker("Stack by", "allStack", [{ value: "c", label: "Category" }, { value: "g", label: "Workstreams / ad-hoc" }, { value: "s", label: "Sub-category" }, { value: "st", label: "Store / account" }, { value: "v", label: "Vendor" }], query.allStack)}{picker("Bars", "allGranularity", choices(["week", "day"]), query.allGranularity)}{picker("From", "allFrom", [{ value: "first", label: "First recoverable data" }, { value: "aug", label: "Orchestrated era" }], query.allFrom)}</View> : null}
+        {["review-prs", "delivery-prs", "jira-issues", "bugs"].includes(t.id) ? <View style={{ flexDirection: "row", marginTop: 12 }}>{search}</View> : null}
+        {table(t)}
+      </View>)}
+    </> : null}
+    <View style={{ marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderColor: colors.border, gap: 6 }}><View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 6 }}><Pressable accessibilityRole="button" accessibilityState={{ expanded: sourceOpen }} onPress={() => setSourceOpen(!sourceOpen)}><Txt colors={colors} muted size={12}>{`${sourceOpen ? "▾" : "▸"} Data: ${!online || result.isError ? "stale" : view?.status ?? "loading"} · generated ${view?.generated?.replace("T", " ").slice(0, 16) ?? "unknown"}`}</Txt></Pressable>{actions}</View>{sourceOpen ? <View style={{ gap: 4 }}><Txt colors={colors} muted size={12}>{`Read ${view?.readAt ?? "unknown"} · content ${view?.revision?.slice(0, 12) ?? "unavailable"}`}</Txt>{[...(view?.diagnostics ?? []), ...(view?.notes ?? [])].map((n, i) => <Txt key={i} colors={colors} muted size={12}>{reportNote(n)}</Txt>)}</View> : null}</View>
+  </View>;
+  return compact ? <ScrollView testID="tokenomics-page" onLayout={(e) => setWidth(e.nativeEvent.layout.width)} contentOffset={{ x: 0, y: initialOffset }} onScroll={(e) => onScroll(e.nativeEvent.contentOffset.y)} scrollEventThrottle={100} style={{ flex: 1, backgroundColor: colors.surface0 }}>{nav}{body}</ScrollView> : <View testID="tokenomics-page" onLayout={(e) => setWidth(e.nativeEvent.layout.width)} style={{ flex: 1, flexDirection: "row", backgroundColor: colors.surface0 }}><ScrollView style={{ width: 220, flexGrow: 0 }}>{nav}</ScrollView><ScrollView stickyHeaderIndices={unfiltered ? undefined : [1]} contentContainerStyle={body.props.style} contentOffset={{ x: 0, y: initialOffset }} onScroll={(e) => onScroll(e.nativeEvent.contentOffset.y)} scrollEventThrottle={100} style={{ flex: 1 }}>{body.props.children}</ScrollView></View>;
 }

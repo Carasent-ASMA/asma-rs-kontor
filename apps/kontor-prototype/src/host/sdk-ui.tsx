@@ -1,11 +1,12 @@
 /**
- * Fixture stand-in for `@getpaseo/plugin/client/ui`. Only SidebarRow is used by
- * the Kontor plugin; it is drawn approximately like the Paseo sidebar row.
+ * Fixture stand-in for `@getpaseo/plugin/client/ui`; host chrome is approximate.
  */
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native-web";
 import { Icon } from "./sdk-react-native";
 import { shellColors } from "./theme";
+export { Icon };
+export { Modal, TextInput, ScrollView, FlatList } from "./sdk-react-native";
 
 export function SidebarRow({ icon, label, onPress, active, trailing }: { id?: string; icon?: string; label?: string; onPress(): void; active?: boolean; trailing?: ReactNode }) {
   const colors = shellColors();

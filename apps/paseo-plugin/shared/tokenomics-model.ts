@@ -169,6 +169,9 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
     tile("Active seat-hours", hours(a.act), difference(a.act / 3600, prior ? prior.act / 3600 : undefined)); tile("Orchestrator active hours", hours(adamAct(m.facts)), difference(adamAct(m.facts) / 3600, m.compare ? adamAct(m.filtered(m.compare)) / 3600 : undefined));
     tile("Sub-thread tokens", ratio(a.sub, tokens(a)), `${a.sub} recorded${prior ? ` · Δ ${pp(a.sub, tokens(a), prior.sub, tokens(prior))} · re-cut` : ""}`); tile("Codex Auto Review", a.ar, `Unpriced → $0; at ${d.sensModel} rates ≈ ${usd(a.sens)} · ${difference(a.ar, prior?.ar)}`);
     const values = m.grouped(m.facts, ["ws", "epic"]);
+    for (const [w, def] of Object.entries(d.ws)) if (m.wsOn(w)) for (const key of new Set([...def.epics, ...m.scope.filter((s) => s.ws === w).map((s) => s.epic)])) {
+      const labels = [def.name, m.epicLabel(key)]; if (!values.some((r) => r.cells[0] === labels[0] && r.cells[1] === labels[1])) values.push(row(JSON.stringify(labels), [...labels, ...metricCells(blank())]));
+    }
     tables.push(table("epics", "Epic progress and consumption", ["Workstream", "Epic / desk row", ...METRIC_COLUMNS, "Status", "Done", "In progress", "Todo", "Δ cost ($)", "Δ tokens", "Before status", "Δ done", "Δ in progress", "Δ todo"], values.map((r) => {
       const key = [...m.epics.keys()].find((k) => m.epicLabel(k) === r.cells[1]), e = key ? m.epics.get(key) : undefined;
       const progress = key ? m.rev?.epics[key] : undefined, children = e?.children ?? [];
@@ -180,7 +183,16 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
         m.compare ? (progress?.done ?? 0) - (beforeProgress?.done ?? 0) : null, m.compare ? (progress?.wip ?? 0) - (beforeProgress?.wip ?? 0) : null, m.compare ? (progress?.todo ?? 0) - (beforeProgress?.todo ?? 0) : null],
         detail: children.map((c) => `${c.key} · ${c.summary} · ${m.rev?.tasks[c.key]?.[1] ?? c.status} · resolved ${c.resolved || "—"}`), ...(key ? { url: safeLink(d.jiraBase ?? "", key) } : {}) };
     }), "Jira state at the selected check. Consumption and deltas re-cut the latest extract; captured progression has its own page."));
-    tables.push(m.groupedTable("workstream-totals", "Workstream consumption totals", m.facts, ["ws"]));
+    const workstreams = m.groupedTable("workstream-totals", "Workstream consumption totals", m.facts, ["ws"]);
+    const priorWs = m.compare ? m.grouped(m.filtered(m.compare), ["ws"]) : [];
+    workstreams.columns.push("Done", "In progress", "Todo", "Δ done", "Δ in progress", "Δ todo", ...METRIC_COLUMNS.map((c) => `Δ ${c}`));
+    workstreams.rows = Object.entries(d.ws).filter(([w]) => m.wsOn(w)).map(([w, def]) => {
+      const r = workstreams.rows.find((r) => r.cells[0] === def.name) ?? row(w, [def.name, ...metricCells(blank())]);
+      const progress = (revision: UsageRevision | undefined) => def.epics.reduce<[number, number, number]>((a, key) => { const p = revision?.epics[key]; if (p) { a[0] += p.done; a[1] += p.wip; a[2] += p.todo; } return a; }, [0, 0, 0]);
+      const current = progress(m.rev), previous = progress(m.compare), prior = priorWs.find((p) => p.cells[0] === def.name);
+      return { ...r, cells: [...r.cells, ...current, ...current.map((n, i) => m.compare ? n - previous[i]! : null), ...METRIC_COLUMNS.map((_, i) => m.compare && typeof r.cells[i + 1] === "number" ? Number(r.cells[i + 1]) - Number(prior?.cells[i + 1] ?? 0) : null)] };
+    });
+    tables.push(workstreams);
     // Keep open workstreams with no recorded usage visible when explicitly requested.
     tables.push(table("workstream-state", "Workstream coverage", ["Workstream", "Lifecycle", "Seats in scope"], Object.entries(d.ws).filter(([w]) => q.workstreams === null || q.workstreams.includes(w)).map(([w, def]) => row(w, [def.name, m.classes[w]!, m.scope.filter((s) => s.ws === w).length]))));
   } else if (q.page === "pivot") {
@@ -213,18 +225,25 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
   return { tiles, tables, notes };
 }
 
+export function tokenomicsSummary(m: ReturnType<typeof usageModel>): NonNullable<TokenomicsView["summary"]> {
+  return { cost: m.total.cost, tokens: tokens(m.total), responses: m.total.n, hours: m.total.act / 3600, cached: m.total.read,
+    seats: m.total.seats.size, scope: m.scope.length, hit: ratio(m.total.read, m.total.fresh + m.total.read + m.total.write), revision: m.rev?.label ?? "Latest check", compare: m.compare?.label ?? "none" };
+}
 export function paginateTokenomics(result: BuiltTokenomics, q: TokenomicsQuery): TokenomicsTable[] {
   return result.tables.map((t) => {
-    const index = t.columns.indexOf(q.sort), needle = q.search.trim().toLowerCase();
+    const sort = q.sorts[t.id] ?? { column: q.sort, descending: q.descending };
+    const index = t.columns.indexOf(sort.column), needle = q.search.trim().toLowerCase();
     const rows = t.rows.filter((r) => {
       if (needle) return [...r.cells, ...r.detail].join(" ").toLowerCase().includes(needle);
       if (t.id !== "pivot") return true;
       const path = JSON.parse(r.key) as string[];
       return path.slice(0, -1).every((_, index) => q.expanded.includes(JSON.stringify(path.slice(0, index + 1))));
     });
-    if (index >= 0) rows.sort((a, b) => { const x = a.cells[index], y = b.cells[index]; return (x == null ? 1 : y == null ? -1 : typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y))) * (q.descending ? -1 : 1); });
+    if (index >= 0) rows.sort((a, b) => { const x = a.cells[index], y = b.cells[index]; return (x == null ? 1 : y == null ? -1 : typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y))) * (sort.descending ? -1 : 1); });
     const offset = q.offsets[t.id] ?? q.offset;
-    return { ...t, rows: rows.slice(offset, offset + 50), total: rows.length };
+    // Charts retain their complete selection and original time scale, independently of table paging/search.
+    const plot = t.chart ? { ...t.plot, columns: t.columns, rows: t.rows.map((r) => r.cells), ...(t.id === "timeline" ? { spans: result.tables.find((t) => t.id === "dates")?.rows.map((r) => r.cells), flags: result.tables.find((t) => t.id === "flags")?.rows.map((r) => r.cells), end: result.tables.find((t) => t.id === "parallel")?.rows.at(-1)?.cells[0] as string | undefined } : {}) } : undefined;
+    return { ...t, rows: rows.slice(offset, offset + 50), total: rows.length, ...(plot ? { plot } : {}) };
   });
 }
 
@@ -422,13 +441,13 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   type Day = { value: Aggregate; hours: Map<number, Set<number>>; prs: number; cm: number; lines: number };
   type Days = Map<string, Day>;
   const create = (): Day => ({ value: blank(), hours: new Map(), prs: 0, cm: 0, lines: 0 });
-  const team: Days = new Map(), people = new Map<string, Days>(), epics = new Map<string, Days>(), byPersonEpic = new Map<string, { user: string; ws: string; epic: string; days: Days }>();
+  const team: Days = new Map(), people = new Map<string, Days>(), workstreamDays = new Map<string, Days>(), epics = new Map<string, Days>(), byPersonEpic = new Map<string, { user: string; ws: string; epic: string; days: Days }>();
   const getDays = (map: Map<string, Days>, k: string) => { let x = map.get(k); if (!x) { x = new Map(); map.set(k, x); } return x; };
   const getDay = (days: Days, day: string) => { let x = days.get(day); if (!x) { x = create(); days.set(day, x); } return x; };
   const mapsFor = (user: string, ws: string, epic: string) => {
     const key = JSON.stringify([user, ws, epic]); let x = byPersonEpic.get(key);
     if (!x) { x = { user, ws, epic, days: new Map() }; byPersonEpic.set(key, x); }
-    return [team, getDays(people, user), getDays(epics, epic), x.days];
+    return [team, getDays(people, user), getDays(workstreamDays, JSON.stringify([user, ws])), getDays(epics, epic), x.days];
   };
   for (const f of m.filtered(m.rev, true)) {
     if (!f[9]) continue;
@@ -455,13 +474,14 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   const today = dayOf(Date.parse(d.generated)), since = q.range === "all" ? "" : addDays(today, 1 - Number(q.range));
   const timeline: Row[] = [];
   const pushDays = (label: string, days: Days, user: string, ws = "", epic = "") => {
-    for (const [day, x] of [...days].sort()) if (day >= since) timeline.push(row(JSON.stringify([label, day, ws, epic]), [label, user, ws, epic ? m.epicLabel(epic) : "", day, value(x), x.value.act / 3600, x.value.cost, tokens(x.value), peak(x), x.prs, x.cm, x.lines],
+    for (const [day, x] of [...days].sort()) if (day >= since) timeline.push(row(JSON.stringify([label, day, ws, epic]), [label, user, ws, epic ? m.epicLabel(epic) : "", day, x.value.n || (["prs", "cm", "lines", "cpp"].includes(q.metric) && x.prs + x.cm + x.lines) ? value(x) : null, x.value.act / 3600, x.value.cost, tokens(x.value), peak(x), x.prs, x.cm, x.lines, x.value.fresh + x.value.read + x.value.write, x.value.read, x.value.n],
       [`Tasks resolved: ${d.epics.flatMap((e) => e.children.filter((c) => c.resolved === day).map((c) => c.key)).join(", ") || "none recorded"}`]));
   };
   pushDays("Team total", team, "All users");
   for (const [user, days] of people) pushDays("Person", days, user);
+  for (const [key, days] of workstreamDays) { const [user, ws] = JSON.parse(key) as [string, string]; pushDays("Workstream", days, user, d.ws[ws]!.name); }
   for (const x of byPersonEpic.values()) pushDays("Epic / desk row", x.days, x.user, d.ws[x.ws]!.name, x.epic);
-  tables.push(table("timeline", "Activity timeline: team → people → workstreams → epics", ["Level", "Person", "Workstream", "Epic", "Day", ACTIVITY_METRICS[q.metric], "Seat-hours", "Cost ($)", "Tokens", "Peak seats", "PRs merged", "Commits", "Lines changed"], timeline, "Use search to isolate a person, workstream, epic or date. Expand a row for Jira progress. Exact values provide the accessible chart alternative.", true));
+  tables.push(table("timeline", "Activity timeline: team → people → workstreams → epics", ["Level", "Person", "Workstream", "Epic", "Day", ACTIVITY_METRICS[q.metric], "Seat-hours", "Cost ($)", "Tokens", "Peak seats", "PRs merged", "Commits", "Lines changed", "Input tokens", "Cached input tokens", "Model responses"], timeline, "Use search to isolate a person, workstream, epic or date. Expand a row for Jira progress. Exact values provide the accessible chart alternative.", true));
   const merge = (days: Days, start: string, end: string): Day => {
     const out = create();
     for (const [day, x] of days) if (day >= start && day <= end) {
@@ -524,6 +544,10 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
     add(g.a, f, part); trendGroups.set(key, g);
   }
   tables.push(table("trend", "Daily consumption", ["Day", "Stack", q.measure === "cost" ? "API cost ($)" : q.measure === "tok" ? "Tokens" : "Active seat-hours"], [...trendGroups].sort().map(([k, g]) => row(k, [...g.labels, measure(g.a, q.measure)])), "Uses Period, filters and revision cut. Token types do not allocate active time.", true));
+  const trend = tables.find((t) => t.id === "trend")!;
+  trend.plot = { columns: trend.columns, rows: [], order: q.stack === "tt" ? ["Cache miss", "Cache read", "Cache write", "Output"] : m.grouped(d.facts, [q.stack]).sort((a, b) => Number(b.cells[1]) - Number(a.cells[1])).map((r) => String(r.cells[0])) };
+  const tl = tables.find((t) => t.id === "timeline")!;
+  tl.plot = { columns: tl.columns, rows: [], desks: Object.values(d.ws).filter((w) => w.kind === "desk").map((w) => w.name), order: [...new Set(d.seats.map((s) => s.user || "Unattributed"))].sort(), events: selectedEpics.flatMap((e) => e.children.filter((c) => c.resolved).map((c) => [m.epicLabel(e.key), c.resolved!, c.key])), gaps: m.scope.filter((s) => s.data !== "ok").map((s) => [s.user, d.ws[s.ws]!.name, m.epicLabel(s.epic), s.created.slice(0, 10), s.data]) };
   if (!live.dev) notes.push("Delivery timeline metrics have not been collected; PRs, commits, lines and cost per PR remain unavailable.");
   return { tiles: [], tables, notes };
 }
