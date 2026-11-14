@@ -33,6 +33,7 @@ export function chartSvgLayers(scene: ChartScene): string[] {
     content += part; bytes += length;
   }
   layers.push(start + content + end);
+  if (layers.reduce((bytes, svg) => bytes + new TextEncoder().encode(svg).length, 0) > 32 * 1024 * 1024) throw new Error("Chart composition exceeds its 32 MiB limit; narrow the selection. No series was omitted.");
   for (const svg of layers) { const problem = findSvgIconProblem(svg); if (problem) throw new Error(`Host refused chart SVG: ${problem}`); }
   return layers;
 }

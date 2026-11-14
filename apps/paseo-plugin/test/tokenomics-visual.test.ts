@@ -36,6 +36,7 @@ describe("native Tokenomics visual contracts", () => {
     const parts = Array.from({ length: 2200 }, (_, i) => `<rect data-index="${i}" x="${i % 100}" y="0" width="1" height="1" fill="#000"/>`), scene: ChartScene = { width: 1138, height: 340, parts, hits: [], legend: [] }, layers = chartSvgLayers(scene);
     expect(layers.length).toBeGreaterThan(1); for (const part of parts) expect(layers.filter((svg) => svg.includes(part))).toHaveLength(1); for (const svg of layers) expect(findSvgIconProblem(svg)).toBeNull();
     expect(() => chartSvgLayers({ ...scene, parts: [" ".repeat(65536)] })).toThrow("One chart path exceeds");
+    expect(() => chartSvgLayers({ ...scene, parts: Array(2048).fill(" ".repeat(16370)) })).toThrow("Chart composition exceeds");
     expect(() => chartSvgLayers({ ...scene, parts: Array(2100).fill('<rect x="0" y="0" width="1" height="1"/>' + " ".repeat(16000)) })).toThrow("Chart composition exceeds");
     const q = query({ page: "activity" }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!;
     for (const r of t.plot!.rows) if (r[0] === "Person") r[1] = '<script>&"';
