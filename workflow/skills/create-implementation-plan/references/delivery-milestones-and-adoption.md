@@ -94,7 +94,9 @@ affected checks; never publish unfinished milestone scope with the urgent fix.
 - The TPM routes the plan's task, milestone and checkout maps; the LSA owns
   scope and architectural changes.
 - Before each milestone, confirm its scope, prerequisites, repository targets,
-  integration owner and usable stopping point.
+  integration owner and usable stopping point. Admit it on a
+  [milestone-scoped launch check](plan-graph-contract.md#milestone-scoped-launch-check)
+  whose scope equals its mapped rows.
 - Integration belongs to the existing authorized TPM or operator, not a new
   seat; code conflicts go back to the responsible delivery seat. A later change
   invalidates affected evidence; resolve conflicts before claiming integration.
