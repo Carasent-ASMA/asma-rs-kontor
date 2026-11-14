@@ -56,11 +56,11 @@ function stacked(table: TokenomicsTable, width: number, colors: Colors, query: T
   const color = (key: string) => table.id === "bug-trend" ? [cp.series[7], cp.series[3], cp.series[6], cp.series[4], cp.other][bugKinds.indexOf(key)]! : review ? ["#0ca30c",cp.series[7]!,cp.series[1]!,cp.other,cp.series[0]!][outcome.indexOf(key)]! : key === "Other" ? cp.other : cp.series[(table.id === "delivery-trend" ? [0,1,2,3,4,6,7][shown.indexOf(key)] : shown.indexOf(key)) ?? 0]!;
   const observed = [...by.keys()].sort(), weekly = table.columns[0] === "Week", dates = table.id === "trend" ? observed : daysBetween(observed[0]!, observed.at(-1)!,weekly?7:1), values = dates.map(d=>sum(series.map(k=>by.get(d)?.get(k)??0))), step = normalized ? 0.25 : review || delivery ? Math.max(1,Math.round(nice(Math.max(...values,1)/4))) : nice(Math.max(...values,1)/4), top = normalized ? 1 : Math.ceil(Math.max(...values,1)/step)*step;
   const y=(v:number)=>mt+(height-mt-mb)*(1-v/top), bw=(width-ml-mr)/Math.max(1,dates.length), barW=Math.max(2,Math.min(table.id === "all-chart" ? 40 : 36,bw-4));
-  for(let v=0;v<=top+1e-9;v+=step)scene.parts.push(shape("line",{x1:ml,x2:width-mr,y1:y(v),y2:y(v),stroke:colors.border}),text(ml-6,y(v)+4,normalized?`${Math.round(v*100)}%`:review||delivery?String(v):reportValue(v,table.columns.at(-1)),cp.muted,"end"));
-  const every=Math.ceil(dates.length/Math.max(1,Math.floor((width-ml)/70)));
+  for(let v=0;v<=top+1e-9;v+=step)scene.parts.push(shape("line",{x1:ml,x2:width-mr,y1:y(v),y2:y(v),stroke:colors.border}),text(ml-6,y(v)+4,normalized?`${Math.round(v*100)}%`:review||delivery?String(v):table.id === "trend" && query.measure === "act" ? `${v.toFixed(0)}h` : reportValue(v,table.columns.at(-1)),cp.muted,"end"));
+  const every=Math.ceil(dates.length/Math.max(1,Math.floor((width-ml)/(table.id === "all-chart" ? 60 : 70))));
   dates.forEach((day,i)=>{let acc=0;const group=by.get(day), present=series.filter(k=>(group?.get(k)??0)>0), x=ml+i*bw+(bw-barW)/2;
     present.forEach((key,j)=>{const raw=group!.get(key)!,v=normalized?raw/(values[i]||1):raw,y0=y(acc),y1=y(acc+v);acc+=v;const h=Math.max(0,y0-y1-(j<present.length-1?review||delivery?1.5:2:0));scene.parts.push(shape("path",{d:topPath(x,y1,barW,h,j===present.length-1?Math.min(4,h/2,barW/2):0),fill:color(key)}));});
-    if(i%every===0)scene.parts.push(text(x+barW/2,height-mb+16,`${weekly?"wk ":""}${day.slice(5)}`,cp.muted,"middle"));
+    if(i%every===0)scene.parts.push(text(x+barW/2,height-mb+16,`${weekly && table.id !== "all-chart" ? "wk " : ""}${day.slice(5)}`,cp.muted,"middle"));
     scene.hits.push({x:ml+i*bw,y:mt,width:bw,height:height-mt-mb,label:day,values:[...present.map(k=>`${k}: ${reportValue(group!.get(k)!,review||delivery?"Count":table.columns.at(-1))}`), ...(review ? [`${values[i]} findings · fix rate ${values[i]! - (group?.get("Open") ?? 0) ? (100 * (group?.get("Fixed") ?? 0) / (values[i]! - (group?.get("Open") ?? 0))).toFixed(0) + "%" : "—"}`] : [])]});
   });
   if (table.id === "all-chart" && table.plot?.events?.[0]?.[0]) { const start = String(table.plot.events[0][0]), bucket = weekly ? new Date(Date.parse(start) - (new Date(start).getUTCDay() + 6) % 7 * 86400000).toISOString().slice(0, 10) : start, index = dates.indexOf(bucket); if (index >= 0) { const x = ml + index * bw; scene.parts.push(shape("line", { x1: x, x2: x, y1: mt, y2: height - mb, stroke: colors.foreground, "stroke-dasharray": "4 3" }), text(x + 4, mt + 10, `orchestrated work begins ${start}`, colors.foreground)); } }
@@ -131,6 +131,7 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
     }
   }
   const scene: ChartScene = { width, height: 102 + sum(lines.map((r) => r.height)), parts: [], hits: [], legend: [] };
+  if (!people.length) return { width, height: 40, parts: [text(8, 24, "No recorded activity for the current filters.", colors.foregroundMuted)], hits: [], legend: [] };
   if (!days.length) return scene;
   const x = (d: string) => labelW + (xi.get(d < days[0]! ? days[0]! : d > end ? end : d) ?? 0) * cw;
   const metric = (rows: Cell[][]) => activityChartValue(rows, query.metric);
@@ -166,8 +167,8 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
   const bins = [.2, .4, .6, .8].map((q) => Number((vals[Math.min(vals.length - 1, Math.floor(q * vals.length))] ?? 0).toPrecision(2))).filter((v, i, a) => v > 0 && (!i || v > a[i - 1]!));
   let yy = 98;
   for (const line of lines) {
-    const cy = yy + line.height / 2, inset = line.depth === 0 ? 36 : line.depth === 1 ? 28 : 36, maxChars = Math.max(1, Math.floor((labelW - inset - 6) / (line.depth ? 6.3 : 7.4))), label = line.label.length > maxChars ? line.label.slice(0, maxChars - 1) + "…" : line.label;
-    if (line.label) scene.parts.push(text(inset, cy + 4, label, line.depth ? colors.foregroundMuted : colors.foreground, "start", line.depth ? 11.5 : 12.5, line.depth < 2 ? 650 : 400));
+    const cy = yy + line.height / 2, inset = line.depth === 0 ? 36 : line.depth === 1 ? 28 : 36, maxChars = Math.max(1, Math.floor((labelW - inset - 6) / (line.depth === 1 ? 6.8 : line.depth === 2 ? 6.3 : 7.4))), label = line.label.length > maxChars ? line.label.slice(0, maxChars - 1) + "…" : line.label;
+    if (line.label) scene.parts.push(text(inset, cy + 4, label, line.depth ? colors.foregroundMuted : colors.foreground, "start", line.depth === 2 ? 11 : line.depth === 1 ? 11.5 : 12.5, line.depth === 1 ? 600 : line.depth === 0 ? 650 : 400));
     if (line.toggle) { scene.parts.push(text(line.depth ? 16 : 6, cy + 5, line.open ? "▾" : "▸", colors.foregroundMuted, "start", 13)); scene.hits.push({ x: 0, y: yy, width: labelW - 6, height: line.height, label: line.label, values: ["Open or close workstreams and epics"], toggle: line.toggle, open: line.open }); }
     if (!line.depth) scene.parts.push(shape("circle", { cx: 25, cy, r: 5, fill: personColor(line.person) }));
     if (!line.heading) {

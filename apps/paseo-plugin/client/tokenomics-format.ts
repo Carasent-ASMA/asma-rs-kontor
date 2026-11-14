@@ -24,14 +24,21 @@ export function reportValue(value: string | number | null | undefined, label = "
   return Number.isInteger(value) && !/responses|sessions/i.test(label) ? String(value) : value.toLocaleString("en-US", { maximumFractionDigits: Number.isInteger(value) ? 0 : 1 });
 }
 export function reportNote(text: string): string {
-  return text.replace(/([+−]?\d[\d,]*(?:\.\d+)?)(?=\s*(?:deleted|lines rewritten|read ·|miss\b|tokens\b))/g, (s) => { const sign = s.startsWith("+") || s.startsWith("−") ? s[0] : ""; return sign + reportNumber(Number(s.replaceAll(",", "").replace("−", "-")) * (sign === "−" ? -1 : 1)); })
+  return text.replace(/([+−]?\d[\d,]*(?:\.\d+)?)(?=\s*(?:deleted|lines|read ·|miss\b|tokens\b))/g, (s) => { const sign = s.startsWith("+") || s.startsWith("−") ? s[0] : ""; return sign + reportNumber(Number(s.replaceAll(",", "").replace("−", "-")) * (sign === "−" ? -1 : 1)); })
     .replace(/tests \+(\d+)\/−(\d+) · docs \+(\d+)\/−(\d+)/g, (_, a, b, c, d) => `tests +${reportNumber(Number(a))} / −${reportNumber(Number(b))} · docs +${reportNumber(Number(c))} / −${reportNumber(Number(d))}`)
     .replace(/\$([\d,]+(?:\.\d+)?)/g, (_, n: string) => n === "0" ? "$0" : reportMoney(Number(n.replaceAll(",", ""))))
     .replace(/(?<![\d\w-])(\d{7,})(?![\d\w-])/g, (n) => reportNumber(Number(n)))
     .replace(/(Δ\s+[-+]?\d+)\.(\d{2})\d+/g, "$1.$2");
 }
 
+export function reportLivePercent(value: string | number | null | undefined): string {
+  if (value == null || !Number.isFinite(parseFloat(String(value)))) return "—";
+  const percent = parseFloat(String(value));
+  return `${percent.toFixed(percent && percent < 10 ? 1 : 0)}%`;
+}
+
 export function reportTableValue(value: string | number | null | undefined, label: string, table: string): string {
+  if (/^(review-|reviewer$|submitters$|delivery-|jira-|bug-|bugs$)/.test(table) && (typeof value === "string" && value.endsWith("%") || typeof value === "number" && /%|Churn/i.test(label))) return reportLivePercent(value);
   if (table === "prices") return value == null ? "—" : String(value);
   if (table === "all-months" && typeof value === "string" && /^\d+(?:\.\d+)? · \$/.test(value)) { const [tokens, cost] = value.split(" · "); return `${reportNumber(Number(tokens))} · ${reportMoney(Number(cost!.slice(1).replaceAll(",", "")))}`; }
   return reportValue(value, label);

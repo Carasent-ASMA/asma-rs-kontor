@@ -3,7 +3,7 @@ vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "Vi
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon" }));
 import { findSvgIconProblem } from "@getpaseo/plugin";
 import { activityChartSummary, activityEveryoneKeys, chartSvgLayers, tokenomicsChartScene, type ChartScene } from "../client/tokenomics-charts";
-import { reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
+import { reportLivePercent, reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
 import type { Colors } from "../client/page-controls";
 import { buildTokenomics, paginateTokenomics, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 import { tokenomicsQuerySchema } from "../shared/tokenomics";
@@ -12,7 +12,7 @@ const colors = { surface0: "#f4f3f0", surface1: "#fcfcfb", surface2: "#f0efec", 
 const query = (input: object = {}) => tokenomicsQuerySchema.parse(input);
 describe("native Tokenomics visual contracts", () => {
   it("matches web formatting without changing accounting values", () => {
-    expect(reportNumber(65432109876)).toBe("65.43B"); expect(reportMoney(12345.67)).toBe("$12,346"); expect(reportMoney(6)).toBe("$6.00"); expect(reportTableValue(0.25, "Cache read", "prices")).toBe("0.25");
+    expect(reportNumber(65432109876)).toBe("65.43B"); expect(reportMoney(12345.67)).toBe("$12,346"); expect(reportMoney(6)).toBe("$6.00"); expect(reportTableValue(0.25, "Cache read", "prices")).toBe("0.25"); expect(reportLivePercent("100.0%")).toBe("100%"); expect(reportLivePercent(13.123)).toBe("13%"); expect(reportLivePercent(5.9)).toBe("5.9%");
     expect(reportValue(1234567890, "Codex Auto Review")).toBe("1.23B"); expect(reportValue(13.123456789, "Churn (%)")).toBe("13.1%"); expect(reportValue(1.2345, "Bugs per 1K code lines")).toBe("1.23");
     const d = tokenomicsFixture(), before = JSON.stringify(d); buildTokenomics(d, tokenomicsLiveFixture(), query()); expect(JSON.stringify(d)).toBe(before);
   });
@@ -84,6 +84,19 @@ describe("native Tokenomics visual contracts", () => {
     const q = query({ page: "overview", compare: "check-a", rev: "check-b" }), wt = buildTokenomics(d, live, q).tables.find((t) => t.id === "workstream-totals")!, r = wt.rows.find((r) => r.key === "build")!;
     expect(r.cells[wt.columns.indexOf("Δ done")]).toBe(0); expect(r.cells[wt.columns.indexOf("New done")]).toBe(1);
     const same = query({ compare: "check-b", rev: "check-b" }); expect(tokenomicsSummary(usageModel(d, same)).compare).toBe("none"); expect(buildTokenomics(d, live, same).tiles.every((t) => !t.delta)).toBe(true);
+  });
+  it("computes workstream cache-hit deltas from full values before display rounding", () => {
+    const d = tokenomicsFixture(); d.facts = d.facts.slice(0, 2);
+    const before = d.facts[0]!, after = d.facts[1]!;
+    for (const f of d.facts) { f[3] = 49851; f[4] = 50149; f[5] = 0; f[6] = 0; }
+    after[3] = 49847; after[4] = 50153;
+    const q = query({ compare: "check-a", rev: "check-b" }), t = buildTokenomics(d, tokenomicsLiveFixture(), q).tables.find((t) => t.id === "workstream-totals")!, r = t.rows.find((r) => r.key === "build")!;
+    expect(r.cells[t.columns.indexOf("Δ Cache hit")]).toBeCloseTo(0.002, 8);
+    expect(before[4]).toBe(50149);
+  });
+  it("shows the original empty activity state instead of an empty chart frame", () => {
+    const q = query({ page: "activity", filters: { user: ["Nobody selected"] } }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!, scene = tokenomicsChartScene(t, 1138, colors, q);
+    expect(scene.height).toBe(40); expect(scene.parts.join("")).toContain("No recorded activity for the current filters.");
   });
   it.skipIf(!process.env.KONTOR_TOKENOMICS_VISUAL_ROOT)("validates frozen wide/timeline projections [local visual proof]", async () => {
     const { readTokenomicsSnapshot, tokenomicsView } = await import("../server/tokenomics"), snapshot = await readTokenomicsSnapshot(process.env.KONTOR_TOKENOMICS_VISUAL_ROOT!);
