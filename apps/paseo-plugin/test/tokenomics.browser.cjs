@@ -50,6 +50,12 @@ async function tab(width, height, theme) {
         evidence.push({ id, width, height, theme, heading });
       }
       if (width === 1440) {
+        await t.call("Emulation.setDeviceMetricsOverride", { width: 1680, height, deviceScaleFactor: 1, mobile: false });
+        for (const id of ["pivot", "data", "dv-people", "dv-repos"]) {
+          await t.evaluate(`document.querySelectorAll('[data-testid=tokenomics-page] [role=tab]')[${pages.findIndex(([key]) => key === id)}].click()`); await t.ready();
+          assert.ok(await t.evaluate("[...document.querySelectorAll('[data-testid^=report-table-]')].every(e=>e.scrollWidth<=e.clientWidth+1)"), `${id}: desktop columns exceed report width`);
+        }
+        await t.call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
         await t.evaluate("document.querySelector('[data-testid=tokenomics-page]').querySelectorAll('[role=tab]')[2].click()"); await t.ready();
         assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label=\"Range: Full lifetime\"]'))"));
         await t.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }); await t.ready();
