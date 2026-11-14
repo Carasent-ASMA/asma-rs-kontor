@@ -43,6 +43,8 @@ import { deviceProfileStorage } from "./viewer-profile";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
 import { declaredPlanWorkstream, planWorkstreamMappings } from "./plan-workstreams";
 import { taskTeamReader } from "./task-team-source";
+import { TokenomicsPage } from "./tokenomics-page";
+import { tokenomicsQuerySchema } from "../shared/tokenomics";
 import { appearanceColors } from "./kontor-appearance";
 
 // One device store; Recent uses a separate key for each host.
@@ -314,7 +316,10 @@ function HostScreen(props: PluginScreenProps) {
     onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
     onShowView={(view) => { showView(view); setMenu(null); }} /> : null;
   let page;
-  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} retirement={retirement} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
+  if (route.tab === "Tokenomics") page = <TokenomicsPage key={routeViewKey(route)} hostId={host.id} online={hostStatus === "online"} colors={colors} compact={layout.compact}
+    initialQuery={readPageView(host.id, route, tokenomicsQuerySchema.parse({}))} onQuery={(value) => writePageView(host.id, route, value)} onCopy={copyText}
+    initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => writeRouteView(host.id, route, { offset })} />;
+  else if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} retirement={retirement} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     onNewLead={(source) => { setLeadSource(source); setMenu("switch"); }}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads} responsibility={responsibility}

@@ -14,11 +14,12 @@ export type Scenario = {
   readonly summary: string;
   readonly inventory: "base" | "large" | "long" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration" | "recovery" | "captured";
   readonly sources: boolean;
+  readonly tokenomicsSource?: "local";
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
   readonly keyboard?: Partial<KeyboardSettings>;
   readonly start?: {
-    readonly tab?: "Sessions" | "Board" | "Overview" | "Plan";
+    readonly tab?: "Sessions" | "Board" | "Overview" | "Plan" | "Tokenomics";
     readonly sourceId?: string;
     readonly query?: string;
     readonly status?: "error" | "needs_input" | "running" | "attention" | "earlier_error";
@@ -49,6 +50,9 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "tokenomics-local", title: "Native Tokenomics: local report", summary: "Report data comes from the explicitly configured read-only host adapter; the surrounding Paseo host is simulated. No collection, installation or activation.", inventory: "base", sources: false, tokenomicsSource: "local", start: { tab: "Tokenomics" } },
+  { id: "tokenomics", title: "Native Tokenomics", summary: "All 18 Tokenomics, Code Review and Delivery pages use the real native plugin client with synthetic report fixtures. No collector or private live data is read.", inventory: "base", sources: false, start: { tab: "Tokenomics" } },
+  { id: "tokenomics-offline", title: "Tokenomics: host goes offline", summary: "The report snapshot becomes stale after the synthetic host disconnects.", inventory: "base", sources: false, start: { tab: "Tokenomics" }, hostOfflineAfterMs: 4000 },
   { id: "unified-switcher", title: "Unified: start or switch (captured)", summary: "Operator-local captured cohort, frozen at capture time, with every effect simulated. Last visited order and times are SIMULATED; project names, session token totals and provider session IDs were not read and stay unknown. Without a local capture the host is empty.", inventory: "captured", sources: false, start: { sheet: "switch" } },
   { id: "unified-sessions", title: "Unified: Kontor Sessions (captured)", summary: "The same captured cohort in Kontor's Sessions. Last visited order is SIMULATED; unknowns stay unknown.", inventory: "captured", sources: false },
   { id: "unified-takeover-outcomes", title: "Unified: take over outcomes (captured, simulated)", summary: "The captured cohort with the switcher open and SIMULATED take over outcomes: each seat reviewed for the first time takes the next of success, no model (review blocked), launch fails (partial; a fresh review finishes it), unknown effect (Check settles it) and preflight refused. Every effect changes page memory only; captured sessions are never renamed.", inventory: "captured", sources: false, start: { sheet: "switch" }, takeoverSim: "sequence" },
