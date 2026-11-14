@@ -15,13 +15,27 @@ const pages = {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const evidence = [];
+  const oracle = { checked: false };
   try {
+    if (process.env.ORACLE_URL) {
+      const page = await browser.newPage(); await page.goto(process.env.ORACLE_URL);
+      await page.waitForSelector("#kpis .tile");
+      const kpis = await page.locator("#kpis").innerText(), review = await page.locator("#crKpis").innerText(), delivery = await page.locator("#dvKpis").innerText();
+      for (const expected of ["$6.00", "1.4K", "64.5%", "2 / 3", "340"]) assert.ok(kpis.includes(expected), `Original renderer is missing expected ${expected}`);
+      assert.ok(review.includes("Fix rate100%") && review.includes("Desk cost$2.00"));
+      assert.ok(delivery.includes("Code lines added+1.0K") && delivery.includes("Bugs per 1K code lines1.00"));
+      const progression = await page.locator("#progOverall").innerText(); assert.ok(progression.includes("123") && progression.includes("999"));
+      const ledger = await page.locator("#ledgerTable").innerText(); assert.ok(ledger.includes("Unknown epic") && ledger.includes("200"));
+      Object.assign(oracle, { checked: true, processedTokens: 1400, cost: 6, hitRate: "64.5%", seats: "2/3", autoReviewTokens: 340, reviewFixRate: "100%", reviewCost: 2, codeAdded: 1000, bugsPerK: 1, capturedTokens: [123, 999], unknownTokens: 200 });
+      await page.close();
+    }
     for (const [width, height] of [[390, 844], [1440, 900]]) for (const theme of ["dark", "light"]) {
       const page = await browser.newPage({ viewport: { width, height } });
       const app = page.getByTestId("tokenomics-page");
       const errors = []; page.on("pageerror", (e) => errors.push(e.message));
       await page.goto(`${root}?embed=1&scenario=tokenomics&theme=${theme}&pointer=${width < 600 ? "coarse" : "fine"}`);
       await app.getByRole("heading", { name: "Epic progress and consumption", exact: true }).waitFor();
+      assert.ok((await app.innerText()).includes("1,400") || (await app.innerText()).includes("1400"));
       for (const [group, views] of Object.entries(pages)) {
         await app.getByRole("button", { name: group, exact: true }).click();
         for (const [name, heading] of views) {
@@ -69,7 +83,7 @@ const pages = {
     assert.equal(await offlineApp.getByRole("button", { name: "Refresh report", exact: true }).getAttribute("aria-disabled"), "true");
     await offlineApp.getByText(/Host offline/).waitFor();
     await offline.screenshot({ path: path.join(output, "tokenomics-offline.png") }); await offline.close();
-    fs.writeFileSync(path.join(output, "native-pages.json"), JSON.stringify({ prototype: true, physicalDevice: false, pages: evidence }, null, 2));
+    fs.writeFileSync(path.join(output, "native-pages.json"), JSON.stringify({ prototype: true, physicalDevice: false, originalRendererOracle: oracle, pages: evidence }, null, 2));
     console.log(`PASS ${evidence.length} native page renders: 18 pages × compact/desktop × dark/light; pivot drill-down, complete CSV, custom dates/revisions and offline source refusal.`);
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });
