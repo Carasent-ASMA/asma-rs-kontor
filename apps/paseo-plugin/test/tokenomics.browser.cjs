@@ -40,6 +40,7 @@ async function tab(width, height, theme) {
         assert.ok(await t.evaluate(`[...document.querySelectorAll('[data-testid=tokenomics-page] [role=heading]')].some(e=>e.textContent===${JSON.stringify(heading)})`), id);
         assert.ok(await t.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"), `${id}: page overflow`);
         if (id === "progress") assert.ok(await t.evaluate("Boolean(document.querySelector('[aria-label^=\"From:\"]')) && !document.querySelector('[aria-label^=\"From:\"]').getAttribute('aria-label').includes('None')"));
+        if (id === "cr-fix") assert.equal(await t.evaluate("document.querySelectorAll('[aria-label^=\"Outcomes:\"]').length"), 3);
         if (id === "pivot") { await t.click("Expand all"); await t.ready(); assert.ok(await t.evaluate("document.querySelector('[data-testid=report-table-pivot]').innerText.includes('EXAMPLE-102')")); await t.click("Collapse"); await t.ready(); }
         evidence.push({ id, width, height, theme, heading });
       }

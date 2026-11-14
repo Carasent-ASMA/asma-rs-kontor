@@ -33,6 +33,12 @@ describe("native Tokenomics visual contracts", () => {
       }
     }
   });
+  it("omits unused review legend entries while retaining opened PR provenance", () => {
+    const d = tokenomicsFixture(), live = tokenomicsLiveFixture(), q = query({ page: "cr-overview" }), t = paginateTokenomics(buildTokenomics(d, live, q), q).find((t) => t.id === "review-trend")!;
+    expect(tokenomicsChartScene(t, 1138, colors, q).legend.map((x) => x.label)).toEqual(["Fixed", "Open"]);
+    const prs = buildTokenomics(d, live, query({ page: "cr-prs" })).tables.find((t) => t.id === "review-prs")!, r = prs.rows[0]!, meta = Object.values(live.review!.prs)[0]!;
+    expect(r.cells[prs.columns.indexOf("Created")]).toBe(meta.created); expect(r.cells[prs.columns.indexOf("Jira key")]).toBe(meta.key);
+  });
   it("partitions an over-limit chart losslessly on the shared coordinate system", () => {
     const parts = Array.from({ length: 2200 }, (_, i) => `<rect data-index="${i}" x="${i % 100}" y="0" width="1" height="1" fill="#000"/>`), scene: ChartScene = { width: 1138, height: 340, parts, hits: [], legend: [] }, layers = chartSvgLayers(scene);
     expect(layers.length).toBeGreaterThan(1); for (const part of parts) expect(layers.filter((svg) => svg.includes(part))).toHaveLength(1); for (const svg of layers) expect(findSvgIconProblem(svg)).toBeNull();
