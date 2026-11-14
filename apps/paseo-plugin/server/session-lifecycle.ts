@@ -1016,9 +1016,9 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       selection = "explicit";
       let snapshot: ProviderRouteSnapshot;
       try { snapshot = await deps.snapshot({ cwd: first.cwd }); } catch (error) { return answer("unknown", `The host provider snapshot could not be read: ${errorText(error)}. Nothing is chosen.`); }
-      const accounts = snapshot.entries.map((entry) => entry.provider);
-      const catalog = configuredAccountCatalogFromFleet([{ accounts }], `${snapshot.requestId}@${snapshot.generatedAt}`);
-      if (!catalog) return answer("unknown", "The host provider snapshot is unqualified: it names no providers or a duplicate provider. Nothing is chosen.");
+      const domains = snapshot.entries.map((entry) => ({ provider: entry.provider, accounts: [entry.provider] }));
+      const catalog = configuredAccountCatalogFromFleet(domains, `${snapshot.requestId}@${snapshot.generatedAt}`);
+      if (!catalog) return answer("unknown", "The host provider snapshot is unqualified: it names no providers. Nothing is chosen.");
       health = joinSessionLocalRefusalToRouteHealth(routeHealthFromProviderSnapshot(snapshot, mode, catalog), sessionRefusal, mode);
       const explicit = explicitTakeoverRoute(health, chosenRoute, mode);
       if ("problem" in explicit) return answer("refused", explicit.problem);

@@ -638,7 +638,13 @@ describe("takeover review", () => {
   it("readOperatorFleetDiscovery uses one Teams adapter read for profiles and account catalog", async () => {
     const read = vi.fn(async () => ({
       status: "ready" as const, sha256: "fleet-sha", readAt: "2026-10-25T09:00:00.000Z",
-      data: { kind: "fleet" as const, bindings: [{ chainResolved: true, reference: KEY, chainName: "claude-first" }], domains: [{ accounts: ["claude-a"] }] },
+      data: { kind: "fleet" as const, bindings: [{ chainResolved: true, reference: KEY, chainName: "claude-first" }],
+        domains: [
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "claude", accounts: ["claude-a"] },
+        ] },
       diagnostics: [] as const,
     }));
     const catalogSpy = vi.spyOn(readSources, "sourceCatalog").mockReturnValue({ sources: [{ id: "operator", title: "operator", kind: "teams", path: "/fixture/operator-fleet.yml", workstream: null, epic: null, projectId: null, revisionKind: "working copy" }], diagnostics: [] });
@@ -648,7 +654,36 @@ describe("takeover review", () => {
       expect(read).toHaveBeenCalledTimes(1);
       expect(read).toHaveBeenCalledWith({ sourceId: "operator" });
       expect(result.choices).toEqual([{ bindingKey: KEY, chain: "claude-first" }]);
+      expect(result.catalog.accounts).toEqual(new Set(["opencode", "claude-a"]));
       expect(result.catalog.revision).toBe("fleet-sha");
+    } finally {
+      catalogSpy.mockRestore();
+      adapterSpy.mockRestore();
+    }
+  });
+
+  it("returns choose with operator choices when a shared account repeats under one provider", async () => {
+    const h = await host();
+    const read = vi.fn(async () => ({
+      status: "ready" as const, sha256: "fleet-sha", readAt: "2026-10-25T09:00:00.000Z",
+      data: { kind: "fleet" as const, bindings: [{ chainResolved: true, reference: KEY, chainName: "claude-first" }],
+        domains: [
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "claude", accounts: ["claude-a"] },
+        ] },
+      diagnostics: [] as const,
+    }));
+    const catalogSpy = vi.spyOn(readSources, "sourceCatalog").mockReturnValue({ sources: [{ id: "operator", title: "operator", kind: "teams", path: "/fixture/operator-fleet.yml", workstream: null, epic: null, projectId: null, revisionKind: "working copy" }], diagnostics: [] });
+    const adapterSpy = vi.spyOn(teamsAdapter, "createTeamsSourceAdapter").mockReturnValue({ read } as never);
+    try {
+      h.deps.operatorFleetDiscovery = readOperatorFleetDiscovery;
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null });
+      expect(review).toMatchObject({ state: "choose", successor: null,
+        association: { bindingKey: null, source: null, choices: [{ bindingKey: KEY, chain: "claude-first" }] } });
+      expect(review.message).toContain("Choose the configured profile");
+      expect([h.effects.archive, h.effects.create, h.effects.send, h.effects.resolve, h.effects.detach]).toEqual([[], [], [], [], []]);
     } finally {
       catalogSpy.mockRestore();
       adapterSpy.mockRestore();
