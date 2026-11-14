@@ -84,3 +84,4 @@ may be listed as proposed, but they do not govern until accepted.
 | Id | Decision | Status | Authority | Supersedes |
 | --- | --- | --- | --- | --- |
 | [2026-11-05-20-34-decision-proportional-pr-review#DEC-01](2026-11-05-20-34-decision-proportional-pr-review.md#DEC-01) | Proportional PR review and bounded corrections | Accepted | Configured platform owner | none |
+| [2026-11-14-07-20-decision-milestone-scoped-launch-check#DEC-01](2026-11-14-07-20-decision-milestone-scoped-launch-check.md#DEC-01) | Admit a milestone on a launch-ready check scoped to its rows | Accepted | Configured platform owner | none |
