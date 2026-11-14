@@ -171,24 +171,14 @@ class AccountAliasTests(unittest.TestCase):
             codes("docs/evidence/X/log.gz", packed), [public_tree.CODE_ACCOUNT_ALIAS]
         )
 
-    def test_the_code_exemption_lists_exact_files(self) -> None:
-        exempt = [
+    def test_refuses_aliases_in_formerly_exempt_paths(self) -> None:
+        formerly_exempt = [
             "crates/kontor-daemon/src/applications.rs",
             "crates/kontor-teams/fixtures/mvp-team-pack.json",
             "crates/kontor-api/contract/openapi.json",
             "apps/console/public/tokenomics/index.html",
         ]
-        for path in exempt:
-            with self.subTest(path=path):
-                self.assertEqual(codes(path, f'"{WORK_ALIAS}"'), [])
-        not_exempt = [
-            "crates/kontor-daemon/src/new_module.rs",
-            "crates/kontor-daemon/src/applications.rs.orig",
-            "crates/kontor-daemon/src",
-            "apps/console/src/state/teams.ts",
-            "docs/crates/kontor-daemon/src/applications.rs",
-        ]
-        for path in not_exempt:
+        for path in formerly_exempt:
             with self.subTest(path=path):
                 self.assertEqual(
                     codes(path, f'"{WORK_ALIAS}"'), [public_tree.CODE_ACCOUNT_ALIAS]
@@ -261,13 +251,6 @@ class TreeTests(unittest.TestCase):
             out.getvalue().splitlines()[0].split(": ")[:2],
             ["docs/a.md:2", public_tree.CODE_ACCOUNT_ALIAS],
         )
-
-    def test_every_exempt_file_is_alias_free_pending_hold_owner_removal(self) -> None:
-        self.assertEqual(len(public_tree.ALIAS_CODE_EXEMPTION), 51)
-        for path in sorted(public_tree.ALIAS_CODE_EXEMPTION):
-            with self.subTest(path=path):
-                content = (REPO_ROOT / path).read_bytes()
-                self.assertIsNone(public_tree._ACCOUNT_ALIAS_RE.search(content))
 
     def test_the_repository_tree_passes(self) -> None:
         scanned, refusals = public_tree.tree_refusals(REPO_ROOT)
