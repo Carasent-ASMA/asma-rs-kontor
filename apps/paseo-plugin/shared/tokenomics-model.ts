@@ -1,4 +1,4 @@
-import { ACTIVITY_METRICS, DIMENSION_LABELS, DIMENSIONS, FILTER_DIMENSIONS, type TokenomicsData, type TokenomicsLive, type TokenomicsQuery, type TokenomicsTable, type TokenomicsView, type UsageFact, type UsageRevision, type UsageSeat } from "./tokenomics";
+import { ACTIVITY_METRICS, DIMENSION_LABELS, DIMENSIONS, FILTER_DIMENSIONS, tokenomicsTableSort, type TokenomicsData, type TokenomicsLive, type TokenomicsQuery, type TokenomicsTable, type TokenomicsView, type UsageFact, type UsageRevision, type UsageSeat } from "./tokenomics";
 
 // Accounting and period rules follow the existing consumption/data@2 renderer. Costs arrive already valued.
 export const I = { s: 0, h: 1, m: 2, fresh: 3, read: 4, w5: 5, w1: 6, out: 7, reas: 8, n: 9, cost: 10, act: 11, basis: 12, cF: 13, cR: 14, cW: 15, cO: 16, sens: 17, sub: 18 } as const;
@@ -48,11 +48,11 @@ export function add(a: Aggregate, f: UsageFact, part?: number): void {
 export const tokens = (a: Aggregate) => a.fresh + a.read + a.write + a.out;
 const aggregate = (facts: UsageFact[]) => { const a = blank(); facts.forEach((f) => add(a, f)); return a; };
 const measure = (a: Aggregate, kind: string) => kind === "cost" ? a.cost : kind === "tok" ? tokens(a) : a.act / 3600;
-const metricCells = (a: Aggregate) => [a.cost, tokens(a), a.seats.size, a.n, a.act / 3600, ratio(a.read, a.fresh + a.read + a.write), a.fresh, a.read, a.write, a.out, a.reas];
-const METRIC_COLUMNS = ["API-equivalent cost ($)", "Tokens", "Seats with data", "Responses", "Active seat-hours", "Cache hit", "Input miss", "Cache read", "Cache write", "Output", "Reasoning (included in output)"];
+const metricCells = (a: Aggregate) => [a.cost, tokens(a), a.seats.size, a.n, a.act / 3600, ratio(a.read, a.fresh + a.read + a.write), a.fresh, a.read, a.write, a.out, a.reas, a.sub];
+const METRIC_COLUMNS = ["API-equivalent cost ($)", "Tokens", "Seats with data", "Responses", "Active seat-hours", "Cache hit", "Input miss", "Cache read", "Cache write", "Output", "Reasoning (included in output)", "Sub-thread"];
 type Cell = string | number | null;
-type Row = { key: string; cells: Cell[]; detail: string[]; url?: string; hasChildren?: boolean; depth?: number };
-type Table = Omit<TokenomicsTable, "total">;
+type Row = { key: string; cells: Cell[]; detail: string[]; url?: string; hasChildren?: boolean; depth?: number; span?: number; heading?: boolean };
+type Table = Omit<TokenomicsTable, "total"> & { display?: { columns: string[]; rows: Row[] } };
 const row = (key: string, cells: Cell[], detail: string[] = [], url?: string): Row => ({ key, cells, detail, ...(url ? { url } : {}) });
 const table = (id: string, title: string, columns: string[], rows: Row[], note = "", chart = false): Table => ({ id, title, columns, rows, note, chart });
 const median = (values: number[]) => { const s = [...values].sort((a, b) => a - b), m = Math.floor(s.length / 2); return s.length ? s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2 : null; };
@@ -61,7 +61,7 @@ const safeLink = (base: string, suffix: string) => { try { const u = new URL(bas
 
 export function usageModel(d: TokenomicsData, q: TokenomicsQuery) {
   const split = q.page === "pivot" && q.split;
-  const rev = d.revs.find((r) => r.id === q.rev) ?? d.revs.at(-1), compare = d.revs.find((r) => r.id === q.compare);
+  const rev = d.revs.find((r) => r.id === q.rev) ?? d.revs.at(-1), requestedCompare = q.compare === "previous" ? d.revs.at(-2) : d.revs.find((r) => r.id === q.compare), compare = requestedCompare?.id === rev?.id ? undefined : requestedCompare;
   const cutOf = (r?: UsageRevision) => r ? Date.parse(r.cut) : Infinity;
   const anchor = dayOf(Math.min(cutOf(rev) - 1, Date.parse(d.generated))), period = periodDays(q, anchor);
   const bounds = period ? [period[0] ? osloMidnight(period[0]) / 3600000 : -Infinity, osloMidnight(addDays(period[1], 1)) / 3600000] : null;
@@ -109,11 +109,13 @@ export function usageModel(d: TokenomicsData, q: TokenomicsQuery) {
 export function tokenomicsOptions(d: TokenomicsData, m: ReturnType<typeof usageModel>) {
   const pairs = (values: Iterable<string>) => [...new Set(values)].sort().map((s) => ({ value: s, label: s }));
   const options: TokenomicsView["options"] = {
+    activeWindow: [{ value: String(d.activeNowDays), label: `in the last ${d.activeNowDays} days` }],
+    workstreamInfo: Object.entries(d.ws).map(([value, w]) => ({ value, label: w.kind === "desk" ? `desk · ${w.project ?? ""}` : `ws:${value} · ${w.epics.length} labelled epics` })),
     workstreams: Object.entries(d.ws).map(([value, w]) => ({ value, label: `${w.name} · ${m.classes[value]}` })),
     revisions: d.revs.map((r) => ({ value: r.id, label: r.label })), groups: DIMENSIONS.map((value) => ({ value, label: DIMENSION_LABELS[value]! })),
     period: [{ value: "all", label: "All time" }, ...d.rollingDays.map((n) => ({ value: String(n), label: `Last ${n} days` })), { value: "prevm", label: "Previous month" }, { value: "custom", label: "Custom dates" },
-      ...pairs(d.facts.map((f) => `m:${dayOf(f[1] * 3600000).slice(0, 7)}`)), ...pairs(d.facts.map((f) => `w:${weekOf(dayOf(f[1] * 3600000))}`))],
-    dual: [{ value: "all", label: "All selected work" }, ...Object.keys(d.ws).map((value) => ({ value, label: d.ws[value]!.name })), ...d.epics.map((e) => ({ value: e.key, label: m.epicLabel(e.key) }))],
+      ...pairs(d.facts.map((f) => `m:${dayOf(f[1] * 3600000).slice(0, 7)}`)).reverse().map((o) => ({ ...o, label: new Date(`${o.value.slice(2)}-15T12:00:00Z`).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }) })), ...pairs(d.facts.map((f) => `w:${weekOf(dayOf(f[1] * 3600000))}`)).reverse().map((o) => ({ ...o, label: `Week of ${o.value.slice(2)}` }))],
+    dual: [{ value: "all", label: "All selected workstreams" }, ...Object.keys(d.ws).filter(m.wsOn).map((value) => ({ value, label: d.ws[value]!.name })), ...d.epics.filter((e) => m.wsOn(e.ws) && d.ws[e.ws]!.epics.length > 1).map((e) => ({ value: e.key, label: m.epicLabel(e.key) }))],
   };
   for (const key of FILTER_DIMENSIONS) options[key] = pairs(key === "vendor" ? d.mvendor : key === "model" ? d.models : d.seats.map((s) => m.dim(key, null, s)));
   return options;
@@ -124,11 +126,22 @@ export function pivotRows(m: ReturnType<typeof usageModel>, q: TokenomicsQuery):
     const labels = JSON.parse(r.key) as string[];
     return { ...r, cells: [...r.cells.slice(0, index + 1), ...Array<Cell>(q.groups.length - index - 1).fill(null), ...r.cells.slice(index + 1)], depth: index, hasChildren: index + 1 < q.groups.length, labels };
   }));
+  const lookup = new Map(levels.map((r) => [r.key, r])), chosen = q.sorts.pivot ?? { column: q.sort || "API-equivalent cost ($)", descending: q.descending }, cols = [...q.groups.map((g) => DIMENSION_LABELS[g]!), ...METRIC_COLUMNS, ...(q.split ? ["$ miss (incl. unsplit billed)", "$ read", "$ write", "$ output"] : [])], column = cols.indexOf(chosen.column);
   levels.sort((a, b) => {
-    for (let i = 0; i < Math.min(a.labels.length, b.labels.length); i++) { const cmp = a.labels[i]!.localeCompare(b.labels[i]!); if (cmp) return cmp; }
+    for (let i = 0; i < Math.min(a.labels.length, b.labels.length); i++) if (a.labels[i] !== b.labels[i]) {
+      const x = lookup.get(JSON.stringify(a.labels.slice(0, i + 1)))!, y = lookup.get(JSON.stringify(b.labels.slice(0, i + 1)))!;
+      return (column >= 0 ? (Number(x.cells[column]) - Number(y.cells[column])) * (chosen.descending ? -1 : 1) : 0) || a.labels[i]!.localeCompare(b.labels[i]!);
+    }
     return a.labels.length - b.labels.length;
   });
   return levels;
+}
+
+function movedChildren(d: TokenomicsData, from: UsageRevision | undefined, to: UsageRevision | undefined, keys: string[]) {
+  const children = new Set(d.epics.filter((e) => keys.includes(e.key)).flatMap((e) => e.children.map((c) => c.key))), out = [0, 0];
+  if (!from || !to) return out;
+  for (const [key, b] of Object.entries(to.tasks)) if (children.has(key)) { const a = from.tasks[key]; if (!a || a[0] !== b[0]) { if (b[0] === "done") out[0] = out[0]! + 1; else if (b[0] === "indeterminate" && a?.[0] !== "done") out[1] = out[1]! + 1; } }
+  return out;
 }
 
 function progressTables(d: TokenomicsData, q: TokenomicsQuery): Table[] {
@@ -141,13 +154,22 @@ function progressTables(d: TokenomicsData, q: TokenomicsQuery): Table[] {
     ...(["tok", "miss", "hit", "write", "out", "cost", "act", "seats", "n"] as const).map((k): [string, number, number] => [k === "act" ? "Active seat-hours" : k === "cost" ? "API-equivalent cost ($)" : k, k === "act" ? a[k] / 3600 : a[k], k === "act" ? b[k] / 3600 : b[k]]),
     ["Cache hit rate (%)", 100 * a.hit / Math.max(a.miss + a.hit + a.write, 1), 100 * b.hit / Math.max(b.miss + b.hit + b.write, 1)]];
   const note = `Captured aggregates; ignores period, user, workstream and other filters. ${from.replayed || to.replayed ? "Contains replayed history. " : ""}${from.label} → ${to.label}`;
-  return [table("progress", "Captured totals", ["Metric", from.label, to.label, "Change", "Change (%)"], metrics.map(([label, x, y]) => row(label, [label, x, y, y - x, x ? 100 * (y - x) / x : null])), note),
+  const result = [table("progress", "Captured totals", ["Metric", from.label, to.label, "Change", "Change (%)"], metrics.map(([label, x, y]) => row(label, [label, x, y, y - x, x ? 100 * (y - x) / x : null])), note),
     table("progress-ws", "By workstream", ["Workstream", "Done before", "Done after", "WIP before", "WIP after", "Δ seat-hours", "Δ tokens", "Δ cost ($)"], Object.entries(d.ws).filter(([w, def]) => from.usage.ws[w] || to.usage.ws[w] || def.epics.some((k) => from.epics[k] || to.epics[k])).map(([w, def]) => {
       const x = from.usage.ws[w], y = to.usage.ws[w], jx = jira(from, def.epics), jy = jira(to, def.epics);
       return row(w, [def.name, jx[0]!, jy[0]!, jx[1]!, jy[1]!, ((y?.act ?? 0) - (x?.act ?? 0)) / 3600, (y?.tok ?? 0) - (x?.tok ?? 0), (y?.cost ?? 0) - (x?.cost ?? 0)]);
     }), note),
-    table("progress-epics", "Epic progress", ["Epic", "Status before", "Status after", "Done before", "Done after", "WIP before", "WIP after", "Todo before", "Todo after"], keys.map((k) => { const x = from.epics[k], y = to.epics[k]; return row(k, [k, x?.status ?? "absent", y?.status ?? "absent", x?.done ?? 0, y?.done ?? 0, x?.wip ?? 0, y?.wip ?? 0, x?.todo ?? 0, y?.todo ?? 0]); }), note),
+    table("progress-epics", "Epic progress", ["Epic", "Status before", "Status after", "Done before", "Done after", "WIP before", "WIP after", "Todo before", "Todo after", "New done", "New in progress"], keys.map((k) => { const x = from.epics[k], y = to.epics[k]; return row(k, [k, x?.status ?? "absent", y?.status ?? "absent", x?.done ?? 0, y?.done ?? 0, x?.wip ?? 0, y?.wip ?? 0, x?.todo ?? 0, y?.todo ?? 0, ...movedChildren(d, from, to, [k])]); }), note),
     table("progress-tasks", "Task-level changes", ["Task", "Epic", "Status before", "Status after", "Resolved"], d.epics.flatMap((e) => e.children.filter((c) => JSON.stringify(from.tasks[c.key]) !== JSON.stringify(to.tasks[c.key])).map((c) => row(c.key, [c.key, e.key, from.tasks[c.key]?.[1] ?? "absent", to.tasks[c.key]?.[1] ?? "removed", c.resolved ?? null]))), note)];
+  const byWs = result.find((t) => t.id === "progress-ws")!;
+  byWs.rows.sort((a, b) => (to.usage.ws[b.key]?.cost ?? 0) - (to.usage.ws[a.key]?.cost ?? 0));
+  byWs.footer = [row("__total__", ["All registered workstreams", jf[0]!, jt[0]!, jf[1]!, jt[1]!, (to.usage.overall.act - from.usage.overall.act) / 3600, to.usage.overall.tok - from.usage.overall.tok, to.usage.overall.cost - from.usage.overall.cost])];
+  const epics = result.find((t) => t.id === "progress-epics")!;
+  epics.display = { columns: epics.columns, rows: byWs.rows.flatMap((w) => {
+    const rows = d.ws[w.key]!.epics.flatMap((key) => { const r = epics.rows.find((r) => r.key === key); return r ? [{ ...r, cells: [d.epics.find((e) => e.key === key) ? `${key} · ${d.epics.find((e) => e.key === key)!.summary}` : key, ...r.cells.slice(1)], url: safeLink(d.jiraBase ?? "", key) }] : []; });
+    return rows.length ? [{ ...row(`heading-${w.key}`, [w.cells[0]!]), span: 6, heading: true }, ...rows] : [];
+  }) };
+  return result;
 }
 
 export type BuiltTokenomics = { tiles: TokenomicsView["tiles"]; tables: Table[]; notes: string[] };
@@ -159,20 +181,28 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
   if (q.page.startsWith("cr-")) return reviewTables(d, live, q);
   if (q.page.startsWith("dv-")) return deliveryTables(d, live, q);
   if (q.page === "overview") {
-    const prior = m.prior, difference = (n: number, old: number | undefined) => old === undefined ? "" : `Δ ${n - old} vs ${m.compare!.label} · re-cut (same period and filters)`;
-    tile("API-equivalent cost", usd(a.cost), difference(a.cost, prior?.cost)); tile("Tokens processed", tokens(a), difference(tokens(a), prior ? tokens(prior) : undefined));
-    const pp = (current: number, n: number, before: number, oldN: number) => `${(100 * current / Math.max(n, 1) - 100 * before / Math.max(oldN, 1)).toFixed(1)} pp`;
-    tile("Cache hit rate", ratio(a.read, a.fresh + a.read + a.write), prior ? `Δ ${pp(a.read, a.fresh + a.read + a.write, prior.read, prior.fresh + prior.read + prior.write)} · re-cut` : "");
-    tile("Cache miss (input)", a.fresh, `${usd(a.cF + a.cU)} · ${difference(a.fresh, prior?.fresh)}`); tile("Cache write", a.write, `${usd(a.cW)} · ${difference(a.write, prior?.write)}`);
-    tile("Output tokens", a.out, `${usd(a.cO)} · reasoning ${a.reas} (included) · ${difference(a.out, prior?.out)}`); tile("Seats", `${a.seats.size} / ${m.scope.length}`, `With data / in scope · ${difference(a.seats.size, prior?.seats.size)}`);
+    const prior = m.prior;
+    const delta = (value: number, before: number | undefined, format: (n: number) => string, epsilon = 1e-9) => before === undefined || Math.abs(value - before) <= epsilon ? undefined : `Δ ${value > before ? "+" : "−"}${format(Math.abs(value - before))} vs ${m.compare!.label} · re-cut`;
+    const number = (n: number) => n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(Math.round(n));
+    const hit = (a: Aggregate) => 100 * a.read / Math.max(a.fresh + a.read + a.write, 1), sub = (a: Aggregate) => 100 * a.sub / Math.max(tokens(a), 1);
     const adamAct = (ff: UsageFact[]) => ff.filter((f) => d.seats[f[0]]!.adam).reduce((n, f) => n + f[11], 0);
-    tile("Active seat-hours", hours(a.act), difference(a.act / 3600, prior ? prior.act / 3600 : undefined)); tile("Orchestrator active hours", hours(adamAct(m.facts)), difference(adamAct(m.facts) / 3600, m.compare ? adamAct(m.filtered(m.compare)) / 3600 : undefined));
-    tile("Sub-thread tokens", ratio(a.sub, tokens(a)), `${a.sub} recorded${prior ? ` · Δ ${pp(a.sub, tokens(a), prior.sub, tokens(prior))} · re-cut` : ""}`); tile("Codex Auto Review", a.ar, `Unpriced → $0; at ${d.sensModel} rates ≈ ${usd(a.sens)} · ${difference(a.ar, prior?.ar)}`);
+    const overviewTile = (label: string, value: Cell, note: string, change?: string) => tiles.push({ label, value, note, ...(change ? { delta: change } : {}) });
+    overviewTile("API-equivalent cost", usd(a.cost), "list-price equivalent; billed OpenRouter and blended GLM rows per the price table", delta(a.cost, prior?.cost, usd));
+    overviewTile("Tokens processed", tokens(a), `${a.n.toLocaleString("en-US")} model responses`, delta(tokens(a), prior ? tokens(prior) : undefined, number));
+    overviewTile("Cache hit rate", ratio(a.read, a.fresh + a.read + a.write), `${number(a.read)} read from cache`, delta(hit(a), prior ? hit(prior) : undefined, (n) => `${n.toFixed(1)} pp`, 0.05));
+    overviewTile("Cache miss (input)", a.fresh, `${usd(a.cF + a.cU)} of cost`, delta(a.fresh, prior?.fresh, number));
+    overviewTile("Cache write", a.write, `${usd(a.cW)} of cost`, delta(a.write, prior?.write, number));
+    overviewTile("Output tokens", a.out, `${usd(a.cO)} · reasoning ${number(a.reas)}`, delta(a.out, prior?.out, number));
+    overviewTile("Seats", `${a.seats.size} / ${m.scope.length}`, "with token data / in scope", delta(a.seats.size, prior?.seats.size, (n) => `${n} seat${n === 1 ? "" : "s"}`));
+    overviewTile("Active seat-hours", hours(a.act), "all seats; Codex/Claude gaps capped at 5 min, OpenCode exact", delta(a.act, prior?.act, hours));
+    overviewTile("Orchestrator active hours", hours(adamAct(m.facts)), "Adam sessions only", delta(adamAct(m.facts), m.compare ? adamAct(m.filtered(m.compare)) : undefined, hours));
+    overviewTile("Sub-thread tokens", ratio(a.sub, tokens(a)), `${number(a.sub)} from Codex guardian / spawned sub-agents`, delta(sub(a), prior ? sub(prior) : undefined, (n) => `${n.toFixed(1)} pp`, 0.05));
+    overviewTile("Codex Auto Review", a.ar, `no public price → $0; at ${d.sensModel} rates ≈ ${usd(a.sens)}`, delta(a.ar, prior?.ar, number));
     const values = m.grouped(m.facts, ["ws", "epic"]);
     for (const [w, def] of Object.entries(d.ws)) if (m.wsOn(w)) for (const key of new Set([...def.epics, ...m.scope.filter((s) => s.ws === w).map((s) => s.epic)])) {
       const labels = [def.name, m.epicLabel(key)]; if (!values.some((r) => r.cells[0] === labels[0] && r.cells[1] === labels[1])) values.push(row(JSON.stringify(labels), [...labels, ...metricCells(blank())]));
     }
-    tables.push(table("epics", "Epic progress and consumption", ["Workstream", "Epic / desk row", ...METRIC_COLUMNS, "Status", "Done", "In progress", "Todo", "Δ cost ($)", "Δ tokens", "Before status", "Δ done", "Δ in progress", "Δ todo"], values.map((r) => {
+    tables.push(table("epics", "Epic progress and consumption", ["Workstream", "Epic / desk row", ...METRIC_COLUMNS, "Status", "Done", "In progress", "Todo", "Δ cost ($)", "Δ tokens", "Before status", "Δ done", "Δ in progress", "Δ todo", ...METRIC_COLUMNS.map((c) => `Δ ${c}`), "Jira category", "New done", "New in progress"], values.map((r) => {
       const key = [...m.epics.keys()].find((k) => m.epicLabel(k) === r.cells[1]), e = key ? m.epics.get(key) : undefined;
       const progress = key ? m.rev?.epics[key] : undefined, children = e?.children ?? [];
       const ff = m.facts.filter((f) => m.dim("ws", f, d.seats[f[0]]!) === r.cells[0] && m.dim("epic", f, d.seats[f[0]]!) === r.cells[1]);
@@ -180,37 +210,46 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
       const pa = priorFacts ? aggregate(priorFacts) : null, current = aggregate(ff);
       const beforeProgress = key ? m.compare?.epics[key] : undefined;
       return { ...r, cells: [...r.cells, progress?.status ?? e?.status ?? "Desk / coordination", progress?.done ?? children.filter((c) => c.cat === "done").length, progress?.wip ?? children.filter((c) => c.cat === "indeterminate").length, progress?.todo ?? children.filter((c) => !["done", "indeterminate"].includes(c.cat)).length, pa ? current.cost - pa.cost : null, pa ? tokens(current) - tokens(pa) : null, beforeProgress?.status ?? null,
-        m.compare ? (progress?.done ?? 0) - (beforeProgress?.done ?? 0) : null, m.compare ? (progress?.wip ?? 0) - (beforeProgress?.wip ?? 0) : null, m.compare ? (progress?.todo ?? 0) - (beforeProgress?.todo ?? 0) : null],
+        m.compare ? (progress?.done ?? 0) - (beforeProgress?.done ?? 0) : null, m.compare ? (progress?.wip ?? 0) - (beforeProgress?.wip ?? 0) : null, m.compare ? (progress?.todo ?? 0) - (beforeProgress?.todo ?? 0) : null, ...metricCells(current).map((n, i) => pa ? typeof n === "number" ? n - Number(metricCells(pa)[i]) : i === 5 ? 100 * current.read / Math.max(1, current.fresh + current.read + current.write) - 100 * pa.read / Math.max(1, pa.fresh + pa.read + pa.write) : null : null), progress?.cat ?? e?.cat ?? "", ...movedChildren(d, m.compare, m.rev, key ? [key] : [])],
         detail: children.map((c) => `${c.key} · ${c.summary} · ${m.rev?.tasks[c.key]?.[1] ?? c.status} · resolved ${c.resolved || "—"}`), ...(key ? { url: safeLink(d.jiraBase ?? "", key) } : {}) };
     }), "Jira state at the selected check. Consumption and deltas re-cut the latest extract; captured progression has its own page."));
     const workstreams = m.groupedTable("workstream-totals", "Workstream consumption totals", m.facts, ["ws"]);
     const priorWs = m.compare ? m.grouped(m.filtered(m.compare), ["ws"]) : [];
-    workstreams.columns.push("Done", "In progress", "Todo", "Δ done", "Δ in progress", "Δ todo", ...METRIC_COLUMNS.map((c) => `Δ ${c}`));
+    workstreams.columns.push("Done", "In progress", "Todo", "Δ done", "Δ in progress", "Δ todo", ...METRIC_COLUMNS.map((c) => `Δ ${c}`), "Orchestrator time", "Δ Orchestrator time", "New done", "New in progress");
     workstreams.rows = Object.entries(d.ws).filter(([w]) => m.wsOn(w)).map(([w, def]) => {
       const r = workstreams.rows.find((r) => r.cells[0] === def.name) ?? row(w, [def.name, ...metricCells(blank())]);
       const progress = (revision: UsageRevision | undefined) => def.epics.reduce<[number, number, number]>((a, key) => { const p = revision?.epics[key]; if (p) { a[0] += p.done; a[1] += p.wip; a[2] += p.todo; } return a; }, [0, 0, 0]);
       const current = progress(m.rev), previous = progress(m.compare), prior = priorWs.find((p) => p.cells[0] === def.name);
-      return { ...r, cells: [...r.cells, ...current, ...current.map((n, i) => m.compare ? n - previous[i]! : null), ...METRIC_COLUMNS.map((_, i) => m.compare && typeof r.cells[i + 1] === "number" ? Number(r.cells[i + 1]) - Number(prior?.cells[i + 1] ?? 0) : null)] };
+      return { ...r, key: w, cells: [...r.cells, ...current, ...current.map((n, i) => m.compare ? n - previous[i]! : null), ...METRIC_COLUMNS.map((_, i) => m.compare ? typeof r.cells[i + 1] === "number" ? Number(r.cells[i + 1]) - Number(prior?.cells[i + 1] ?? 0) : i === 5 ? (parseFloat(String(r.cells[i + 1])) || 0) - (parseFloat(String(prior?.cells[i + 1])) || 0) : null : null), m.facts.filter((f) => d.seats[f[0]]!.ws === w && d.seats[f[0]]!.adam).reduce((n, f) => n + f[11] / 3600, 0), m.compare ? m.facts.filter((f) => d.seats[f[0]]!.ws === w && d.seats[f[0]]!.adam).reduce((n, f) => n + f[11] / 3600, 0) - m.filtered(m.compare).filter((f) => d.seats[f[0]]!.ws === w && d.seats[f[0]]!.adam).reduce((n, f) => n + f[11] / 3600, 0) : null, ...movedChildren(d, m.compare, m.rev, def.epics)] };
     });
     tables.push(workstreams);
     // Keep open workstreams with no recorded usage visible when explicitly requested.
     tables.push(table("workstream-state", "Workstream coverage", ["Workstream", "Lifecycle", "Seats in scope"], Object.entries(d.ws).filter(([w]) => q.workstreams === null || q.workstreams.includes(w)).map(([w, def]) => row(w, [def.name, m.classes[w]!, m.scope.filter((s) => s.ws === w).length]))));
   } else if (q.page === "pivot") {
     const base = m.groupedTable("pivot", "Pivot", m.facts, q.groups);
-    tables.push({ ...base, rows: pivotRows(m, q), note: "Subtotals include their children; do not add parent and child rows. Expand groups to drill down. CSV exports leaf rows for the whole selection. Active time/responses are not allocated across token types." });
+    const rows = pivotRows(m, q);
+    tables.push({ ...base, rows, footer: [row("__total__", ["Total", ...Array<Cell>(q.groups.length - 1).fill(null), ...metricCells(m.total), ...(q.split ? [m.total.cF + m.total.cU, m.total.cR, m.total.cW, m.total.cO] : []), null])], note: "Subtotals include their children; do not add parent and child rows. Expand groups to drill down. CSV exports leaf rows for the whole selection. Active time/responses are not allocated across token types." });
   } else if (q.page === "roles") {
     const shareGroups = new Map<string, Aggregate>();
     for (const f of m.facts) { const key = m.dim(q.share, f, d.seats[f[0]]!), a = shareGroups.get(key) ?? blank(); add(a, f); shareGroups.set(key, a); }
-    tables.push(table("share", "Role consumption share", [DIMENSION_LABELS[q.share]!, "Tokens", "Share of tokens", "API cost ($)", "Responses"], [...shareGroups].map(([key, a]) => row(key, [key, tokens(a), ratio(tokens(a), tokens(m.total)), a.cost, a.n])), "Shares are consumed tokens; cost and responses are shown separately.", true));
+    const share = table("share", "Role consumption share", [DIMENSION_LABELS[q.share]!, "Tokens", "Share of tokens", "API cost ($)", "Responses", "Cache hit", "Seats"], [...shareGroups].map(([key, a]) => row(key, [key, tokens(a), ratio(tokens(a), tokens(m.total)), a.cost, a.n, ratio(a.read, a.fresh + a.read + a.write), a.seats.size])), "Share of consumed tokens by role in the current selection. Colours are stable per role; the tail is grouped as Other. Inspect a segment for its share, tokens, cost and responses; exact values are below.", true);
+    share.rows.sort((a, b) => Number(b.cells[1]) - Number(a.cells[1]));
+    share.footer = [row("__total__", ["Total", tokens(m.total), "100.0%", m.total.cost, m.total.n, ratio(m.total.read, m.total.fresh + m.total.read + m.total.write), m.total.seats.size])];
+    tables.push(share);
     tables.push(table("adams", "Adam sessions (orchestrator hours)", ["Workstream", "Adam session", "Account", "Model", "Created", "Last activity", "Status", "Open hours", ...METRIC_COLUMNS], d.seats.flatMap((s, index) => {
       if (!s.adam || !m.wsOn(s.ws)) return [];
       const captured = m.rev !== d.revs.at(-1) ? m.rev?.seats?.[s.id] : undefined, updated = captured?.[1] || s.updated, status = captured?.[0] || s.status;
       const a = aggregate(m.facts.filter((f) => f[0] === index));
       return [row(s.id, [d.ws[s.ws]!.name, `${s.short} · ${s.title}`, s.acct, s.model, s.created, updated, status, captured ? Math.max(0, (Date.parse(updated) - Date.parse(s.created)) / 3600000) : s.open_h, ...metricCells(a)])];
     }), "Open = created to last observed activity; older checks use captured lifecycle observations where present. Active uses measured durations/capped gaps. An Adam without recorded tokens remains visible."));
+    const adams = tables.find((t) => t.id === "adams")!, adamTotal = aggregate(m.facts.filter((f) => d.seats[f[0]]!.adam));
+    adams.rows.sort((a, b) => String(a.cells[0]).localeCompare(String(b.cells[0])) || String(a.cells[4]).localeCompare(String(b.cells[4])));
+    adams.footer = [row("__total__", ["Total", "", "", "", "", "", "", adams.rows.reduce((n, r) => n + Number(r.cells[7]), 0), ...metricCells(adamTotal)])];
     const mix = m.groupedTable("mix", "Model token mix and price", m.facts, ["model"]);
-    mix.columns.push("$ miss (incl. unsplit billed)", "$ read", "$ write", "$ output");
-    mix.rows = mix.rows.map((r) => { const a = aggregate(m.facts.filter((f) => d.models[f[2]] === r.cells[0])); return { ...r, cells: [...r.cells, a.cF + a.cU, a.cR, a.cW, a.cO] }; });
+    mix.columns.push("$ miss (incl. unsplit billed)", "$ read", "$ write", "$ output", "Vendor");
+    mix.rows = mix.rows.map((r) => { const a = aggregate(m.facts.filter((f) => d.models[f[2]] === r.cells[0])); return { ...r, cells: [...r.cells, a.cF + a.cU, a.cR, a.cW, a.cO, d.mvendor[d.models.indexOf(String(r.cells[0]))] ?? "Unknown"] }; });
+    mix.rows.sort((a, b) => Number(b.cells[1]) - Number(a.cells[1]));
+    mix.footer = [row("__total__", ["Total", ...metricCells(m.total), m.total.cF + m.total.cU, m.total.cR, m.total.cW, m.total.cO, ""])];
     mix.note = "Output includes reasoning. Billed OpenRouter totals with no split remain in input cost. The price table shows each valuation basis."; tables.push(mix);
   } else if (q.page === "data") {
     notes.push("Seats without transcripts remain counted with zero recorded tokens. Actual usage is unknown; totals are floors.");
@@ -218,6 +257,13 @@ export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: Toke
       const ss = m.scope.filter((s) => s.ws === w); return row(w, [def.name, ss.length, ss.filter((s) => s.data === "ok").length, ss.filter((s) => s.data === "transcript-missing").length, ss.filter((s) => s.data === "no-token-store").length, ss.filter((s) => s.data === "no-session-id").length, ss.filter((s) => s.data !== "ok").reduce((n, s) => n + s.open_h, 0)]);
     })));
     tables.push(table("missing", "Seats without recoverable tokens", ["Seat", "Account", "Model", "Data status", "Created", "Open hours"], m.scope.filter((s) => s.data !== "ok").map((s) => row(s.id, [`${s.short} · ${s.title}`, s.acct, s.model, s.data, s.created, s.open_h]))));
+    const coverage = tables.find((t) => t.id === "coverage")!;
+    coverage.display = { columns: ["Workstream", "Seats in scope", "With token data", "Transcript purged", "No local token store (Cursor/DSH)", "No session id", "Open hours of seats without data"], rows: [
+      ...coverage.rows.filter((r) => Number(r.cells[1]) > 0),
+      { ...row("missing-heading", ["Seats without recoverable token data (counted as seats, zero tokens)"]), span: 7, heading: true },
+      ...m.scope.filter((s) => s.data !== "ok").sort((a, b) => a.created.localeCompare(b.created)).map((s) => ({ ...row(s.id, [`${s.short} · ${s.title} · ${s.acct}/${s.model}`, null, null, null, s.data, s.created.slice(0, 10), s.open_h]), span: 4 })),
+    ] };
+    coverage.note = "Seats counted in a workstream are those whose Paseo record falls in the selected period. Purged transcripts and sources without local token counts leave unrecoverable usage; totals are therefore floors for the earliest periods.";
     tables.push(table("prices", "Price table used (USD per 1M tokens)", ["Model", "Vendor", "Input miss", "Cache read", "Write 5m", "Write 1h", "Output", "Basis"], d.prices.map((p, i) => row(String(i), p)), priceNote));
   } else if (q.page === "usage") return allUsageTables(d, q);
   else if (q.page === "activity") return activityTables(d, live, q, m);
@@ -229,17 +275,23 @@ export function tokenomicsSummary(m: ReturnType<typeof usageModel>): NonNullable
   return { cost: m.total.cost, tokens: tokens(m.total), responses: m.total.n, hours: m.total.act / 3600, cached: m.total.read,
     seats: m.total.seats.size, scope: m.scope.length, hit: ratio(m.total.read, m.total.fresh + m.total.read + m.total.write), revision: m.rev?.label ?? "Latest check", compare: m.compare?.label ?? "none" };
 }
+export const matchesTokenomicsSearch = (row: { cells: Cell[]; detail: string[] }, id: string, q: TokenomicsQuery) => !q.search.trim() || (q.page === "dv-jira" && id !== "jira-issues") || (q.page === "dv-bugs" && id !== "bugs") || [...row.cells, ...row.detail].join(" ").toLowerCase().includes(q.search.trim().toLowerCase());
 export function paginateTokenomics(result: BuiltTokenomics, q: TokenomicsQuery): TokenomicsTable[] {
-  return result.tables.map((t) => {
-    const sort = q.sorts[t.id] ?? { column: q.sort, descending: q.descending };
+  const presented = result.tables.filter((t) => !(q.page === "data" && t.id === "missing") && !(q.page === "usage" && t.id === "unknown")).map(({ display, ...t }) => display ? { ...t, columns: display.columns, rows: display.rows } : t);
+  for (const t of presented) if (t.id === "pivot") { const dims = t.columns.length - METRIC_COLUMNS.length - (q.split ? 4 : 0), total = Number(t.footer?.[0]?.cells[dims]) || 0; t.columns = [...t.columns, "Cost share"]; t.rows = t.rows.map((r) => ({ ...r, cells: [...r.cells, ratio(Number(r.cells[dims]) || 0, total)] })); }
+  for (const t of presented) if (t.columns.includes("Code added")) { const stems = ["Code", "Tests", "Docs"].filter((stem) => t.columns.includes(`${stem} added`) && t.columns.includes(`${stem} deleted`)); const indices = stems.map((stem) => [t.columns.indexOf(`${stem} added`), t.columns.indexOf(`${stem} deleted`)]); t.columns = [...t.columns, ...stems.map((stem) => `${stem === "Tests" ? "Test" : stem === "Docs" ? "Doc" : stem} lines`)]; t.rows = t.rows.map((r) => ({ ...r, cells: [...r.cells, ...indices.map(([a, b]) => r.cells[a!] == null || r.cells[b!] == null ? null : Number(r.cells[a!]) + Number(r.cells[b!]))] })); }
+  const scoped = presented.flatMap((t) => t.id !== "epics" || q.page !== "overview" ? [t] : (result.tables.find((t) => t.id === "workstream-totals")?.rows ?? []).filter((r) => q.openWorkstreams.includes(r.key)).map((r) => ({ ...t, id: `epics:${r.key}`, rows: t.rows.filter((e) => e.cells[0] === r.cells[0]) })));
+  return scoped.map((t) => {
+    const sort = tokenomicsTableSort(t.id, q);
     const index = t.columns.indexOf(sort.column), needle = q.search.trim().toLowerCase();
     const rows = t.rows.filter((r) => {
-      if (needle) return [...r.cells, ...r.detail].join(" ").toLowerCase().includes(needle);
+      if (needle) return matchesTokenomicsSearch(r, t.id, q);
+      if (t.id === "all-categories" && r.key.startsWith("sub-")) return q.expanded.includes(`category-${r.key.split("-")[1]}`);
       if (t.id !== "pivot") return true;
       const path = JSON.parse(r.key) as string[];
       return path.slice(0, -1).every((_, index) => q.expanded.includes(JSON.stringify(path.slice(0, index + 1))));
     });
-    if (index >= 0) rows.sort((a, b) => { const x = a.cells[index], y = b.cells[index]; return (x == null ? 1 : y == null ? -1 : typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y))) * (sort.descending ? -1 : 1); });
+    if (index >= 0 && t.id !== "pivot") rows.sort((a, b) => { const x = a.cells[index], y = b.cells[index]; return Number(x == null) - Number(y == null) || (x == null || y == null ? 0 : (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y))) * (sort.descending ? -1 : 1)); });
     const offset = q.offsets[t.id] ?? q.offset;
     // Charts retain their complete selection and original time scale, independently of table paging/search.
     const plot = t.chart ? { ...t.plot, columns: t.columns, rows: t.rows.map((r) => r.cells), ...(t.id === "timeline" ? { spans: result.tables.find((t) => t.id === "dates")?.rows.map((r) => r.cells), flags: result.tables.find((t) => t.id === "flags")?.rows.map((r) => r.cells), end: result.tables.find((t) => t.id === "parallel")?.rows.at(-1)?.cells[0] as string | undefined } : {}) } : undefined;
@@ -279,14 +331,34 @@ function allUsageTables(d: TokenomicsData, q: TokenomicsQuery): BuiltTokenomics 
       ...[...new Set(fs.map((f) => f[2]))].map((j) => row(`sub-${i}-${j}`, [c[2], c[1], all.subs[j]!, ...cells(sum(fs.filter((f) => f[2] === j))), all.sessions.sub[`${i}|${j}`] ?? 0, ratio(sum(fs.filter((f) => f[2] === j)).cost, total.cost)]))];
   });
   const ledgerNote = `${ratio(all.ledgerLinked, all.ledgerTotal)} linked to a Jira epic; ${all.ledgerTotal} recoverable tokens. Unknown reasons remain explicit. Sessions across epics are not additive.`;
-  return { tiles, notes: ["All usage is local-store evidence and ignores user, workstream, period and revision filters. The chart's From control affects the chart only.", "Cursor and other sources without token counts remain missing evidence. Costs retain the collector's price bases; no repricing is performed."], tables: [
-    table("all-chart", "All known usage over time", [q.allGranularity === "week" ? "Week" : "Day", "Stack", q.allMeasure === "cost" ? "API cost ($)" : "Tokens"], [...chartGroups].sort((a, b) => a[1].day.localeCompare(b[1].day)).map(([k, g]) => row(k, [g.day, g.label, g.value])), "Exact values accompany native bars.", true),
+  const result: BuiltTokenomics = { tiles, notes: ["All usage is local-store evidence and ignores user, workstream, period and revision filters. The chart's From control affects the chart only.", "Cursor and other sources without token counts remain missing evidence. Costs retain the collector's price bases; no repricing is performed."], tables: [
+    table("all-chart", "All known usage over time", [q.allGranularity === "week" ? "Week" : "Day", "Stack", q.allMeasure === "cost" ? "API cost ($)" : "Tokens"], [...chartGroups].sort((a, b) => a[1].day.localeCompare(b[1].day)).map(([k, g]) => row(k, [g.day, g.label, g.value])), "", true),
     table("all-categories", "Categories and sub-categories", ["Group", "Category", "Sub-category", ...columns, "Sessions", "Share of cost"], categories, "Category totals and their sub-categories overlap. Do not add parent and child rows."),
     table("all-months", "By month", ["Month", "Category", ...columns], grouping((f) => [f[0].slice(0, 7), all.cats[f[1]]![1]])),
     table("all-coverage", "What each store still holds", ["Store", "Earliest", "Latest", "Sessions", "Tokens", "Missing evidence"], Object.entries(all.coverage).map(([k, v]) => row(k, [k, v.first ?? null, v.last ?? null, v.sessions, v.tok, all.missing[k] ?? "—"]))),
     table("ledger", "All usage by Jira epic", ["Epic / bucket", "Title", "Tokens", "API cost ($)", "Sessions", "Share", "First", "Last"], all.ledger.map((r, i) => row(String(i), [r.epic ?? "UNKNOWN", r.title, r.tokens, r.cost, r.sessions, ratio(r.tokens, all.ledgerTotal), r.first ?? null, r.last ?? null], [], r.epic && r.epic !== "UNKNOWN" ? safeLink(d.jiraBase ?? "", r.epic) : undefined)), ledgerNote),
     table("unknown", "Unknown epic reasons", ["Reason", "Tokens", "Share of all tokens"], Object.entries(all.unknownReasons).map(([k, v]) => row(k, [k, v, ratio(v, all.ledgerTotal)])), ledgerNote),
   ] };
+  const categoriesTable = result.tables.find((t) => t.id === "all-categories")!;
+  const displayCells = (a: Aggregate, sessions: number): Cell[] => [sessions, a.n, a.act / 3600, a.fresh, a.read, a.write, a.out, tokens(a), ratio(a.read, a.fresh + a.read + a.write), a.cF, a.cR, a.cW, a.cO, a.cost, ratio(a.cost, total.cost)];
+  const displayRow = (key: string, name: string, fs: typeof all.facts, sessions: number, depth: number, hasChildren = false): Row => ({ ...row(key, [name, ...displayCells(sum(fs), sessions)]), depth, hasChildren });
+  categoriesTable.display = { columns: ["Category → sub-category", "Sessions", "Responses", "Active seat-hours", "Input miss", "Cache read", "Cache write", "Output", "Tokens", "Cache hit", "$ miss", "$ hit", "$ write", "$ output", "API-equivalent cost ($)", "Share of cost"], rows: groups.flatMap((g) => [
+    displayRow(`group-${g}`, g, all.facts.filter((f) => all.cats[f[1]]![2] === g), all.sessions.grp[g] ?? 0, 0),
+    ...all.cats.flatMap((c, i) => { const fs = all.facts.filter((f) => f[1] === i); return c[2] !== g || !fs.length ? [] : [displayRow(`category-${i}`, c[1], fs, all.sessions.cat[String(i)] ?? 0, 1, true), ...[...new Set(fs.map((f) => f[2]))].sort((a, b) => sum(fs.filter((f) => f[2] === b)).cost - sum(fs.filter((f) => f[2] === a)).cost).map((j) => displayRow(`sub-${i}-${j}`, all.subs[j]!, fs.filter((f) => f[2] === j), all.sessions.sub[`${i}|${j}`] ?? 0, 2))]; }),
+  ]).concat([{ ...row("__total__", ["Total known usage", ...displayCells(total, all.sessions.total)]), heading: true }]) };
+  categoriesTable.note = "";
+  const months = result.tables.find((t) => t.id === "all-months")!;
+  months.display = { columns: ["Month", ...all.cats.map((c) => c[1]), "Total"], rows: [...new Set(all.facts.map((f) => f[0].slice(0, 7)))].sort().map((month) => row(month, [month, ...all.cats.map((_, i) => { const a = sum(all.facts.filter((f) => f[0].startsWith(month) && f[1] === i)); return tokens(a) ? `${tokens(a)} · $${a.cost}` : "—"; }), (() => { const a = sum(all.facts.filter((f) => f[0].startsWith(month))); return `${tokens(a)} · $${a.cost}`; })()])) };
+  const ledger = result.tables.find((t) => t.id === "ledger")!;
+  ledger.note = `${ratio(all.ledgerLinked, all.ledgerTotal)} of all recoverable tokens (${all.ledgerTotal}) is linked to a Jira epic; the rest is carried as Unknown epic. Unknown reasons: ${Object.entries(all.unknownReasons).map(([k, v]) => `${k} — ${v}`).join(" · ") || "—"}. Every recoverable token in the local stores is counted exactly once.`;
+  ledger.display = { columns: ledger.columns, rows: ledger.rows.flatMap((r) => [r, ...(r.cells[0] === "UNKNOWN" ? Object.entries(all.unknownReasons).map(([k, v]) => ({ ...row(`unknown-${k}`, [k, "", v, null, null, ratio(v, all.ledgerTotal), "", ""]), depth: 1 })) : [])]) };
+  const chart = result.tables.find((t) => t.id === "all-chart")!;
+  const ranked = new Map<string, number>(); for (const f of all.facts) ranked.set(stack(f), (ranked.get(stack(f)) ?? 0) + f[11]);
+  chart.plot = { columns: chart.columns, rows: [], order: q.allStack === "c" ? all.cats.map((c) => c[1]) : q.allStack === "g" ? groups : [...ranked].sort((a, b) => b[1] - a[1]).map(([k]) => k), events: [[all.firstKS, "orchestrated work begins"]] };
+  tiles[0]!.note = `${usd(total.cost)} · since ${all.facts.map((f) => f[0]).sort()[0] ?? "unknown"} · ${all.sessions.total.toLocaleString("en-US")} sessions`;
+  tiles[tiles.length - 2]!.note = `${usd(sum(all.facts.filter((f) => f[1] === 0)).cost)} · ${ratio(sum(all.facts.filter((f) => f[1] === 0)).cost, total.cost)} of cost · ${Object.keys(d.ws).length} in the registry`;
+  tiles.at(-1)!.note = `${total.read} read · ${total.fresh} miss`;
+  return result;
 }
 
 function reviewTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQuery): BuiltTokenomics {
@@ -388,8 +460,8 @@ function deliveryTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   };
   if (q.page === "dv-overview") {
     tiles.push({ label: "PRs merged", value: all.prs, note: `${all.opened} opened in period · ${dv.prs.filter((p) => p.st === "open" && !bots.has(p.a)).length} open now` },
-      { label: "Code lines added", value: all.la, note: `${all.ld} deleted · tests +${all.ta}/−${all.td} · docs +${all.da}/−${all.dd}` },
-      { label: "Median time to merge", value: median(all.ttm), note: `Hours, including draft time · median PR size ${median(all.size) ?? "—"}` },
+      { label: "Code lines added", value: all.la, note: `−${all.ld} deleted · tests +${all.ta}/−${all.td} · docs +${all.da}/−${all.dd}` },
+      { label: "Median time to merge", value: median(all.ttm), note: `median PR ${median(all.size) ?? "—"} lines of code and tests` },
       { label: "Churn (%)", value: churn(all), note: `${all.own} lines rewritten within ${dv.churnDays} days` },
       { label: "PRs without Jira key", value: ratio(all.nokey, all.prs), note: `${all.nokey} of ${all.prs} merged · ${all.direct} direct commits` },
       { label: "Bugs reported", value: bugs.length, note: `${bugs.filter((b) => b.why === "traced").length} traced` },
@@ -404,7 +476,7 @@ function deliveryTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   if (q.page === "dv-bugs") {
     const traced = bugs.filter((b) => b.why === "traced"), lag = traced.map((b) => elapsedDays(b.intro.map((i) => i.d).sort().at(-1), b.c)).filter((v): v is number => v !== null && v >= 0);
     tiles.push({ label: "Bugs reported", value: bugs.length, note: `${bugs.filter((b) => b.cat === "done").length} done in Jira` }, { label: "With a fix in git", value: bugs.filter((b) => b.fix.length).length, note: "Merged PR or commit names the bug" },
-      { label: "Traced", value: ratio(traced.length, bugs.length), note: "Introducing commit found" }, { label: "Introduction → report", value: median(lag), note: "Median days" }, { label: "Linked in Jira", value: bugs.filter((b) => b.cause.length).length, note: "Has an is-caused-by link" });
+      { label: "Traced", value: ratio(traced.length, bugs.length), note: "Introducing commit found" }, { label: "Introduction → report", value: median(lag) == null ? null : `${median(lag)} d`, note: "median days from the code landing to the bug being reported" }, { label: "Linked in Jira", value: bugs.filter((b) => b.cause.length).length, note: "Has an is-caused-by link" });
     tables.push(daily("bug-trend", "Bugs reported by trace result", bugs.map((b) => ({ day: b.c, key: b.why }))));
     tables.push(table("bug-people", "Who introduced and fixed bugs", ["Person", ...cols, "Bugs"], [...people].filter(([, a]) => a.bin || a.bfix || a.la).map(([k, a]) => row(k, [name(k), ...cells(a), [...a.bugs].join(", ")])), quality));
     tables.push(table("bugs", "Bugs", ["Bug", "Summary", "Priority", "State", "Reported", "Introduced by", "Days to report", "Fixed by", "Trace"], bugs.map((b) => row(b.key, [b.key, b.sum, b.pri ?? null, b.s, b.c, [...new Set(b.intro.map((i) => name(i.a)))].join(", ") || null, elapsedDays(b.intro[0]?.d, b.c), [...new Set(b.fix.map((f) => name(f.a)))].join(", ") || null, b.why],
@@ -524,6 +596,23 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
     if (e.due && !e.resolved && today > addDays(e.due, 10)) flags.push(row(`due-${e.key}`, ["Overdue", "", e.key, addDays(e.due, 10), today, "days", elapsedDays(e.due, today), null, 10], [`Jira due date ${e.due}`]));
   }
   tables.push(table("flags", "Activity flags", ["Flag", "Person", "Epic", "From", "To", "Metric", "Value", "Usual / cost per issue", "Threshold"], flags, "Signals use the existing dashboard thresholds. Missing Jira due dates and missing delivery data remain unknown."));
+  const flagTable = tables.find((t) => t.id === "flags")!;
+  const episodes: { rows: Row[]; from: string; to: string; key: string }[] = [];
+  for (const f of [...flags].sort((a, b) => String(a.cells[3]).localeCompare(String(b.cells[3])))) {
+    const [type, person, epic, from, to, metric] = f.cells, key = JSON.stringify([type, person, epic, metric]);
+    const previous = ["Spike", "Efficiency drop"].includes(String(type)) ? episodes.filter((e) => e.key === key).at(-1) : undefined;
+    if (previous && Date.parse(String(from)) - Date.parse(previous.to) <= 2 * 86400000) { previous.rows.push(f); previous.to = String(to); }
+    else episodes.push({ rows: [f], from: String(from), to: String(to), key });
+  }
+  const visibleFlags = episodes.filter((e) => e.to >= since).sort((a, b) => b.to.localeCompare(a.to) || b.from.localeCompare(a.from));
+  flagTable.title = `Needs attention — ${visibleFlags.length ? `${visibleFlags.length} flag${visibleFlags.length === 1 ? "" : "s"} in this range` : "nothing flagged in this range"}`;
+  flagTable.display = { columns: ["When", "Who / where", "Signal", "What happened"], rows: (q.expanded.includes("flags:all") ? visibleFlags : visibleFlags.slice(0, 8)).map((e) => {
+    const severity = (r: Row) => r.cells[5] === "hit" ? Number(r.cells[7]) - Number(r.cells[6]) : Number(r.cells[6]) / Math.max(Number(r.cells[7]), 1e-9);
+    const worst = [...e.rows].sort((a, b) => severity(b) - severity(a))[0]!, [type, person, epic, , , metric, value, usual] = worst.cells;
+    const signal = ["Spike", "Efficiency drop", "Spend without progress", "Overdue"].indexOf(String(type)), fmt = (n: Cell) => typeof n !== "number" ? String(n ?? "—") : metric === "act" ? hours(n * 3600) : metric === "hit" ? `${n.toFixed(1)}%` : metric === "days" ? `${n} days` : usd(n);
+    return row(e.key + e.from, [e.from === e.to ? e.from.slice(5) : `${e.from.slice(5)} → ${e.to === today && ["Overdue", "Spend without progress"].includes(String(type)) ? "today" : e.to.slice(5)}`, epic ? m.epicLabel(String(epic)) : person!, `${["▲", "◆", "▬", "▼"][signal]} ${type}${["Spike", "Efficiency drop"].includes(String(type)) ? ` · ${{ act: "seat-time", cost: "API cost", cph: "cost/hour", hit: "cache hit" }[String(metric)] ?? metric}` : ""}`, `${e.rows.length > 1 ? `Worst on ${String(worst.cells[3]).slice(5)} of ${e.rows.length} flagged days: ` : ""}${fmt(value!)}${usual == null ? "" : `; usual ${fmt(usual)}`} · ${worst.detail.join(" ")}`]);
+  }) };
+  flagTable.note = "";
   const dualFacts = m.filtered(m.rev, true).filter((f) => q.dual === "all" || d.seats[f[0]]!.ws === q.dual || d.seats[f[0]]!.epic === q.dual), daily = new Map<string, Day>();
   for (const f of dualFacts) if (f[9]) { const day = dayOf(f[1] * 3600000), x = getDay(daily, day); add(x.value, f); const hs = x.hours.get(f[1]) ?? new Set(); hs.add(f[0]); x.hours.set(f[1], hs); }
   const parallelRows: Row[] = [], firstDay = [...daily.keys()].sort()[0], selectedEpic = m.epics.get(q.dual);
@@ -538,6 +627,17 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
     const e = m.epics.get(key), days = [...(epics.get(key)?.keys() ?? [])].sort(), ss = d.seats.filter((s) => s.epic === key), first = e?.created || days[0], end = e?.resolved || today;
     return row(key, [e ? d.ws[e.ws]!.name : d.ws[ss[0]?.ws ?? ""]?.name ?? "", m.epicLabel(key), e?.created ?? null, ss.map((s) => s.created).sort()[0] ?? null, days[0] ?? null, days.at(-1) ?? null, e?.resolved ?? null, e?.due ?? null, first ? Math.max(0, (elapsedDays(first, end) ?? 0) + 1 - days.length) : null]);
   })));
+  const dates = tables.find((t) => t.id === "dates")!;
+  dates.title = "Epic start dates, active and idle days";
+  dates.display = { columns: ["Epic", "Status", "Workstream", "Jira created", "First seat", "First activity", "Last activity", "Resolved", "Span", "Active days", "Idle days", "Longest idle", "Peak parallel", "Avg parallel (active days)", "Active seat-hours", "API cost (lifetime)"], rows: dates.rows.map((r) => {
+    const e = m.epics.get(r.key), ds = epics.get(r.key) ?? new Map<string, Day>(), active = [...ds].filter(([, x]) => x.value.n).map(([day]) => day).sort();
+    const firstSeat = d.seats.filter((s) => s.epic === r.key).map((s) => dayOf(Date.parse(s.created))).sort()[0];
+    const start = [e?.created, active[0]].filter((x): x is string => !!x).sort()[0], last = e?.resolved ? [e.resolved, active.at(-1) ?? e.resolved].sort().at(-1)! : today, end = last < today ? last : today;
+    const span = start ? Math.max(0, (elapsedDays(start, end) ?? 0) + 1) : 0;
+    let longest = 0, run = 0, longestEnd = "", peakDay = "", maxPeak = 0;
+    for (let i = 0; i < span; i++) { const day = addDays(start!, i), x = ds.get(day); if (x?.value.n) run = 0; else if (++run > longest) { longest = run; longestEnd = day; } if (x && peak(x) > maxPeak) { maxPeak = peak(x); peakDay = day; } }
+    return { ...r, cells: [m.epicLabel(r.key), e?.status ?? "", r.cells[0]!, e?.created ?? null, firstSeat ?? null, active[0] ?? null, active.at(-1) ?? null, e?.resolved ?? "open", `${span} d`, active.length, span - active.length, longest ? `${longest} d (to ${longestEnd.slice(5)})` : "0", maxPeak ? `${maxPeak} (${peakDay.slice(5)})` : "—", active.length ? active.reduce((n, day) => n + peak(ds.get(day)!), 0) / active.length : 0, [...ds.values()].reduce((n, x) => n + x.value.act / 3600, 0), [...ds.values()].reduce((n, x) => n + x.value.cost, 0)] };
+  }) };
   const ff = m.facts, trendGroups = new Map<string, { labels: string[]; a: Aggregate }>();
   for (const f of ff) for (const part of q.stack === "tt" ? [0, 1, 2, 3] : [undefined]) {
     const labels = [dayOf(f[1] * 3600000), q.stack === "tt" ? ["Cache miss", "Cache read", "Cache write", "Output"][part!]! : m.dim(q.stack, f, d.seats[f[0]]!)], key = JSON.stringify(labels), g = trendGroups.get(key) ?? { labels, a: blank() };
@@ -547,7 +647,7 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   const trend = tables.find((t) => t.id === "trend")!;
   trend.plot = { columns: trend.columns, rows: [], order: q.stack === "tt" ? ["Cache miss", "Cache read", "Cache write", "Output"] : m.grouped(d.facts, [q.stack]).sort((a, b) => Number(b.cells[1]) - Number(a.cells[1])).map((r) => String(r.cells[0])) };
   const tl = tables.find((t) => t.id === "timeline")!;
-  tl.plot = { columns: tl.columns, rows: [], desks: Object.values(d.ws).filter((w) => w.kind === "desk").map((w) => w.name), order: [...new Set(d.seats.map((s) => s.user || "Unattributed"))].sort(), events: selectedEpics.flatMap((e) => e.children.filter((c) => c.resolved).map((c) => [m.epicLabel(e.key), c.resolved!, c.key])), gaps: m.scope.filter((s) => s.data !== "ok").map((s) => [s.user, d.ws[s.ws]!.name, m.epicLabel(s.epic), s.created.slice(0, 10), s.data]) };
+  tl.plot = { columns: tl.columns, rows: [], workstreams: Object.values(d.ws).map((w) => w.name), epicOrder: Object.values(d.ws).flatMap((w) => w.epics.map(m.epicLabel)), desks: Object.values(d.ws).filter((w) => w.kind === "desk").map((w) => w.name), order: [...new Set(d.seats.map((s) => s.user || "Unattributed"))].sort(), events: selectedEpics.flatMap((e) => e.children.filter((c) => c.resolved).map((c) => [m.epicLabel(e.key), c.resolved!, c.key])), gaps: m.scope.filter((s) => s.data !== "ok").map((s) => [s.user, d.ws[s.ws]!.name, m.epicLabel(s.epic), s.created.slice(0, 10), s.data]) };
   if (!live.dev) notes.push("Delivery timeline metrics have not been collected; PRs, commits, lines and cost per PR remain unavailable.");
   return { tiles: [], tables, notes };
 }

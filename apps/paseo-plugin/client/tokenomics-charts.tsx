@@ -19,14 +19,15 @@ const daysBetween = (from: string, to: string, step = 1) => { const a: string[] 
 const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
 export function chartColors(colors: Colors) {
   const dark = parseInt(colors.surface0.slice(1,3),16) < 128;
-  return { series: dark ? ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"] : ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"], other: dark ? "#5d5c57" : "#b9b8b2", idle: dark ? "#222220" : "#efeee9", todo: dark ? "#44433f" : "#d4d3cd", seq: dark ? ["#184f95", "#256abf", "#3987e5", "#6da7ec", "#b7d3f6"] : ["#b7d3f6", "#6da7ec", "#2a78d6", "#1c5cab", "#0d366b"] };
+  return { muted: dark ? "#8f8e86" : "#7a7974", series: dark ? ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"] : ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"], other: dark ? "#5d5c57" : "#b9b8b2", idle: dark ? "#222220" : "#efeee9", todo: dark ? "#44433f" : "#d4d3cd", seq: dark ? ["#184f95", "#256abf", "#3987e5", "#6da7ec", "#b7d3f6"] : ["#b7d3f6", "#6da7ec", "#2a78d6", "#1c5cab", "#0d366b"] };
 }
 // The host sizes SVG icons square. A nested viewport keeps chart units at 1:1; only unused square space is clipped.
 export function chartSvgLayers(scene: ChartScene): string[] {
   const size = Math.max(scene.width, scene.height), start = `<svg xmlns="http://www.w3.org/2000/svg" width="${n(size)}" height="${n(size)}" viewBox="0 0 ${n(size)} ${n(size)}"><svg width="${n(scene.width)}" height="${n(scene.height)}" viewBox="0 0 ${n(scene.width)} ${n(scene.height)}">`, end = "</svg></svg>";
-  const layers: string[] = []; let content = "", bytes = new TextEncoder().encode(start + end).length;
+  const layers: string[] = []; let totalBytes = 0, content = "", bytes = new TextEncoder().encode(start + end).length;
   for (const part of scene.parts) {
-    const length = new TextEncoder().encode(part).length;
+    const length = new TextEncoder().encode(part).length; totalBytes += length;
+    if (totalBytes > 32 * 1024 * 1024) throw new Error("Chart composition exceeds its 32 MiB limit; narrow the selection. No series was omitted.");
     if (length + new TextEncoder().encode(start + end).length > 65536) throw new Error("One chart path exceeds the host SVG bound; no series was omitted.");
     if (bytes + length > 64000 && content) { layers.push(start + content + end); content = ""; bytes = new TextEncoder().encode(start + end).length; }
     content += part; bytes += length;
@@ -38,7 +39,7 @@ export function chartSvgLayers(scene: ChartScene): string[] {
 function stacked(table: TokenomicsTable, width: number, colors: Colors, query: TokenomicsQuery): ChartScene {
   const rows = table.plot?.rows ?? [], cp = chartColors(colors), review = table.id === "review-trend", normalized = review && query.page === "cr-fix", delivery = table.id === "delivery-trend" || table.id === "bug-trend";
   const height = table.id === "all-chart" ? 320 : review ? normalized ? 240 : 280 : table.id === "delivery-trend" ? 260 : table.id === "bug-trend" ? 220 : 300;
-  const ml = delivery || review ? 48 : 64, mr = 12, mt = table.id === "all-chart" ? 16 : 12, mb = delivery || review ? 32 : 44;
+  const ml = delivery || review ? 48 : 64, mr = 12, mt = table.id === "all-chart" ? 16 : 12, mb = delivery || review ? 32 : table.id === "all-chart" ? 40 : 44;
   const scene: ChartScene = { width, height, parts: [], hits: [], legend: [] };
   if (!rows.length) return scene;
   const totals = new Map<string, number>(), by = new Map<string, Map<string, number>>();
@@ -48,20 +49,22 @@ function stacked(table: TokenomicsTable, width: number, colors: Colors, query: T
     const day = String(row[0]), group = by.get(day) ?? new Map<string, number>(); by.set(day, group);
     for (const [k, v] of entries) { group.set(k,(group.get(k) ?? 0)+v); totals.set(k,(totals.get(k) ?? 0)+v); }
   }
-  const ranked = review ? outcome : [...totals].sort((a,b)=>b[1]-a[1]).map(([k])=>k), shown = review || delivery ? ranked : (table.plot?.order ?? ranked).slice(0,7), tail = ranked.filter((k)=>!shown.includes(k));
+  const bugKinds = ["traced", "fix adds lines only", "fix only touches tests, docs or generated files", "changed lines are newer than the report", "no fix found"];
+  const ranked = review ? outcome : table.id === "bug-trend" ? bugKinds : [...totals].sort((a,b)=>b[1]-a[1]).map(([k])=>k), shown = review ? ranked : (table.plot?.order ?? ranked).slice(0,7), tail = ranked.filter((k)=>!shown.includes(k));
   const series = [...shown,...(tail.length?["Other"]:[])];
   if(tail.length)for(const group of by.values()){group.set("Other",sum(tail.map(k=>group.get(k)??0)));}
-  const color = (key: string) => review ? ["#0ca30c",cp.series[7]!,cp.series[1]!,cp.other,cp.series[0]!][outcome.indexOf(key)]! : key === "Other" ? cp.other : cp.series[shown.indexOf(key)%cp.series.length]!;
-  const observed = [...by.keys()].sort(), weekly = table.columns[0] === "Week", dates = daysBetween(observed[0]!, observed.at(-1)!,weekly?7:1), values = dates.map(d=>sum(series.map(k=>by.get(d)?.get(k)??0))), step = normalized ? 0.25 : review || delivery ? Math.max(1,Math.round(nice(Math.max(...values,1)/4))) : nice(Math.max(...values,1)/4), top = normalized ? 1 : Math.ceil(Math.max(...values,1)/step)*step;
-  const y=(v:number)=>mt+(height-mt-mb)*(1-v/top), bw=(width-ml-mr)/Math.max(1,dates.length), barW=Math.max(2,Math.min(36,bw-4));
-  for(let v=0;v<=top+1e-9;v+=step)scene.parts.push(shape("line",{x1:ml,x2:width-mr,y1:y(v),y2:y(v),stroke:colors.border}),text(ml-6,y(v)+4,normalized?`${Math.round(v*100)}%`:review||delivery?String(v):reportValue(v,table.columns.at(-1)),colors.foregroundMuted,"end"));
+  const color = (key: string) => table.id === "bug-trend" ? [cp.series[7], cp.series[3], cp.series[6], cp.series[4], cp.other][bugKinds.indexOf(key)]! : review ? ["#0ca30c",cp.series[7]!,cp.series[1]!,cp.other,cp.series[0]!][outcome.indexOf(key)]! : key === "Other" ? cp.other : cp.series[(table.id === "delivery-trend" ? [0,1,2,3,4,6,7][shown.indexOf(key)] : shown.indexOf(key)) ?? 0]!;
+  const observed = [...by.keys()].sort(), weekly = table.columns[0] === "Week", dates = table.id === "trend" ? observed : daysBetween(observed[0]!, observed.at(-1)!,weekly?7:1), values = dates.map(d=>sum(series.map(k=>by.get(d)?.get(k)??0))), step = normalized ? 0.25 : review || delivery ? Math.max(1,Math.round(nice(Math.max(...values,1)/4))) : nice(Math.max(...values,1)/4), top = normalized ? 1 : Math.ceil(Math.max(...values,1)/step)*step;
+  const y=(v:number)=>mt+(height-mt-mb)*(1-v/top), bw=(width-ml-mr)/Math.max(1,dates.length), barW=Math.max(2,Math.min(table.id === "all-chart" ? 40 : 36,bw-4));
+  for(let v=0;v<=top+1e-9;v+=step)scene.parts.push(shape("line",{x1:ml,x2:width-mr,y1:y(v),y2:y(v),stroke:colors.border}),text(ml-6,y(v)+4,normalized?`${Math.round(v*100)}%`:review||delivery?String(v):reportValue(v,table.columns.at(-1)),cp.muted,"end"));
   const every=Math.ceil(dates.length/Math.max(1,Math.floor((width-ml)/70)));
   dates.forEach((day,i)=>{let acc=0;const group=by.get(day), present=series.filter(k=>(group?.get(k)??0)>0), x=ml+i*bw+(bw-barW)/2;
     present.forEach((key,j)=>{const raw=group!.get(key)!,v=normalized?raw/(values[i]||1):raw,y0=y(acc),y1=y(acc+v);acc+=v;const h=Math.max(0,y0-y1-(j<present.length-1?review||delivery?1.5:2:0));scene.parts.push(shape("path",{d:topPath(x,y1,barW,h,j===present.length-1?Math.min(4,h/2,barW/2):0),fill:color(key)}));});
-    if(i%every===0)scene.parts.push(text(x+barW/2,height-mb+16,`${weekly?"wk ":""}${day.slice(5)}`,colors.foregroundMuted,"middle"));
-    scene.hits.push({x:ml+i*bw,y:mt,width:bw,height:height-mt-mb,label:day,values:present.map(k=>`${k}: ${reportValue(group!.get(k)!,review||delivery?"Count":table.columns.at(-1))}`)});
+    if(i%every===0)scene.parts.push(text(x+barW/2,height-mb+16,`${weekly?"wk ":""}${day.slice(5)}`,cp.muted,"middle"));
+    scene.hits.push({x:ml+i*bw,y:mt,width:bw,height:height-mt-mb,label:day,values:[...present.map(k=>`${k}: ${reportValue(group!.get(k)!,review||delivery?"Count":table.columns.at(-1))}`), ...(review ? [`${values[i]} findings · fix rate ${values[i]! - (group?.get("Open") ?? 0) ? (100 * (group?.get("Fixed") ?? 0) / (values[i]! - (group?.get("Open") ?? 0))).toFixed(0) + "%" : "—"}`] : [])]});
   });
-  scene.legend=series.filter(k=>totals.has(k)||k==="Other").map(label=>({label,color:color(label)}));return scene;
+  if (table.id === "all-chart" && table.plot?.events?.[0]?.[0]) { const start = String(table.plot.events[0][0]), bucket = weekly ? new Date(Date.parse(start) - (new Date(start).getUTCDay() + 6) % 7 * 86400000).toISOString().slice(0, 10) : start, index = dates.indexOf(bucket); if (index >= 0) { const x = ml + index * bw; scene.parts.push(shape("line", { x1: x, x2: x, y1: mt, y2: height - mb, stroke: colors.foreground, "stroke-dasharray": "4 3" }), text(x + 4, mt + 10, `orchestrated work begins ${start}`, colors.foreground)); } }
+  scene.legend=series.filter(k=>totals.has(k)||k==="Other").map(label=>({label: table.id === "delivery-trend" && label === "Other" ? "Others" : table.id === "bug-trend" ? ["Introducing commit found", "Fix only adds lines", "Fix outside code", "Changed lines newer than the report", "No fix PR or commit names it"][bugKinds.indexOf(label)] ?? label : label,color:color(label)}));return scene;
 }
 function parallel(table: TokenomicsTable, width: number, colors: Colors): ChartScene {
   const rows=table.plot?.rows??[],height=340,ml=58,mr=58,mt=28,mb=40,cp=chartColors(colors),scene:ChartScene={width,height,parts:[],hits:[],legend:[{label:"Active seat-hours (left)",color:cp.series[0]!},{label:"Peak parallel seats (right)",color:cp.series[1]!}]};
@@ -69,10 +72,10 @@ function parallel(table: TokenomicsTable, width: number, colors: Colors): ChartS
   const sh=nice(Math.max(...rows.map(r=>Number(r[1])),1)/4),sp=Math.max(1,Math.ceil(nice(Math.max(...rows.map(r=>Number(r[2])),1)/4))),topH=Math.ceil(Math.max(...rows.map(r=>Number(r[1])),1)/sh)*sh,topP=Math.ceil(Math.max(...rows.map(r=>Number(r[2])),1)/sp)*sp;
   const yh=(v:number)=>mt+(height-mt-mb)*(1-v/topH),yp=(v:number)=>mt+(height-mt-mb)*(1-v/topP),cw=(width-ml-mr)/rows.length,bw=Math.max(2,Math.min(16,cw-3));
   rows.forEach((r,i)=>{if(r[3]==="yes")scene.parts.push(shape("rect",{x:ml+i*cw,y:mt,width:cw,height:height-mt-mb,fill:cp.idle}));});
-  for(let v=0;v<=topH+1e-9;v+=sh)scene.parts.push(shape("line",{x1:ml,x2:width-mr,y1:yh(v),y2:yh(v),stroke:colors.border}),text(ml-6,yh(v)+4,`${v.toFixed(v<10&&sh<1?1:0)} h`,colors.foregroundMuted,"end"));
-  for(let v=0;v<=topP;v+=sp)scene.parts.push(text(width-mr+6,yp(v)+4,v,colors.foregroundMuted));
-  scene.parts.push(text(4,mt-14,"▮ Active seat-hours (left)",colors.foregroundMuted),text(width-4,mt-14,"Peak parallel seats (right) —",colors.foregroundMuted,"end"));
-  rows.forEach((r,i)=>{const value=Number(r[1]),x=ml+i*cw;if(value>0){const h=yh(0)-yh(value);scene.parts.push(shape("path",{d:topPath(x+(cw-bw)/2,yh(value),bw,h,Math.min(4,h/2,bw/2)),fill:cp.series[0]!}));}if(new Date(String(r[0])).getUTCDay()===1)scene.parts.push(text(x+cw/2,height-mb+16,String(r[0]).slice(5),colors.foregroundMuted,"middle"));scene.hits.push({x,y:mt,width:cw,height:height-mt-mb,label:String(r[0]),values:[`${reportValue(value,"Active seat-hours")} seat-time`,`${r[2]} peak parallel seats`,r[3]==="yes"?"Idle — no recorded model activity":"Recorded activity"]});});
+  for(let v=0;v<=topH+1e-9;v+=sh)scene.parts.push(shape("line",{x1:ml,x2:width-mr,y1:yh(v),y2:yh(v),stroke:colors.border}),text(ml-6,yh(v)+4,`${v.toFixed(v<10&&sh<1?1:0)} h`,cp.muted,"end"));
+  for(let v=0;v<=topP;v+=sp)scene.parts.push(text(width-mr+6,yp(v)+4,v,cp.muted));
+  scene.parts.push(text(4,mt-14,"▮ Active seat-hours (left)",cp.muted),text(width-4,mt-14,"Peak parallel seats (right) —",cp.muted,"end"));
+  rows.forEach((r,i)=>{const value=Number(r[1]),x=ml+i*cw;if(value>0){const h=yh(0)-yh(value);scene.parts.push(shape("path",{d:topPath(x+(cw-bw)/2,yh(value),bw,h,Math.min(4,h/2,bw/2)),fill:cp.series[0]!}));}if(new Date(String(r[0])).getUTCDay()===1)scene.parts.push(text(x+cw/2,height-mb+16,String(r[0]).slice(5),cp.muted,"middle"));scene.hits.push({x,y:mt,width:cw,height:height-mt-mb,label:String(r[0]),values:[`${reportValue(value,"Active seat-hours")} seat-time`,`${r[2]} peak parallel seats`,r[3]==="yes"?"Idle — no recorded model activity":"Recorded activity"]});});
   scene.parts.push(shape("path",{d:"M"+rows.map((r,i)=>`${n(ml+(i+0.5)*cw)},${n(yp(Number(r[2])))}`).join("L"),fill:"none",stroke:cp.series[1]!,"stroke-width":2,"stroke-linejoin":"round"}));
   rows.forEach((r,i)=>{if(Number(r[2]))scene.parts.push(shape("circle",{cx:ml+(i+0.5)*cw,cy:yp(Number(r[2])),r:4,fill:cp.series[1]!,stroke:colors.surface1,"stroke-width":2}));});return scene;
 }
@@ -116,8 +119,10 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
     lines.push({ label: person, data: personRows(person), depth: 0, person, toggle: key, open, height: 36 });
     if (!open) continue;
     const all = data.filter((r) => r[0] === "Epic / desk row" && r[1] === person);
-    for (const gap of gaps.filter((r) => r[0] === person)) if (!all.some((r) => r[2] === gap[1] && r[3] === gap[2])) all.push(["Epic / desk row", person, gap[1]!, gap[2]!, gap[3]!, null, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    for (const ws of [...new Set(all.map((r) => String(r[2])))]) {
+    for (const gap of gaps.filter((r) => r[0] === person)) if (spans.some((r) => r[1] === gap[2]) && !all.some((r) => r[2] === gap[1] && r[3] === gap[2])) all.push(["Epic / desk row", person, gap[1]!, gap[2]!, gap[3]!, null, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const knownOrder = table.plot?.epicOrder ?? [];
+    all.sort((a, b) => { const x = knownOrder.indexOf(String(a[3])), y = knownOrder.indexOf(String(b[3])); return x < 0 && y < 0 ? 0 : x < 0 ? 1 : y < 0 ? -1 : x - y; });
+    for (const ws of [...new Set([...(table.plot?.workstreams ?? []), ...all.map((r) => String(r[2]))])].filter((ws) => all.some((r) => r[2] === ws))) {
       const ww = all.filter((r) => r[2] === ws), key = `tl:w:${person}:${ws}`, epics = [...new Set(ww.map((r) => String(r[3])))];
       const open = !closed(key, !(table.plot?.desks ?? []).includes(ws) || epics.length <= 8);
       const group = data.filter((r) => r[0] === "Workstream" && r[1] === person && r[2] === ws);
@@ -138,11 +143,11 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
   const drawSummary = (cy: number, rows: Cell[][], rowFlags: Cell[][], strong: boolean) => {
     if (narrow) return;
     const result = activityChartSummary(rows, query.metric, end, rowFlags, days[0]!);
-    scene.parts.push(text(gx1 + 80, cy + 4, fmt(result.current), strong ? colors.foreground : colors.foregroundMuted, "end", 11, strong ? 600 : 400), text(gx1 + 152, cy + 4, result.delta, colors.foregroundMuted, "end"));
+    scene.parts.push(text(gx1 + 80, cy + 4, fmt(result.current), strong ? colors.foreground : colors.foregroundMuted, "end", 11, 600), text(gx1 + 152, cy + 4, result.delta, colors.foregroundMuted, "end"));
     if (!result.flags.length) { scene.parts.push(text(width - 4, cy + 4, "—", colors.foregroundMuted, "end")); return; }
     const kinds = ["Spike", "Efficiency drop", "Spend without progress", "Overdue"], glyphs = ["▲", "◆", "▬", "▼"];
     let right = width - 4;
-    for (const flag of [...result.flags].reverse()) { const index = kinds.indexOf(flag.type), value = `${glyphs[index]}${flag.count}`; scene.parts.push(text(right, cy + 4, value, cp.series[[7, 3, 1, 6][index]!]!, "end", 11, 650)); right -= value.length * 6.5 + 5; }
+    for (const flag of [...result.flags].reverse()) { const index = kinds.indexOf(flag.type), value = `${glyphs[index]}${flag.count}`; scene.parts.push(text(right, cy + 4, value, cp.series[[7, 3, 1, 6][index]!]!, "end", 11, 650)); right -= value.length * 6.5 + 8; }
   };
   const team = data.filter((r) => r[0] === "Team total" && xi.has(String(r[4]))), max = Math.max(...team.map((r) => Number(r[5]) || 0), 1), min = query.metric === "hit" ? Math.floor(Math.min(...team.map((r) => Number(r[5]) || 100), 100) / 5) * 5 : 0;
   scene.parts.push(text(8, 42, "Team total", colors.foreground, "start", 12.5, 650), text(8, 58, `${people.length} ${people.length === 1 ? "person" : "people"}${!narrow ? ` · top day ${fmt(max)}` : ""}`, colors.foregroundMuted), text(8, 88, narrow ? "✓ resolved" : "✓ Jira issues resolved", "#0ca30c"), shape("line", { x1: labelW, x2: gx1, y1: 74.5, y2: 74.5, stroke: colors.border }));
@@ -195,12 +200,19 @@ function timeline(table: TokenomicsTable, width: number, colors: Colors, query: 
   scene.legend = [{ label: `Cells — ${table.columns[5]} per day`, color: cp.seq[0]! }, ...bins.map((v, i) => ({ label: i === bins.length - 1 ? `≥ ${fmt(v)}` : `${fmt(v)}–${fmt(bins[i + 1]!)}`, color: cp.seq[Math.round((i + 1) * 4 / Math.max(1, bins.length))]! })), ...(additive ? people.map((label) => ({ label, color: personColor(label) })) : []), ...["▲ spike", "◆ efficiency drop", "▬ spend without progress", "▼ overdue"].map((label, i) => ({ label, color: cp.series[[7, 3, 1, 6][i]!]! }))];
   return scene;
 }
+export function roleShareColor(index: number): string {
+  if (index < 0 || index >= 12) return "#b9b8b2";
+  const hue = (Math.round(index * 137.508) % 360) / 60, c = (1 - Math.abs(2 * .46 - 1)) * .62, x = c * (1 - Math.abs(hue % 2 - 1)), m = .46 - c / 2;
+  const rgb = hue < 1 ? [c, x, 0] : hue < 2 ? [x, c, 0] : hue < 3 ? [0, c, x] : hue < 4 ? [0, x, c] : hue < 5 ? [x, 0, c] : [c, 0, x];
+  return `#${rgb.map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("")}`;
+}
 export function tokenomicsChartScene(table:TokenomicsTable,width:number,colors:Colors,query:TokenomicsQuery):ChartScene{
   if(table.id==="parallel")return parallel(table,width,colors);
   if(table.id==="timeline")return timeline(table,width,colors,query);
   if(table.id==="share"){
-    const rows=table.plot?.rows??[],cp=chartColors(colors),total=sum(rows.map(r=>Number(r[1]))),scene:ChartScene={width,height:26,parts:[],hits:[],legend:[]};let x=0;
-    rows.forEach((r,i)=>{const w=total?width*Number(r[1])/total:0,color=cp.series[i%cp.series.length]!;scene.parts.push(shape("rect",{x,y:0,width:Math.max(0,w-1),height:26,fill:color}));scene.hits.push({x,y:0,width:w,height:26,label:String(r[0]),values:[`${reportNumber(Number(r[1]))} tokens · ${r[2]} · ${reportMoney(Number(r[3]))}`]});scene.legend.push({label:String(r[0]),color});x+=w;});return scene;
+    const rows = [...(table.plot?.rows ?? [])].sort((a, b) => Number(b[1]) - Number(a[1])), total = sum(rows.map((r) => Number(r[1]))), scene: ChartScene = { width, height: 26, parts: [], hits: [], legend: [] };
+    const tail = rows.slice(12), shown = [...rows.slice(0, 12), ...(tail.length ? [[`Other (${tail.length})`, sum(tail.map((r) => Number(r[1]))), "", sum(tail.map((r) => Number(r[3]))), sum(tail.map((r) => Number(r[4])))]] : [])]; let x = 0;
+    shown.forEach((r, i) => { const w = total ? width * Number(r[1]) / total : 0, color = i === 12 ? chartColors(colors).other : roleShareColor(i); scene.parts.push(shape("rect", { x, y: 0, width: Math.max(0, w - 1), height: 26, fill: color })); scene.hits.push({ x, y: 0, width: w, height: 26, label: String(r[0]), values: [`${total ? (100 * Number(r[1]) / total).toFixed(1) : "0"}% of consumed tokens`, `${reportNumber(Number(r[1]))} tokens · ${reportMoney(Number(r[3]))} · ${Number(r[4]).toLocaleString("en-US")} responses`] }); x += w; }); return scene;
   }
   return stacked(table,width,colors,query);
 }
@@ -211,7 +223,6 @@ export function TokenomicsChart({table,colors,query,change}:{table:TokenomicsTab
   const scene=built?.scene;
   const select=(x:number,y:number,press=false)=>{const hit=scene?.hits.find(h=>x>=h.x&&x<h.x+h.width&&y>=h.y&&y<h.y+h.height);if(press&&hit?.toggle){change({expanded:[...query.expanded.filter(k=>k!==hit.toggle&&k!==`closed:${hit.toggle}`),...(hit.open?[`closed:${hit.toggle}`]:[hit.toggle]),"tl:closed"]});setSelected(null);}else setSelected(hit??null);};
   return <View testID={`report-chart-${table.id}`} onLayout={e=>setWidth(Math.floor(e.nativeEvent.layout.width))}>
-    {table.id==="timeline"&&table.plot?<View style={{flexDirection:"row",gap:8,marginBottom:8}}>{["Open everyone","Close all"].map(label=><Pressable key={label} accessibilityRole="button" onPress={()=>change({expanded:[...query.expanded.filter(k=>!k.startsWith("tl:")&&!k.startsWith("closed:tl:")),"tl:closed",...(label==="Open everyone"?activityEveryoneKeys(table):[])]})} hitSlop={6} style={{padding:6,borderWidth:1,borderColor:colors.border,borderRadius:6}}><Text style={{fontSize:13,color:colors.foreground}}>{label}</Text></Pressable>)}</View>:null}
     {built?.error?<Text accessibilityRole="alert" style={{color:colors.foreground,fontSize:12}}>{built.error} The complete values remain available in Chart data and CSV.</Text>:scene?<>
       <View style={{width:scene.width,height:scene.height,overflow:"hidden"}}>
         {built.layers.map((svg,i)=><View key={i} pointerEvents="none" accessible={false} style={{position:"absolute",left:0,top:0}}><Icon icon={{svg}} size={Math.max(scene.width,scene.height)} color={colors.foreground}/></View>)}

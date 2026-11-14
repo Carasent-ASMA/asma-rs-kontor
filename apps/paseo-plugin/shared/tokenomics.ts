@@ -14,7 +14,7 @@ export type TokenomicsPage = keyof typeof TOKENOMICS_PAGES;
 export const DIMENSIONS = ["ws", "user", "epic", "task", "seat", "rg", "rc", "acct", "vendor", "model", "day", "adam", "tt"] as const;
 export const FILTER_DIMENSIONS = ["user", "epic", "rc", "rg", "seat", "vendor", "acct", "model", "data"] as const;
 export const DIMENSION_LABELS: Record<string, string> = { ws: "Workstream", user: "User", epic: "Epic", task: "Task", seat: "Seat", rg: "Role group", rc: "Role (canonical)", acct: "Account", vendor: "Vendor", model: "Model", day: "Day (Oslo)", adam: "Adam tree", tt: "Token type", data: "Data status" };
-export const ACTIVITY_METRICS = { act: "Seat-time (hours)", cost: "API cost ($)", tok: "Tokens", peak: "Parallel seats (busiest hour)", cph: "API cost per active hour", hit: "Cache hit rate (%)", prs: "PRs merged", cm: "Commits", lines: "Lines changed", cpp: "API cost per merged PR" } as const;
+export const ACTIVITY_METRICS = { act: "Seat-time", cost: "API cost", tok: "Tokens", peak: "Parallel seats (busiest hour)", cph: "API cost per active hour", hit: "Cache hit rate", prs: "PRs merged", cm: "Commits", lines: "Lines changed (added + deleted)", cpp: "API cost per merged PR" } as const;
 const text = z.string().max(8192);
 const number = z.number().finite();
 const count = number.nonnegative();
@@ -27,10 +27,11 @@ export const tokenomicsQuerySchema = z.object({
   period: z.string().regex(/^(all|custom|prevm|\d{1,3}|m:\d{4}-\d{2}|w:\d{4}-\d{2}-\d{2})$/)
     .refine((s) => s.startsWith("m:") ? validDay(`${s.slice(2)}-01`) : s.startsWith("w:") ? validDay(s.slice(2)) : !/^\d+$/.test(s) || +s > 0).default("all"),
   from: day.nullable().default(null), to: day.nullable().default(null),
-  rev: text.nullable().default(null), compare: text.nullable().default(null),
+  rev: text.nullable().default(null), compare: text.nullable().default("previous"),
   show: z.enum(["usage", "idle", "all", "report"]).default("usage"),
-  workstreams: z.array(text).max(512).nullable().default(null),
+  workstreams: z.array(text).max(512).nullable().default(null), openWorkstreams: z.array(text).max(512).default([]),
   filters: z.partialRecord(z.enum(FILTER_DIMENSIONS), z.array(text).max(100000)).default({}),
+  searches: z.partialRecord(z.enum(Object.keys(TOKENOMICS_PAGES) as [TokenomicsPage, ...TokenomicsPage[]]), text).default({}),
   sorts: z.record(text, z.object({ column: text, descending: z.boolean() })).default({}),
   groups: z.array(z.enum(DIMENSIONS)).min(1).max(4).default(["ws", "epic", "task", "seat"]),
   measure: z.enum(["cost", "tok", "act"]).default("cost"), stack: z.enum(DIMENSIONS).default("ws"),
@@ -45,6 +46,9 @@ export const tokenomicsQuerySchema = z.object({
   offsets: z.record(text, z.number().int().min(0).max(1_000_000)).default({}),
 }).strict();
 export type TokenomicsQuery = z.infer<typeof tokenomicsQuerySchema>;
+
+const DEFAULT_TABLE_SORT: Record<string, string> = { pivot: "API-equivalent cost ($)", "review-prs": "Findings", reviewer: "PRs", "review-type": "PRs", submitters: "PRs", "review-repos": "PRs", "delivery-people": "PRs merged", "delivery-repos": "PRs merged", "delivery-prs": "Merged", "bug-people": "Bugs introduced", bugs: "Reported", "jira-epics": "PRs merged", "jira-issues": "Flag" };
+export const tokenomicsTableSort = (id: string, q: TokenomicsQuery) => q.sorts[id] ?? { column: q.sort || DEFAULT_TABLE_SORT[id] || "", descending: q.descending };
 
 // These are the collector's existing positional contracts; no pricing or collection is performed here.
 export const factSchema = z.tuple([count.int(), number.int(), count.int(), count, count, count, count, count, count, count,
@@ -67,7 +71,7 @@ const allFactSchema = z.tuple([day, count.int(), count.int(), count.int(), count
 const coverageSchema = z.object({ first: optionalText, last: optionalText, sessions: count, tok: count });
 export const tokenomicsDataSchema = z.object({
   schema: z.literal("consumption/data@2"), generated: text.refine((s) => Number.isFinite(Date.parse(s))),
-  ws: record(z.object({ name: text, kind: text, epics: z.array(text).max(10000), status: text,
+  ws: record(z.object({ name: text, kind: text, epics: z.array(text).max(10000), status: text, project: text.optional(),
     completedAt: optionalText, spans: z.array(z.tuple([text, text.nullable()])).max(10000).default([]) })),
   rows: record(text).default({}), seats: z.array(seatSchema).max(100_000), models: z.array(text).max(4096), mvendor: z.array(text).max(4096),
   facts: z.array(factSchema).max(500_000), epics: z.array(issueSchema.extend({ ws: text, due: optionalText, children: z.array(issueSchema).max(20000) })).max(10000),
@@ -121,19 +125,16 @@ export const tokenomicsLiveSchema = z.object({
 export type TokenomicsLive = z.infer<typeof tokenomicsLiveSchema>;
 const cellSchema = z.union([text, number, z.null()]);
 const plotSchema = z.object({ columns: z.array(text).max(64), rows: z.array(z.array(cellSchema).max(64)).max(100000),
-  end: text.optional(), order: z.array(text).max(4096).optional(), desks: z.array(text).max(512).optional(), events: z.array(z.array(cellSchema).max(4)).max(200000).optional(), flags: z.array(z.array(cellSchema).max(16)).max(10000).optional(), gaps: z.array(z.array(cellSchema).max(8)).max(100000).optional(), spans: z.array(z.array(cellSchema).max(16)).max(10000).optional() });
-export const tableSchema = z.object({ id: text, title: text, note: text, columns: z.array(text).max(64),
-  rows: z.array(z.object({ key: text, cells: z.array(cellSchema).max(64), detail: z.array(text).max(2000).default([]), url: text.optional(), hasChildren: z.boolean().optional(), depth: count.int().optional() })).max(100),
-  total: count, chart: z.boolean().default(false),
-  plot: plotSchema.optional(),
-});
+  end: text.optional(), order: z.array(text).max(4096).optional(), workstreams: z.array(text).max(512).optional(), epicOrder: z.array(text).max(10000).optional(), desks: z.array(text).max(512).optional(), events: z.array(z.array(cellSchema).max(4)).max(200000).optional(), flags: z.array(z.array(cellSchema).max(16)).max(10000).optional(), gaps: z.array(z.array(cellSchema).max(8)).max(100000).optional(), spans: z.array(z.array(cellSchema).max(16)).max(10000).optional() });
+const tableRowSchema = z.object({ key: text, cells: z.array(cellSchema).max(64), detail: z.array(text).max(2000).default([]), url: text.optional(), hasChildren: z.boolean().optional(), depth: count.int().optional(), span: count.int().min(1).max(64).optional(), heading: z.boolean().optional() });
+export const tableSchema = z.object({ id: text, title: text, note: text, columns: z.array(text).max(64), rows: z.array(tableRowSchema).max(100), footer: z.array(tableRowSchema).max(8).optional(), total: count, chart: z.boolean().default(false), plot: plotSchema.optional() });
 export type TokenomicsTable = z.infer<typeof tableSchema>;
 export const tokenomicsViewSchema = z.object({
   status: z.enum(["ready", "partial", "unavailable"]), readAt: text, generated: text.nullable(), revision: text.nullable(),
   diagnostics: z.array(text), query: tokenomicsQuerySchema,
   options: z.record(text, z.array(z.object({ value: text, label: text })).max(100000)),
-  tiles: z.array(z.object({ label: text, value: cellSchema, note: text })).max(32),
-  tables: z.array(tableSchema).max(32), notes: z.array(text),
+  tiles: z.array(z.object({ label: text, value: cellSchema, note: text, delta: text.optional() })).max(32),
+  tables: z.array(tableSchema).max(544), notes: z.array(text),
   summary: z.object({ cost: count, tokens: count, responses: count, hours: count, cached: count, seats: count, scope: count, hit: text, revision: text, compare: text }).optional(),
 });
 export type TokenomicsView = z.infer<typeof tokenomicsViewSchema>;

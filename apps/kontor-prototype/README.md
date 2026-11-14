@@ -28,6 +28,18 @@ roots, client environment variables or bundled assets. Static builds keep the
 synthetic scenarios; local reports require the development server. The frame
 labels local report data and the simulated surrounding Paseo host explicitly.
 
+The Tokenomics browser interaction check attaches to Chrome already started by
+`asma debug chrome`. It creates and closes only its own tabs (Node 24; no package
+install or separate browser launch):
+
+```sh
+EVIDENCE_DIR=/tmp/tokenomics-browser PROTOTYPE_URL=http://127.0.0.1:58143/ node apps/paseo-plugin/test/tokenomics.browser.cjs
+```
+
+Paired original-report visual evidence is a separate check on identical input,
+content dimensions, theme and selections; a render-count report is not visual
+acceptance.
+
 ## Run
 
 From the repository root:

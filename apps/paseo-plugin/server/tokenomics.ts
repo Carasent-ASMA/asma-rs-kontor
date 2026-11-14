@@ -6,7 +6,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { readConfig } from "./config";
 import { exportTokenomics, readTokenomics, tokenomicsDataSchema, tokenomicsLiveSchema, tokenomicsQuerySchema, type TokenomicsData, type TokenomicsLive, type TokenomicsQuery, type TokenomicsView } from "../shared/tokenomics";
-import { buildTokenomics, paginateTokenomics, pivotRows, tokenomicsCsv, tokenomicsOptions, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
+import { buildTokenomics, matchesTokenomicsSearch, paginateTokenomics, pivotRows, tokenomicsCsv, tokenomicsOptions, tokenomicsSummary, usageModel } from "../shared/tokenomics-model";
 
 export const REPORT_MAX_BYTES = 32 * 1024 * 1024;
 export const LIVE_MAX_BYTES = 16 * 1024 * 1024;
@@ -73,13 +73,17 @@ export function tokenomicsView(snapshot: ReportSnapshot, input: TokenomicsQuery)
   const q = tokenomicsQuerySchema.parse(input), d = snapshot.data;
   const empty: TokenomicsView = { status: "unavailable", readAt: snapshot.readAt, generated: null, revision: snapshot.revision, diagnostics: snapshot.diagnostics, query: q, options: {}, tiles: [], tables: [], notes: [] };
   if (!d) return empty;
+  if (q.compare === "previous") q.compare = d.revs.at(-2)?.id ?? null;
+  if (q.rev === null) q.rev = d.revs.at(-1)?.id ?? null;
   if (q.from && q.to && q.from > q.to) return { ...empty, diagnostics: [...snapshot.diagnostics, "Custom period start must not be after its end."] };
   if ((q.rev && !d.revs.some((r) => r.id === q.rev)) || (q.compare && !d.revs.some((r) => r.id === q.compare))) return { ...empty, diagnostics: [...snapshot.diagnostics, "Selected revision is no longer present; choose an available check."] };
   const model = usageModel(d, q), result = buildTokenomics(d, snapshot.live, q);
   const options = tokenomicsOptions(d, model);
   if (q.page === "pivot") options.pivotNodes = pivotRows(model, q).filter((r) => r.hasChildren).map((r) => ({ value: r.key, label: r.cells.slice(0, q.groups.length).filter(Boolean).join(" → ") }));
-  return { ...empty, status: snapshot.diagnostics.length ? "partial" : "ready", generated: d.generated,
+  const view: TokenomicsView = { ...empty, status: snapshot.diagnostics.length ? "partial" : "ready", generated: d.generated,
     options, summary: tokenomicsSummary(model), tiles: result.tiles, tables: paginateTokenomics(result, q), notes: result.notes };
+  if (Buffer.byteLength(JSON.stringify(view)) > REPORT_MAX_BYTES) return { ...empty, options: { workstreams: options.workstreams ?? [], revisions: options.revisions ?? [] }, diagnostics: [...snapshot.diagnostics, "Report projection exceeds its bounded response limit. Close workstream details or narrow filters; no totals were truncated."] };
+  return view;
 }
 
 export function contributeTokenomics(server: PluginServerContext): void {
@@ -95,7 +99,7 @@ export function tokenomicsCsvExport(snapshot: ReportSnapshot, input: TokenomicsQ
   if ((input.page.startsWith("cr-") && !snapshot.live.review) || (input.page.startsWith("dv-") && !snapshot.live.delivery)) throw new Error("The selected live analytics source is unavailable; no export can be produced.");
   // Exports carry every matching row, independently of the native display page size.
   const q = tokenomicsQuerySchema.parse(input), result = buildTokenomics(snapshot.data, snapshot.live, q);
-  const tables = result.tables.map((t) => ({ ...t, rows: t.rows.filter((r) => !q.search || [...r.cells, ...r.detail].join(" ").toLowerCase().includes(q.search.trim().toLowerCase())) }));
+  const tables = result.tables.map((t) => ({ ...t, rows: t.rows.filter((r) => matchesTokenomicsSearch(r, t.id, q)) }));
   const content = tokenomicsCsv({ ...result, tables });
   if (Buffer.byteLength(content) > LIVE_MAX_BYTES) throw new Error("Export exceeds the bounded response limit; narrow its filters.");
   return { filename: `tokenomics-${q.page}.csv`, content, revision: snapshot.revision };

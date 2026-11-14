@@ -3,7 +3,7 @@ vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "Vi
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon" }));
 import { findSvgIconProblem } from "@getpaseo/plugin";
 import { activityChartSummary, activityEveryoneKeys, chartSvgLayers, tokenomicsChartScene, type ChartScene } from "../client/tokenomics-charts";
-import { reportMoney, reportNumber, reportValue } from "../client/tokenomics-format";
+import { reportMoney, reportNumber, reportTableValue, reportValue } from "../client/tokenomics-format";
 import type { Colors } from "../client/page-controls";
 import { buildTokenomics, paginateTokenomics } from "../shared/tokenomics-model";
 import { tokenomicsQuerySchema } from "../shared/tokenomics";
@@ -12,7 +12,7 @@ const colors = { surface0: "#f4f3f0", surface1: "#fcfcfb", surface2: "#f0efec", 
 const query = (input: object = {}) => tokenomicsQuerySchema.parse(input);
 describe("native Tokenomics visual contracts", () => {
   it("matches web formatting without changing accounting values", () => {
-    expect(reportNumber(65432109876)).toBe("65.43B"); expect(reportMoney(12345.67)).toBe("$12,346"); expect(reportMoney(6)).toBe("$6.00");
+    expect(reportNumber(65432109876)).toBe("65.43B"); expect(reportMoney(12345.67)).toBe("$12,346"); expect(reportMoney(6)).toBe("$6.00"); expect(reportTableValue(0.25, "Cache read", "prices")).toBe("0.25");
     expect(reportValue(1234567890, "Codex Auto Review")).toBe("1.23B"); expect(reportValue(13.123456789, "Churn (%)")).toBe("13.1%"); expect(reportValue(1.2345, "Bugs per 1K code lines")).toBe("1.23");
     const d = tokenomicsFixture(), before = JSON.stringify(d); buildTokenomics(d, tokenomicsLiveFixture(), query()); expect(JSON.stringify(d)).toBe(before);
   });
@@ -35,8 +35,12 @@ describe("native Tokenomics visual contracts", () => {
   it("partitions an over-limit chart losslessly on the shared coordinate system", () => {
     const parts = Array.from({ length: 2200 }, (_, i) => `<rect data-index="${i}" x="${i % 100}" y="0" width="1" height="1" fill="#000"/>`), scene: ChartScene = { width: 1138, height: 340, parts, hits: [], legend: [] }, layers = chartSvgLayers(scene);
     expect(layers.length).toBeGreaterThan(1); for (const part of parts) expect(layers.filter((svg) => svg.includes(part))).toHaveLength(1); for (const svg of layers) expect(findSvgIconProblem(svg)).toBeNull();
-    const q = query({ page: "roles" }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "share")!;
-    t.plot!.rows[0]![0] = '<script> & "role"'; expect(chartSvgLayers(tokenomicsChartScene(t, 348, colors, q)).every((svg) => findSvgIconProblem(svg) === null)).toBe(true);
+    expect(() => chartSvgLayers({ ...scene, parts: [" ".repeat(65536)] })).toThrow("One chart path exceeds");
+    expect(() => chartSvgLayers({ ...scene, parts: Array(2100).fill('<rect x="0" y="0" width="1" height="1"/>' + " ".repeat(16000)) })).toThrow("Chart composition exceeds");
+    const q = query({ page: "activity" }), t = paginateTokenomics(buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), q), q).find((t) => t.id === "timeline")!;
+    for (const r of t.plot!.rows) if (r[0] === "Person") r[1] = '<script>&"';
+    const escaped = chartSvgLayers(tokenomicsChartScene(t, 1138, colors, q)).join(""); expect(escaped).toContain("&lt;script&gt;&amp;&quot;"); expect(escaped).not.toContain("<script>");
+
   });
   it("shows team rollups, signed deltas and typed flag episodes; delivery-only users stay quiet in consumption views", () => {
     const d = tokenomicsFixture(), live = tokenomicsLiveFixture();
@@ -52,6 +56,25 @@ describe("native Tokenomics visual contracts", () => {
     t.plot!.rows = [...rows, ...rows.map((r) => ["Person", "Person A", ...r.slice(2)])]; t.plot!.end = "2026-11-03"; t.plot!.flags = flags; t.plot!.events = [["EXAMPLE-101", "2026-11-03", "EXAMPLE-102"], ["EXAMPLE-101", "2026-11-03", "EXAMPLE-103"]];
     const svg = chartSvgLayers(tokenomicsChartScene(t, 1138, colors, q)).join("");
     expect(svg).toContain("+100%"); expect(svg).toContain("▲2"); expect(svg).toContain("◆1"); expect(svg).toContain(">✓</text>"); expect(svg).not.toContain(">✓2</text>");
+  });
+  it("projects complete category/month/coverage data while keeping raw CSV and totals independent of display state", () => {
+    const d = tokenomicsFixture(), live = tokenomicsLiveFixture(), q = query({ page: "usage" }), built = buildTokenomics(d, live, q), tables = paginateTokenomics(built, q);
+    const cats = tables.find((t) => t.id === "all-categories")!, total = cats.rows.find((r) => r.key === "__total__")!;
+    expect(total.cells[cats.columns.indexOf("Tokens")]).toBe(700); expect(total.cells[cats.columns.indexOf("API-equivalent cost ($)")]).toBe(4);
+    expect(cats.rows.some((r) => r.key.startsWith("sub-"))).toBe(false);
+    const opened = paginateTokenomics(built, query({ page: "usage", expanded: ["category-0"] })).find((t) => t.id === "all-categories")!;
+    expect(opened.rows.find((r) => r.key === "sub-0-0")!.cells[cats.columns.indexOf("Tokens")]).toBe(350);
+    const month = tables.find((t) => t.id === "all-months")!; expect(month.columns).toHaveLength(4); expect(month.rows[0]!.cells).toEqual(["2026-10", "350 · $2", "—", "350 · $2"]);
+    const raw = built.tables.find((t) => t.id === "all-months")!; expect(raw.columns).toContain("Category"); expect(raw.rows[0]!.cells[1]).toBe("Registered workstreams");
+    const data = paginateTokenomics(buildTokenomics(d, live, query({ page: "data" })), query({ page: "data" })); expect(data.map((t) => t.id)).toEqual(["coverage", "prices"]); expect(data[0]!.rows.some((r) => r.span === 4 && r.cells[4] === "transcript-missing")).toBe(true);
+  });
+  it("keeps pivot children beside their parents when sorting and reports full-selection footer totals", () => {
+    const d = tokenomicsFixture(), live = tokenomicsLiveFixture(), q = query({ page: "pivot", groups: ["ws", "model"], expanded: [JSON.stringify(["Demo build"])], sorts: { pivot: { column: "API-equivalent cost ($)", descending: true } } });
+    const built = buildTokenomics(d, live, q), t = paginateTokenomics(built, q)[0]!;
+    expect(t.rows[0]!.cells[0]).toBe("Demo build"); expect(t.rows[1]!.depth).toBe(1); expect(t.footer![0]!.cells[t.columns.indexOf("Tokens")]).toBe(1400);
+    const selected = query({ page: "overview", openWorkstreams: ["build"] }), overview = paginateTokenomics(buildTokenomics(d, live, selected), selected);
+    expect(overview.find((t) => t.id === "epics:build")!.rows[0]!.cells).toContain("EXAMPLE-101 · Synthetic epic");
+    expect(overview.find((t) => t.id === "workstream-totals")!.rows.find((r) => r.key === "build")!.cells).toContain(1);
   });
   it.skipIf(!process.env.KONTOR_TOKENOMICS_VISUAL_ROOT)("validates frozen wide/timeline projections [local visual proof]", async () => {
     const { readTokenomicsSnapshot, tokenomicsView } = await import("../server/tokenomics"), snapshot = await readTokenomicsSnapshot(process.env.KONTOR_TOKENOMICS_VISUAL_ROOT!);

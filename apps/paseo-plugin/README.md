@@ -38,8 +38,12 @@ revision. Live analytics ignore the revision and other filters. Unknown epic/rol
 missing evidence, coverage floors and unpriced tokens remain explicit. Cost bases
 stay those of the collector, including billed and blended rows.
 
-Native bars and labelled values replace browser SVG/tooltips; row details expose
-the evidence on touch and keyboard. Each table pages 50 rows after aggregation;
+Native tables and inline SVG preserve the report’s chart families, time axes,
+stacking, legends and hierarchy. The supported SDK validates each SVG against
+its 64 KiB limit. An over-limit chart is composed from lossless layers on the same
+scale; the composition is bounded to 32 MiB and refuses visibly rather than
+omitting data. Pointer/touch inspection and selectable chart data expose exact
+values. Native selectors use host modals; the surrounding Paseo chrome stays host-owned. Each table pages 50 rows after aggregation;
 search and sorting cover its full result. **Copy full CSV** exports every matching
 row beyond display pagination. Pivot exports leaves, excluding duplicated
 subtotals. Native clipboard export uses the supported SDK; it does not open a

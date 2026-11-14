@@ -4,6 +4,8 @@ import { buildTokenomics, paginateTokenomics, pivotRows, tokenomicsCsv, tokenomi
 
 export function tokenomicsRpc(method: string, input: unknown) {
   const data = tokenomicsFixture(), live = tokenomicsLiveFixture(), query = tokenomicsQuerySchema.parse(input);
+  if (query.compare === "previous") query.compare = data.revs.at(-2)?.id ?? null;
+  if (query.rev === null) query.rev = data.revs.at(-1)?.id ?? null;
   const result = buildTokenomics(data, live, query);
   if (method === "tokenomics.export") return { filename: `tokenomics-${query.page}.csv`, content: tokenomicsCsv(result), revision: "synthetic-tokenomics-1" };
   const model = usageModel(data, query), options = tokenomicsOptions(data, model);
