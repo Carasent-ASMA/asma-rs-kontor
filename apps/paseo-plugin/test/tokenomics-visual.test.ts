@@ -17,6 +17,16 @@ describe("native Tokenomics visual contracts", () => {
     expect(reportValue(1234567890, "Codex Auto Review")).toBe("1.23B"); expect(reportValue(13.123456789, "Churn (%)")).toBe("13.1%"); expect(reportValue(1.2345, "Bugs per 1K code lines")).toBe("1.23");
     const d = tokenomicsFixture(), before = JSON.stringify(d); buildTokenomics(d, tokenomicsLiveFixture(), query()); expect(JSON.stringify(d)).toBe(before);
   });
+  it("retains all six Activity flag definitions and threshold context in the display projection", () => {
+    const d = tokenomicsFixture(), live = tokenomicsLiveFixture(), result = buildTokenomics(d, live, query({ page: "activity" })), flags = result.tables.find((t) => t.id === "flags")!;
+    expect(flags.note.split("\n")).toHaveLength(6);
+    expect(flags.note).toContain("modified z-score > 3.5"); expect(flags.note).toContain("not a ranking");
+    for (const r of flags.display!.rows) {
+      expect(r.cells).toHaveLength(4);
+      if (String(r.cells[2]).startsWith("▼")) expect(r.cells[3]).toMatch(/Jira due date .*; still open .* days later/);
+      if (String(r.cells[2]).startsWith("▬")) expect(r.cells[3]).toMatch(/active days.*past 3× since/);
+    }
+  });
   it("keeps complete chart data independent of pagination, search and per-table header sorts", () => {
     const result = buildTokenomics(tokenomicsFixture(), tokenomicsLiveFixture(), query({ page: "activity" })), t = result.tables.find((t) => t.id === "trend")!;
     t.rows = Array.from({ length: 72 }, (_, i) => ({ key: String(i), cells: [`2026-10-${String(i % 28 + 1).padStart(2, "0")}`, "Demo", i], detail: [] }));
