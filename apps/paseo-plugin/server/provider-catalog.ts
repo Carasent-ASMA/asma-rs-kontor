@@ -78,8 +78,8 @@ function routeChain(route: string, overrides: ProviderOverrides | null | undefin
 
 /**
  * The harness a route runs: the route itself when it derives from nothing, else the route it derives from, followed
- * through a chain. Paseo composes an account route from its base provider through `extends`, so `claude-work` is the
- * Claude harness and `codex-personal` is the Codex harness — a vendor's exclusivity belongs to the harness, not to one
+ * through a chain. Paseo composes an account route from its base provider through `extends`, so `claude-b` is the
+ * Claude harness and `codex-a` is the Codex harness — a vendor's exclusivity belongs to the harness, not to one
  * account route's own id. Without the daemon config only the base ids are known.
  */
 export function harnessBase(route: string, overrides: ProviderOverrides | null | undefined): string {
