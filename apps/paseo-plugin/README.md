@@ -43,13 +43,20 @@ stacking, legends and hierarchy. The supported SDK validates each SVG against
 its 64 KiB limit. An over-limit chart is composed from lossless layers on the same
 scale; the composition is bounded to 32 MiB and refuses visibly rather than
 omitting data. Pointer/touch inspection and selectable chart data expose exact
-values. Native selectors use host modals; the surrounding Paseo chrome stays host-owned. Each table pages 50 rows after aggregation;
-search and sorting cover its full result. **Copy full CSV** exports every matching
-row beyond display pagination. Pivot exports leaves, excluding duplicated
-subtotals. Native clipboard export uses the supported SDK; it does not open a
-browser download or write a host file. Spreadsheet formulas in text are escaped.
-Exports are refused when their source is unavailable, and a changed content hash
-requires a refresh. Clipboard refusal is visible.
+values. All ordinary selectors float in anchored overlays, including choices
+inside filter sheets; short lists omit search. Phone navigation and grouped
+filters keep data visible, and contextual info controls hold secondary prose.
+The surrounding Paseo chrome stays host-owned. Tables fetch bounded 50-row chunks
+continuously after full aggregation; search and sorting cover the full result.
+CSV exports include every matching row, independently of loaded display chunks.
+Pivot exports leaves, excluding duplicated subtotals. **Save CSV…** uses the
+client's save picker when available; **Download CSV** otherwise hands the file to
+the Web/Electron download manager. Cancellation and failure remain distinct from
+a confirmed save; download-manager dispatch never claims a file was saved.
+**Copy complete CSV** remains available; native iOS/Android additionally offer
+Share CSV text, with truthful cancel/error outcomes. No export writes a daemon
+host file. Spreadsheet formulas in text are escaped. Exports are refused when
+their source is unavailable, and a changed content hash requires a refresh.
 
 Reports older than 48 hours, absent/malformed live data, partial collection and
 offline/failed reads remain visible. An offline retained snapshot is marked stale
