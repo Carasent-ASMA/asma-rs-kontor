@@ -1633,6 +1633,9 @@ class Wp04OwnershipTests(unittest.TestCase):
                 self.assertIn(phrase, text)
         self.assertNotIn("Configuration dependency", text)
         self.assertNotIn("partially fixed", text)
+        # A project may keep the desk's own routes in a file joined to the fleet.
+        self.assertIn("desk-only route file the desk command joins to it", text)
+        self.assertIn("and any\ndesk-only route file joined to it", text)
         self.assertNotIn("pr-review/learning.log", text)
         readme = read(SKILLS / "README.md")
         self.assertIn("WP04-INV-02", readme)
