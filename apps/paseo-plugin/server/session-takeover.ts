@@ -115,11 +115,25 @@ function routeObservationState(entry: ProviderRouteSnapshot["entries"][number], 
 /** Configured native account aliases from operator fleet `domains.accounts`; not activation or availability proof. */
 export type ConfiguredAccountCatalog = { accounts: ReadonlySet<string>; revision: string };
 
-/** Builds the account-alias allowlist from trusted operator fleet domains; conflicting duplicates fail closed. */
-export function configuredAccountCatalogFromFleet(domains: readonly { accounts: readonly string[] }[], revision: string): ConfiguredAccountCatalog | null {
-  const list = domains.flatMap((domain) => domain.accounts);
-  if (!list.length || new Set(list).size !== list.length) return null;
-  return { accounts: new Set(list), revision };
+/**
+ * Builds the account-alias allowlist from trusted operator fleet domains. One credential may serve several
+ * model-prefix domains, so a repeated alias is accepted when every occurrence names the same provider; a
+ * repeated alias under different providers is ambiguous and fails closed. A missing provider is one group so
+ * callers that only know account aliases keep their previous behaviour.
+ */
+export function configuredAccountCatalogFromFleet(
+  domains: readonly { provider?: string | null; accounts: readonly string[] }[],
+  revision: string,
+): ConfiguredAccountCatalog | null {
+  const providers = new Map<string, string | null>();
+  for (const domain of domains) {
+    const provider = domain.provider ?? null;
+    for (const account of domain.accounts) {
+      if (providers.has(account) && providers.get(account) !== provider) return null;
+      providers.set(account, provider);
+    }
+  }
+  return providers.size ? { accounts: new Set(providers.keys()), revision } : null;
 }
 
 function qualifiedSnapshotTiming(snapshot: ProviderRouteSnapshot, asOfMs: number): { observedAt: string; revision: string } | null {

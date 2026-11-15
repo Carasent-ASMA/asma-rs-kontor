@@ -602,10 +602,49 @@ describe("takeover review", () => {
     expect(reads).toBe(1);
   });
 
+  it("offers a model choice when operator profiles cannot be read and no chain is recorded", async () => {
+    const h = await host();
+    h.deps.operatorFleetDiscovery = async () => { throw new Error("Source ID is not an authorized Teams adapter entry in the host catalog"); };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(review).toMatchObject({ state: "choose", successor: null, association: { bindingKey: null, source: null, choices: [] } });
+    expect(review.message).toContain("Source ID is not an authorized Teams adapter entry in the host catalog");
+    expect(review.message).toContain("Take over model menu");
+    expect([h.effects.archive, h.effects.create, h.effects.send, h.effects.resolve, h.effects.detach]).toEqual([[], [], [], [], []]);
+    expect([...h.agents.keys()]).toEqual(["agent-1"]);
+  });
+
+  it("keeps the recorded chain when operator profiles cannot be read", async () => {
+    const h = await host();
+    await makeDirectory(h.root, { recursive: true });
+    await writeFile(join(h.root, `association-${hash("agent-1")}.json`), JSON.stringify({ agentId: "agent-1", bindingKey: KEY, reviewId: randomUUID() }));
+    h.deps.operatorFleetDiscovery = async () => { throw new Error("catalog unavailable"); };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    // Today's recorded path swallows the profile-read error and proceeds on the recorded binding; it stops only at
+    // the separate account-catalog guard, never at "The configured profiles could not be read".
+    expect(review).toMatchObject({ state: "unknown", association: { bindingKey: KEY, source: "recorded", choices: [] } });
+    expect(review.message).toContain("The configured account catalog could not be read");
+    expect(review.message).not.toContain("The configured profiles could not be read");
+  });
+
+  it("keeps unknown when an explicitly chosen profile cannot be read", async () => {
+    const h = await host();
+    h.deps.operatorFleetDiscovery = async () => { throw new Error("catalog unavailable"); };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review).toMatchObject({ state: "unknown", successor: null, association: { bindingKey: null, source: null, choices: [] } });
+    expect(review.message).toBe("The configured profiles could not be read: catalog unavailable.");
+    expect([h.effects.archive, h.effects.create, h.effects.send, h.effects.resolve, h.effects.detach]).toEqual([[], [], [], [], []]);
+  });
+
   it("readOperatorFleetDiscovery uses one Teams adapter read for profiles and account catalog", async () => {
     const read = vi.fn(async () => ({
       status: "ready" as const, sha256: "fleet-sha", readAt: "2026-10-25T09:00:00.000Z",
-      data: { kind: "fleet" as const, bindings: [{ chainResolved: true, reference: KEY, chainName: "claude-first" }], domains: [{ accounts: ["claude-a"] }] },
+      data: { kind: "fleet" as const, bindings: [{ chainResolved: true, reference: KEY, chainName: "claude-first" }],
+        domains: [
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "claude", accounts: ["claude-a"] },
+        ] },
       diagnostics: [] as const,
     }));
     const catalogSpy = vi.spyOn(readSources, "sourceCatalog").mockReturnValue({ sources: [{ id: "operator", title: "operator", kind: "teams", path: "/fixture/operator-fleet.yml", workstream: null, epic: null, projectId: null, revisionKind: "working copy" }], diagnostics: [] });
@@ -615,7 +654,36 @@ describe("takeover review", () => {
       expect(read).toHaveBeenCalledTimes(1);
       expect(read).toHaveBeenCalledWith({ sourceId: "operator" });
       expect(result.choices).toEqual([{ bindingKey: KEY, chain: "claude-first" }]);
+      expect(result.catalog.accounts).toEqual(new Set(["opencode", "claude-a"]));
       expect(result.catalog.revision).toBe("fleet-sha");
+    } finally {
+      catalogSpy.mockRestore();
+      adapterSpy.mockRestore();
+    }
+  });
+
+  it("returns choose with operator choices when a shared account repeats under one provider", async () => {
+    const h = await host();
+    const read = vi.fn(async () => ({
+      status: "ready" as const, sha256: "fleet-sha", readAt: "2026-10-25T09:00:00.000Z",
+      data: { kind: "fleet" as const, bindings: [{ chainResolved: true, reference: KEY, chainName: "claude-first" }],
+        domains: [
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "opencode", accounts: ["opencode"] },
+          { provider: "claude", accounts: ["claude-a"] },
+        ] },
+      diagnostics: [] as const,
+    }));
+    const catalogSpy = vi.spyOn(readSources, "sourceCatalog").mockReturnValue({ sources: [{ id: "operator", title: "operator", kind: "teams", path: "/fixture/operator-fleet.yml", workstream: null, epic: null, projectId: null, revisionKind: "working copy" }], diagnostics: [] });
+    const adapterSpy = vi.spyOn(teamsAdapter, "createTeamsSourceAdapter").mockReturnValue({ read } as never);
+    try {
+      h.deps.operatorFleetDiscovery = readOperatorFleetDiscovery;
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null });
+      expect(review).toMatchObject({ state: "choose", successor: null,
+        association: { bindingKey: null, source: null, choices: [{ bindingKey: KEY, chain: "claude-first" }] } });
+      expect(review.message).toContain("Choose the configured profile");
+      expect([h.effects.archive, h.effects.create, h.effects.send, h.effects.resolve, h.effects.detach]).toEqual([[], [], [], [], []]);
     } finally {
       catalogSpy.mockRestore();
       adapterSpy.mockRestore();
@@ -1509,6 +1577,24 @@ describe("universal takeover operation", () => {
     expect(h.effects.resolve).toHaveLength(0);
     expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
     expect(h.effects.create[0]!.config).toMatchObject({ provider: `${targetProvider}/claude-opus-5`, modeId: "default", thinkingOptionId: "xhigh" });
+  });
+
+  it("accepts a provider repeated across snapshot entries on an explicitly picked route", async () => {
+    const h = await host();
+    const entry = SNAPSHOT.entries[0]!;
+    h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "duplicate-provider", generatedAt: new Date().toISOString(), entries: [entry, { ...entry }] });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "ready", successor: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review.message).not.toContain("unqualified");
+    expect(h.effects.resolve).toHaveLength(0);
+  });
+
+  it("refuses an explicit route from an empty provider snapshot", async () => {
+    const h = await host();
+    h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "empty", generatedAt: new Date().toISOString(), entries: [] });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "unknown", successor: null });
+    expect(review.message).toBe("The host provider snapshot is unqualified: it names no providers. Nothing is chosen.");
   });
 
   it("rejects a stale provider observation for an explicitly picked route", async () => {

@@ -68,25 +68,25 @@ describe("review-b full-verdict regressions", () => {
   it("N1 withholds a Codex-harness route that first appears after the fresh read", async () => {
     const snapshot = vi.fn()
       .mockResolvedValueOnce({ entries: [route("codex", ["gpt-stale"])] })
-      .mockResolvedValueOnce({ entries: [route("codex", ["gpt-current"]), route("codex-a", ["gpt-work"])] });
+      .mockResolvedValueOnce({ entries: [route("codex", ["gpt-current"]), route("codex-b", ["gpt-work"])] });
     const refresh = vi.fn(async () => ({ acknowledged: true }));
     const catalog = await readProviderCatalog({ providers: { snapshot, refresh } }, project,
-      { config: host(), overrides: { "codex-a": { extends: "codex" } } });
+      { config: host(), overrides: { "codex-b": { extends: "codex" } } });
 
     expect(refresh).toHaveBeenCalledWith({ cwd: project, providers: ["codex"] });
     expect(modelIds(catalog.entries.find((entry) => entry.provider === "codex"))).toEqual(["gpt-current"]);
-    expect(modelIds(catalog.entries.find((entry) => entry.provider === "codex-a"))).toEqual([]);
-    expect(catalog.problemFor("codex-a")).toContain("did not confirm a fresh read");
+    expect(modelIds(catalog.entries.find((entry) => entry.provider === "codex-b"))).toEqual([]);
+    expect(catalog.problemFor("codex-b")).toContain("did not confirm a fresh read");
 
     // Guard: an account that was part of the refresh read is served its refreshed list.
     const both = vi.fn()
-      .mockResolvedValueOnce({ entries: [route("codex", ["gpt-stale"]), route("codex-a", ["gpt-stale-work"])] })
-      .mockResolvedValueOnce({ entries: [route("codex", ["gpt-current"]), route("codex-a", ["gpt-current-work"])] });
+      .mockResolvedValueOnce({ entries: [route("codex", ["gpt-stale"]), route("codex-b", ["gpt-stale-work"])] })
+      .mockResolvedValueOnce({ entries: [route("codex", ["gpt-current"]), route("codex-b", ["gpt-current-work"])] });
     const refreshed = await readProviderCatalog({ providers: { snapshot: both, refresh } }, project,
-      { config: host(), overrides: { "codex-a": { extends: "codex" } } });
-    expect(refresh).toHaveBeenCalledWith({ cwd: project, providers: ["codex", "codex-a"] });
-    expect(modelIds(refreshed.entries.find((entry) => entry.provider === "codex-a"))).toEqual(["gpt-current-work"]);
-    expect(refreshed.problemFor("codex-a")).toBeNull();
+      { config: host(), overrides: { "codex-b": { extends: "codex" } } });
+    expect(refresh).toHaveBeenCalledWith({ cwd: project, providers: ["codex", "codex-b"] });
+    expect(modelIds(refreshed.entries.find((entry) => entry.provider === "codex-b"))).toEqual(["gpt-current-work"]);
+    expect(refreshed.problemFor("codex-b")).toBeNull();
   });
 
   it("N2 classifies OpenAI speech ids as OpenAI, whatever route offers them", () => {
