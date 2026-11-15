@@ -114,8 +114,9 @@ export const takeoverReviewInputSchema = z.object({
   revision: z.number().int().positive().optional(),
   /** One of the review's offered profiles, for a session with no recorded chain; null keeps the earlier choice. */
   bindingKey: z.string().max(400).nullable(),
-  /** A model chosen for this takeover only, instead of the chain's first available route; null or absent keeps Auto. */
-  route: z.object({ provider: id, model: id, effort: id.nullable(), featureValues: featureValuesSchema.optional() }).strict().nullable().optional(),
+  /** A model chosen for this takeover only, instead of the chain's first available route; null or absent keeps Auto.
+   *  `mode` names the successor's operating mode for this takeover when the source's own mode cannot be inherited. */
+  route: z.object({ provider: id, model: id, effort: id.nullable(), mode: id.optional(), featureValues: featureValuesSchema.optional() }).strict().nullable().optional(),
 }).strict().refine((input) => (input.reviewId === undefined) === (input.revision === undefined), "A revision names its review.");
 export type TakeoverReviewInput = z.infer<typeof takeoverReviewInputSchema>;
 const routeViewSchema = z.object({ account: z.string(), model: z.string(), effort: z.string().nullable(), vendor: z.string(), step: z.number(), subStep: z.number() }).strict();

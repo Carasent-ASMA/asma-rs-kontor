@@ -179,7 +179,7 @@ describe("useSessionOperations takeover start", () => {
     expect(h.props.onTakeoverStart).not.toHaveBeenCalled();
     action(h.render(), A, "takeover").option.perform();
     const route = { provider: "codex", model: "gpt-6-sol", effort: "high", featureValues: {} };
-    (layer(h.render())!.props.onUse as (picked: typeof route) => void)(route);
+    (layer(h.render())!.props.onUse as (picked: typeof route & { modeId: null }) => void)({ ...route, modeId: null });
     expect(h.props.onTakeoverStart).toHaveBeenCalledTimes(1);
     expect(host.rpc["sessions.takeover-review"]).toHaveBeenCalledWith({ agentId: "agent-a", bindingKey: null, route });
   });
@@ -203,6 +203,45 @@ describe("useSessionOperations takeover start", () => {
     };
     expect(await permissions([one])).toEqual({ inherited: "bypassPermissions", provider: "claude-b" });
     expect(await permissions([A, B])).toEqual({ seats: 2 });
+  });
+
+  it("hands the picker one seat's source mode and withholds the mode choice from several seats", async () => {
+    host.rpc["sessions.create-options"] = vi.fn(async () => ({ providers: [], catalogProjectId: null }));
+    const tree = (node: unknown): ReactElement<Record<string, unknown>>[] => !node || typeof node !== "object" || !("props" in node) ? [] : [node as ReactElement<Record<string, unknown>>, ...[(node as ReactElement<{ children?: unknown }>).props.children].flat().flatMap(tree)];
+    const pickerProps = async (seats: DirectoryEntry[]) => {
+      const mounted = await mount();
+      mounted.render().takeover(seats).choose();
+      const sheet = layer(mounted.render())!;
+      harness.fresh();
+      const draw = () => harness.current.render(() => (sheet.type as (props: object) => ReactElement)(sheet.props));
+      draw(); await settle();
+      return tree(draw()).find((node) => (node.type as { name?: string }).name === "ModelPicker")!.props;
+    };
+    const readable: DirectoryEntry = { ...sessionEntry("agent-c", { title: "Claude seat" }), provider: "claude-b", mode: "bypassPermissions" };
+    expect((await pickerProps([readable])).modeChoice).toEqual({ source: "claude-b", mode: "bypassPermissions" });
+    expect((await pickerProps([{ ...readable, mode: null }])).modeChoice).toEqual({ source: "claude-b", mode: null });
+    expect((await pickerProps([readable, { ...readable, id: "agent-d", mode: null }])).modeChoice).toBeUndefined();
+  });
+
+  it("sends the picker's chosen mode as the review route's mode", async () => {
+    const h = await mount();
+    action(h.render(), A, "takeover").option.perform();
+    (layer(h.render())!.props.onUse as (route: object) => void)({ provider: "codex", model: "gpt-6-sol", effort: "high", modeId: "full-access", featureValues: {} });
+    await settle(); await settle();
+    expect(host.rpc["sessions.takeover-review"]).toHaveBeenLastCalledWith({ agentId: "agent-a", bindingKey: null,
+      route: { provider: "codex", model: "gpt-6-sol", effort: "high", mode: "full-access", featureValues: {} } });
+  });
+
+  it("opens the mode menu from the row's Take over when the seat's own mode cannot be read", async () => {
+    const modeLess: DirectoryEntry = { ...sessionEntry("agent-c", { title: "Mode-less seat" }), provider: "deepseek-harness", mode: null };
+    const h = await mount();
+    const takeover = action(h.render(), modeLess, "takeover");
+    expect(takeover).toMatchObject({ unavailable: null, detail: "Choose a model and an operating mode",
+      option: { unavailable: "This session's permission mode cannot be read, so Auto cannot confirm a successor's permission boundary." } });
+    takeover.perform();
+    expect(layerName(h.render())).toBe("TakeoverPicker");
+    expect(h.props.onTakeoverStart).not.toHaveBeenCalled();
+    expect(host.rpc["sessions.takeover-review"]).not.toHaveBeenCalled();
   });
 
   it("starts nothing and reports no start for a refused takeover", async () => {
@@ -286,7 +325,7 @@ describe("useSessionOperations unfinished takeover", () => {
     action(h.render(), A, "takeover").perform(); await settle(); await settle();
     close(h.render());
     vi.mocked(h.props.onTakeoverStart).mockClear();
-    onUse({ provider: "codex", model: "gpt-6-sol", effort: "high", featureValues: {} }); await settle();
+    onUse({ provider: "codex", model: "gpt-6-sol", effort: "high", modeId: null, featureValues: {} }); await settle();
     expect(host.toast.show).toHaveBeenCalledWith(BUSY);
     expect(h.props.onTakeoverStart).not.toHaveBeenCalled();
     expect(host.rpc["sessions.takeover-review"]).toHaveBeenCalledTimes(1);
