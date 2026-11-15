@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Pressable, Text } from "react-native";
 import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { readCreateOptions, takeoverModeChoice, type CreateOptions } from "../shared/session-create";
+import { readCreateOptions, type CreateOptions } from "../shared/session-create";
 import type { NavigatorCapability, SummaryRevision } from "../shared/session-navigator";
 import { ModelPicker } from "./model-picker";
 import { codexDefault } from "./new-lead-defaults";
@@ -40,14 +40,12 @@ function TakeoverPicker({ seats, disclosure, colors, compact, onUse, onCancel }:
   }, []);
   const count = seats.length;
   const seat = count === 1 ? seats[0]! : null;
-  // Only one operator-chosen mode can apply to one seat. When its own mode cannot be inherited, the picker asks for the
-  // mode explicitly; several seats keep their own per-seat refusals and current behaviour.
-  const inherited = options && typeof options === "object" && seat ? takeoverModeChoice(options.providers, seat.provider, seat.mode ?? null, seat.provider) : null;
-  const modeChoice = inherited?.kind === "require" ? { reason: inherited.reason } : undefined;
+  // One seat's source mode is what the picker may inherit; a provider it cannot cross to needs a mode chosen there.
+  // Several seats keep their own per-seat refusals and current behaviour.
   return <Modal title="Take over" open onOpenChange={(open) => { if (!open) onCancel(); }}>
     <Modal.Content scrollable={false} contentContainerStyle={{ padding: 8, gap: 8 }}>
       {options && typeof options === "object" ? <ModelPicker colors={colors} compact={compact} providers={options.providers} projectId={options.catalogProjectId} value={null} codex={codexDefault(options.providers)}
-        subtitle={count === 1 ? `For ${seats[0]!.title}` : `For ${count} selected seats`} permissions={seat ? { inherited: seat.mode ?? null, provider: seat.provider } : { seats: count }} modeChoice={modeChoice}
+        subtitle={count === 1 ? `For ${seats[0]!.title}` : `For ${count} selected seats`} permissions={seat ? { inherited: seat.mode ?? null, provider: seat.provider } : { seats: count }} modeChoice={seat ? { source: seat.provider, mode: seat.mode ?? null } : undefined}
         note={`Only this takeover · Defaults stay unchanged. ${disclosure}`}
         action={(alias) => `Take over${count === 1 ? "" : ` ${count}`}${alias ? ` with ${alias}` : ""}`} onAuto={() => onUse(null)}
         onUse={(choice) => onUse({ provider: choice.provider, model: choice.model, effort: choice.effort, modeId: choice.modeId, featureValues: choice.featureValues })} onCancel={onCancel} />

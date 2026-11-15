@@ -709,6 +709,9 @@ const MODE_UNREADABLE = "This session's permission mode cannot be read";
 const MODE_CHOICE_HINT = "Choose a model and an operating mode for this takeover from the Take over model menu.";
 const AUTO_MODE_CHOICE_MESSAGE = `${MODE_UNREADABLE}, so Auto cannot confirm a successor's permission boundary. ${MODE_CHOICE_HINT}`;
 const ROUTE_MODE_CHOICE_MESSAGE = `${MODE_UNREADABLE}, so a successor's permission boundary cannot be confirmed. ${MODE_CHOICE_HINT}`;
+/** The source mode was read, but this destination does not offer it; name both rather than claim it was unreadable. */
+const inheritedModeChoiceMessage = (mode: string, destination: string) =>
+  `This session's permission mode ${mode} cannot be inherited by ${destination}. ${MODE_CHOICE_HINT}`;
 export const RUNNING_STOP_GAP = "This session is running, and no server-configured public Paseo CLI stop adapter is available. Nothing was retired; configure the public CLI on the plugin server or wait for the turn to end, then take over.";
 export const RUNNING_STOP_DISCLOSURE = "This session is running. Apply stops the exact source through the server-configured public Paseo CLI, reads it back on the same host, and only then captures the final handoff summary and archives it. If the stop is unconfirmed or its title, checkout, workspace or owner changes, nothing is archived or created.";
 const RUNNING_SUMMARY_PREVIEW = "Preview only: this source is still running. The final handoff summary is captured after the approved stop and before retirement; this preview is not a final summary.";
@@ -1030,7 +1033,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       // choice for this takeover; a mode is never mapped across providers or invented when none was reported.
       const inherited = sourceMode !== null && chosenRoute.provider === first.provider && !!destination?.modes?.some((entry) => entry.id === sourceMode) ? sourceMode : null;
       const effective = inherited ?? chosenRoute.mode ?? null;
-      if (!effective) return answer("unknown", ROUTE_MODE_CHOICE_MESSAGE);
+      if (!effective) return answer("unknown", sourceMode === null ? ROUTE_MODE_CHOICE_MESSAGE : inheritedModeChoiceMessage(sourceMode, chosenRoute.provider));
       if (!destination?.modes?.some((entry) => entry.id === effective))
         return answer("refused", `${chosenRoute.provider} does not list operating mode ${effective}, so this takeover cannot use it. Nothing is chosen.`);
       mode = effective;

@@ -1599,6 +1599,14 @@ describe("universal takeover operation", () => {
     expect(h.effects.archive).toEqual([]);
   });
 
+  it("asks for an operating mode when a readable source mode cannot cross to another provider", async () => {
+    const h = await host({ predecessor: agent("agent-1", { provider: "claude", currentModeId: "default" }) });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "unknown", digest: null, successor: null });
+    expect(review.message).toBe("This session's permission mode default cannot be inherited by claude-a. Choose a model and an operating mode for this takeover from the Take over model menu.");
+    expect(h.effects.archive).toEqual([]);
+  });
+
   it("says Auto cannot confirm a boundary without a reported mode and points at the mode choice", async () => {
     const h = await host({ predecessor: agent("agent-1", { currentModeId: undefined }) });
     const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });

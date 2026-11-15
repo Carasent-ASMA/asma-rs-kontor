@@ -205,10 +205,8 @@ describe("useSessionOperations takeover start", () => {
     expect(await permissions([A, B])).toEqual({ seats: 2 });
   });
 
-  it("requires an explicit mode exactly when the helper says the seat's own mode cannot be inherited", async () => {
-    const claudeB = { id: "claude-b", label: "Claude B", available: true, status: "ready", note: null, persona: "unverified", models: [], defaultModel: null,
-      modes: [{ id: "bypassPermissions", label: "Bypass permissions", dangerous: true }], defaultMode: "bypassPermissions" };
-    host.rpc["sessions.create-options"] = vi.fn(async () => ({ providers: [claudeB], catalogProjectId: null }));
+  it("hands the picker one seat's source mode and withholds the mode choice from several seats", async () => {
+    host.rpc["sessions.create-options"] = vi.fn(async () => ({ providers: [], catalogProjectId: null }));
     const tree = (node: unknown): ReactElement<Record<string, unknown>>[] => !node || typeof node !== "object" || !("props" in node) ? [] : [node as ReactElement<Record<string, unknown>>, ...[(node as ReactElement<{ children?: unknown }>).props.children].flat().flatMap(tree)];
     const pickerProps = async (seats: DirectoryEntry[]) => {
       const mounted = await mount();
@@ -220,8 +218,8 @@ describe("useSessionOperations takeover start", () => {
       return tree(draw()).find((node) => (node.type as { name?: string }).name === "ModelPicker")!.props;
     };
     const readable: DirectoryEntry = { ...sessionEntry("agent-c", { title: "Claude seat" }), provider: "claude-b", mode: "bypassPermissions" };
-    expect((await pickerProps([readable])).modeChoice).toBeUndefined();
-    expect((await pickerProps([{ ...readable, mode: null }])).modeChoice).toEqual({ reason: "Claude B: the source operating mode was not reported, so its inherited mode cannot be confirmed." });
+    expect((await pickerProps([readable])).modeChoice).toEqual({ source: "claude-b", mode: "bypassPermissions" });
+    expect((await pickerProps([{ ...readable, mode: null }])).modeChoice).toEqual({ source: "claude-b", mode: null });
     expect((await pickerProps([readable, { ...readable, id: "agent-d", mode: null }])).modeChoice).toBeUndefined();
   });
 
