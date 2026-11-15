@@ -1427,6 +1427,20 @@ class RuleOwnershipTests(unittest.TestCase):
         self.assertIn("seat-handoff owns a phase transition", text)
         self.assertIn("seat-takeover owns resuming", text)
 
+    def test_a_usage_limited_seat_recovers_through_seat_takeover(self) -> None:
+        tpm = SKILLS / "epic-orchestration" / "references" / "autonomous-tpm-operation.md"
+        self.assertIn(
+            "If a liveness pass finds a seat stopped on a usage limit while its account"
+            " pool has a ready account and the seat stayed on the limited one, it takes"
+            " that seat over through [seat-takeover](../../seat-takeover/SKILL.md"
+            "#resume-vs-replacement) on the same fleet route; with no ready account it"
+            " is a legitimate wait, and the same seat resumes at the reset time.",
+            re.sub(r"\s+", " ", read(tpm)),
+        )
+        takeover = re.sub(r"\s+", " ", read(SKILLS / "seat-takeover" / "SKILL.md"))
+        self.assertIn("| Context pressure alone | Not sufficient for takeover |", takeover)
+        self.assertIn("never permits an off-fleet fallback", takeover)
+
 
 def inventory_errors(
     rows: dict[str, list[str]], expected: set[str] | None = None
