@@ -72,6 +72,13 @@ describe("configured account catalog", () => {
     expect(configuredAccountCatalogFromFleet([{ accounts: ["opencode"] }, { accounts: ["opencode"] }], "fleet-rev-1"))
       .toEqual({ accounts: new Set(["opencode"]), revision: "fleet-rev-1" });
   });
+
+  it("refuses an alias that is both unnamed and named by a provider", () => {
+    expect(configuredAccountCatalogFromFleet([
+      { accounts: ["opencode"] },
+      { provider: "opencode", accounts: ["opencode"] },
+    ], "fleet-rev-1")).toBeNull();
+  });
 });
 
 describe("takeover ownership", () => {

@@ -1579,6 +1579,24 @@ describe("universal takeover operation", () => {
     expect(h.effects.create[0]!.config).toMatchObject({ provider: `${targetProvider}/claude-opus-5`, modeId: "default", thinkingOptionId: "xhigh" });
   });
 
+  it("accepts a provider repeated across snapshot entries on an explicitly picked route", async () => {
+    const h = await host();
+    const entry = SNAPSHOT.entries[0]!;
+    h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "duplicate-provider", generatedAt: new Date().toISOString(), entries: [entry, { ...entry }] });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "ready", successor: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review.message).not.toContain("unqualified");
+    expect(h.effects.resolve).toHaveLength(0);
+  });
+
+  it("refuses an explicit route from an empty provider snapshot", async () => {
+    const h = await host();
+    h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "empty", generatedAt: new Date().toISOString(), entries: [] });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "unknown", successor: null });
+    expect(review.message).toBe("The host provider snapshot is unqualified: it names no providers. Nothing is chosen.");
+  });
+
   it("rejects a stale provider observation for an explicitly picked route", async () => {
     const h = await host(), now = Date.parse("2026-10-25T09:10:00.000Z");
     vi.useFakeTimers({ now });
