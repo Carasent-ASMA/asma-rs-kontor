@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { readConfig } from "./config";
@@ -52,7 +52,9 @@ export async function readTokenomicsSnapshot(root: string | null, now = new Date
     result.data = parsed.data;
     const hash = createHash("sha256").update(raw);
     try {
-      const liveRaw = await readReportFile(join(directory, "_stats", "live.js"), LIVE_MAX_BYTES);
+      const stats = await realpath(join(directory, "_stats")), within = relative(directory, stats);
+      if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within)) throw new Error("Live source escapes its configured root");
+      const liveRaw = await readReportFile(join(stats, "live.js"), LIVE_MAX_BYTES);
       result.live = parseLiveAssignment(liveRaw); hash.update(liveRaw);
     } catch { result.diagnostics.push("Private live report is missing, malformed, changed during read, or outside its limit. Code Review and Delivery are unavailable."); }
     result.revision = hash.digest("hex");
@@ -99,9 +101,15 @@ export function tokenomicsCsvExport(snapshot: ReportSnapshot, input: TokenomicsQ
   if (!snapshot.data || !snapshot.revision || view.status === "unavailable") throw new Error("Tokenomics export is unavailable; refresh the source status.");
   if ((input.page.startsWith("cr-") && !snapshot.live.review) || (input.page.startsWith("dv-") && !snapshot.live.delivery)) throw new Error("The selected live analytics source is unavailable; no export can be produced.");
   // Exports carry every matching row, independently of the native display page size.
-  const q = tokenomicsQuerySchema.parse(input), result = buildTokenomics(snapshot.data, snapshot.live, q);
+  const q = view.query, result = buildTokenomics(snapshot.data, snapshot.live, q);
   const tables = result.tables.map((t) => ({ ...t, rows: t.rows.filter((r) => matchesTokenomicsSearch(r, t.id, q)) }));
-  const content = tokenomicsCsv({ ...result, tables });
+  const { offset: _offset, offsets: _offsets, expanded: _expanded, openWorkstreams: _open, ...selection } = q;
+  const metadata = [["Tokenomics export", q.page], ["Generated", snapshot.data.generated], ["Source read", snapshot.readAt], ["Source revision", snapshot.revision],
+    ["Period", q.period], ["Revision", q.rev ?? "none"], ["Comparison", q.compare ?? "none"], ["Selection", JSON.stringify(selection)],
+    ["Cost interpretation", "Unpriced usage is excluded from cost estimates; its numeric zero is not a known zero cost. Missing coverage makes totals lower bounds."],
+    ...view.notices.map((n) => [n.kind === "warning" ? "Warning" : "Scope", n.text]), ...view.diagnostics.map((text) => ["Source diagnostic", text]),
+    ...[...new Set([...result.notes, ...tables.map((t) => t.note).filter((note): note is string => Boolean(note))])].map((text) => ["Note", text])];
+  const content = tokenomicsCsv({ ...result, tables }, metadata);
   if (Buffer.byteLength(content) > LIVE_MAX_BYTES) throw new Error("Export exceeds the bounded response limit; narrow its filters.");
   return { filename: `tokenomics-${q.page}.csv`, content, revision: snapshot.revision };
 }

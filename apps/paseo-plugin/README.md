@@ -49,10 +49,17 @@ filters keep data visible, and contextual info controls hold secondary prose.
 The surrounding Paseo chrome stays host-owned. Tables fetch bounded 50-row chunks
 continuously after full aggregation; search and sorting cover the full result.
 CSV exports include every matching row, independently of loaded display chunks.
-Pivot exports leaves, excluding duplicated subtotals. **Save CSV…** uses the
-client's save picker when available; **Download CSV** otherwise hands the file to
-the Web/Electron download manager. Cancellation and failure remain distinct from
-a confirmed save; download-manager dispatch never claims a file was saved.
+Pivot exports leaves, excluding duplicated subtotals. CSV includes generation,
+revision, selection and coverage/cost qualifiers; unpriced zero cells are not
+known zero costs. On desktop, **Export CSV…** opens the existing sheet without a
+read or file action. **Prepare CSV** validates the complete snapshot, then a
+separate **Download CSV** gesture hands those bytes to the Web/Electron download
+manager. This path never opens the native save picker. Closing or changing the
+selection, observed source or connection discards prepared/in-flight results.
+Cancelling before preparation makes no export request; cancelling preparation
+ignores its already-issued read. A later browser cancellation cannot undo that
+read and triggers no further request. Dispatch reports only **Download requested**;
+the browser owns save/cancel/write completion.
 **Copy complete CSV** remains available; native iOS/Android additionally offer
 Share CSV text, with truthful cancel/error outcomes. No export writes a daemon
 host file. Spreadsheet formulas in text are escaped. Exports are refused when

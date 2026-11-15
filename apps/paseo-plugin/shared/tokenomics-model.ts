@@ -189,10 +189,10 @@ export function tokenomicsNotices(d: TokenomicsData, live: TokenomicsLive, q: To
     }
   } else {
     const missing = ["usage", "progress"].includes(q.page) ? 0 : model.scope.filter((s) => s.data !== "ok").length;
-    if (missing) warn(`${missing.toLocaleString("en-US")} sessions lack token data; usage and cost are lower bounds.`);
+    if (missing) warn(`${missing.toLocaleString("en-US")} ${missing === 1 ? "session lacks" : "sessions lack"} token data; usage and cost are lower bounds.`);
     const unpriced = new Set(d.prices.filter((p) => p[7].toLowerCase() === "unpriced").map((p) => p[0]));
     const seats = new Set(model.facts.filter((f) => unpriced.has(d.models[f[2]]!)).map((f) => f[0]));
-    if (seats.size && !["usage", "progress"].includes(q.page)) warn(`${seats.size.toLocaleString("en-US")} sessions are unpriced; cost excludes their recorded tokens.`);
+    if (seats.size && !["usage", "progress"].includes(q.page)) warn(`${seats.size.toLocaleString("en-US")} ${seats.size === 1 ? "session is" : "sessions are"} unpriced; cost excludes their recorded tokens.`);
     if (q.page === "usage") {
       if (Object.keys(d.all.missing).length) warn("Some local history is unrecoverable; all-usage totals are lower bounds.");
       if (d.all.facts.some((f) => unpriced.has(d.all.models[f[4]]!))) warn("Some models are unpriced; cost excludes their recorded tokens.");
@@ -206,7 +206,7 @@ export function tokenomicsNotices(d: TokenomicsData, live: TokenomicsLive, q: To
 export function buildTokenomics(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQuery): BuiltTokenomics {
   const m = usageModel(d, q), a = m.total, tiles: TokenomicsView["tiles"] = [], tables: Table[] = [], notes: string[] = [];
   const tile = (label: string, value: Cell, note = "") => tiles.push({ label, value, note });
-  const priceNote = "Costs mix list-price equivalents, billed OpenRouter and blended GLM bases. Unpriced rows retain recorded tokens at $0. Coverage gaps make usage a floor.";
+  const priceNote = "Costs mix list-price equivalents, billed OpenRouter and blended GLM bases. Unpriced rows retain recorded tokens and are excluded from cost estimates. Coverage gaps make usage a floor.";
   if (q.page === "progress") return { tiles, tables: progressTables(d, q), notes };
   if (q.page.startsWith("cr-")) return reviewTables(d, live, q);
   if (q.page.startsWith("dv-")) return deliveryTables(d, live, q);
@@ -697,11 +697,13 @@ function activityTables(d: TokenomicsData, live: TokenomicsLive, q: TokenomicsQu
   return { tiles: [], tables, notes };
 }
 
-export function tokenomicsCsv(result: BuiltTokenomics): string {
+export function tokenomicsCsv(result: BuiltTokenomics, metadata: readonly (readonly Cell[])[] = []): string {
   const escape = (value: Cell) => {
     let s = value === null ? "" : String(value);
     if (typeof value === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return `"${s.replaceAll('"', '""')}"`;
   };
-  return result.tables.map((t) => [...(t.id === "pivot" ? [] : [[t.title]]), t.columns, ...t.rows.filter((r) => t.id !== "pivot" || !r.hasChildren).map((r) => r.cells)].map((r) => r.map(escape).join(",")).join("\r\n")).join("\r\n\r\n");
+  const sections = result.tables.map((t) => [...(t.id === "pivot" ? [] : [[t.title]]), t.columns, ...t.rows.filter((r) => t.id !== "pivot" || !r.hasChildren).map((r) => r.cells)]);
+  if (metadata.length) sections.unshift([...metadata].map((row) => [...row]));
+  return sections.map((rows) => rows.map((row) => row.map(escape).join(",")).join("\r\n")).join("\r\n\r\n");
 }

@@ -2,7 +2,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SourceRead } from "../shared/read-sources";
 import type { Colors } from "../client/page-controls";
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}], useMemo: (factory: () => unknown) => factory(), useEffect: () => undefined }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: (context: { _currentValue: unknown }) => context._currentValue, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}], useMemo: (factory: () => unknown) => factory(), useEffect: () => undefined }));
 vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { OS: "web" }, PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View", Image: "Image" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => [] }));

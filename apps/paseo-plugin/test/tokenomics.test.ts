@@ -143,6 +143,26 @@ describe("bounded Tokenomics host source", () => {
     await expect(readReportFile(join(p, "too-big"), 4)).rejects.toThrow(); await expect(readReportFile(p, 100)).rejects.toThrow();
     await symlink(join(p, "too-big"), join(p, "link")); await expect(readReportFile(join(p, "link"), 100)).rejects.toThrow();
   });
+  it("accepts an internal stats directory link and refuses an external one without leaking it", async () => {
+    const p = await folder(), outside = await folder();
+    await writeFile(join(p, "data.json"), JSON.stringify(d));
+    await writeFile(join(outside, "_stats/live.js"), `window.ASMA_LIVE=${JSON.stringify(live)};`);
+    await rm(join(p, "_stats"), { recursive: true });
+    await symlink(join(outside, "_stats"), join(p, "_stats"));
+    const escaped = await readTokenomicsSnapshot(p, new Date("2026-11-03T13:00:00Z"));
+    expect(escaped.data).not.toBeNull(); expect(escaped.live.review).toBeNull();
+    expect(escaped.diagnostics.join(" ")).toContain("Private live report");
+    expect(escaped.diagnostics.join(" ")).not.toContain(outside);
+    await rm(join(p, "_stats")); await mkdir(join(p, "internal"));
+    await writeFile(join(p, "internal/live.js"), `window.ASMA_LIVE=${JSON.stringify(live)};`);
+    await symlink(join(p, "internal"), join(p, "_stats"));
+    const internal = await readTokenomicsSnapshot(p, new Date("2026-11-03T13:00:00Z"));
+    expect(internal.diagnostics).toEqual([]); expect(internal.live.review?.findings).toHaveLength(2);
+    await rm(join(p, "_stats"));
+    const missing = await readTokenomicsSnapshot(p, new Date("2026-11-03T13:00:00Z"));
+    expect(missing.data).not.toBeNull(); expect(missing.live.review).toBeNull();
+    expect(missing.revision).toBe(escaped.revision);
+  });
   it("shows missing, invalid, stale and partial states and still renders token data without live data", async () => {
     const p = await folder(); const now = new Date("2026-11-07T12:00:00Z");
     expect((await readTokenomicsSnapshot(null, now)).data).toBeNull();
