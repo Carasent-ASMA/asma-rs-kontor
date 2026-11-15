@@ -9,7 +9,7 @@ import { TokenomicsMobileTable } from "./tokenomics-mobile-table";
 import { TokenomicsMobileBar, MobileAction } from "./tokenomics-mobile";
 import { TokenomicsHelp, TokenomicsExplanation } from "./tokenomics-help";
 import { csvFileMode, downloadCsvFile } from "./web";
-import { TokenomicsCsvPreparation } from "./tokenomics-export";
+import { tokenomicsCsvPreparation } from "./tokenomics-export";
 import { useTokenomicsRows } from "./tokenomics-rows";
 import { activityEveryoneKeys, TokenomicsChartInteractions, useTokenomicsChartInteraction, chartColors, chartSvgLayers, roleShareColor, TokenomicsChart } from "./tokenomics-charts";
 import { reportComparedChange, reportLinePair, reportLivePercent, reportMoney, reportNote, reportNumber, reportTableValue, reportTableWidths, reportValue } from "./tokenomics-format";
@@ -155,7 +155,7 @@ export function TokenomicsPage({ hostId, online, colors: hostColors, compact: ho
   const [width, setWidth] = useState(0), [viewportHeight, setViewportHeight] = useState(0), compact = width ? width <= 760 : hostCompact;
   const [query, setQuery] = useState(() => tokenomicsQuerySchema.parse({ ...initialQuery, offset: 0, offsets: {} }));
   const [exportOpen, setExportOpen] = useState(false);
-  const preparation = useRef(new TokenomicsCsvPreparation());
+  const preparation = useRef(tokenomicsCsvPreparation());
   const [theme, setTheme] = useState<boolean | null>(null), [sourceOpen, setSourceOpen] = useState(false), [exporting, setExporting] = useState(false), [exportNote, setExportNote] = useState<string | null>(null);
   const baseDark = parseInt(hostColors.surface0.replace("#", "").slice(0, 2), 16) < 128, colors = palette(hostColors, theme ?? baseDark);
   const read = useRpc(readTokenomics), exportCsv = useRpc(exportTokenomics);

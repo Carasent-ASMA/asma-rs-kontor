@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const platform = vi.hoisted(() => ({ os: "web" }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return platform.os; } } }));
 import { csvFileMode, downloadCsvFile } from "../client/web";
-import { TokenomicsCsvPreparation } from "../client/tokenomics-export";
+import { tokenomicsCsvPreparation } from "../client/tokenomics-export";
 
 const csv = { filename: "tokenomics-pivot.csv", content: 'Group,Tokens\r\n"Synthetic, team",73000\r\n"Ångström",12\r\n', revision: "source-a" };
 afterEach(() => { platform.os = "web"; vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -20,7 +20,7 @@ function browser() {
 
 describe("staged complete CSV preparation", () => {
   it("opens/cancels without a read, prepares without a destination, and downloads on a distinct gesture without another RPC", async () => {
-    const web = browser(), preparation = new TokenomicsCsvPreparation(), load = vi.fn(async () => csv);
+    const web = browser(), preparation = tokenomicsCsvPreparation(), load = vi.fn(async () => csv);
     preparation.update("selection-a"); preparation.cancel();
     expect(load).not.toHaveBeenCalled(); expect(web.createObjectURL).not.toHaveBeenCalled();
     await expect(preparation.prepare(load, "source-a")).resolves.toBe(csv);
@@ -30,7 +30,7 @@ describe("staged complete CSV preparation", () => {
     expect(load).toHaveBeenCalledOnce(); expect(web.link.click).toHaveBeenCalledOnce(); expect(web.picker).not.toHaveBeenCalled();
   });
   it.each(["query", "source", "offline", "close"])("discards a late response after %s changes without dispatching a file", async (change) => {
-    const web = browser(), preparation = new TokenomicsCsvPreparation(); preparation.update("selection-a");
+    const web = browser(), preparation = tokenomicsCsvPreparation(); preparation.update("selection-a");
     let resolve!: (value: typeof csv) => void;
     const pending = preparation.prepare(() => new Promise((done) => { resolve = done; }), "source-a");
     if (change === "close") preparation.cancel(); else preparation.update(change === "offline" ? null : change);
@@ -38,23 +38,23 @@ describe("staged complete CSV preparation", () => {
     expect(preparation.prepared).toBeNull(); expect(web.createObjectURL).not.toHaveBeenCalled(); expect(web.picker).not.toHaveBeenCalled();
   });
   it("disables preparation offline and invalidates prepared bytes when the observed scope changes", async () => {
-    const preparation = new TokenomicsCsvPreparation(), load = vi.fn(async () => csv);
+    const preparation = tokenomicsCsvPreparation(), load = vi.fn(async () => csv);
     await expect(preparation.prepare(load, "source-a")).resolves.toBeNull(); expect(load).not.toHaveBeenCalled();
     preparation.update("selection-a"); await preparation.prepare(load, "source-a"); const version = preparation.version;
     preparation.update("selection-b"); expect(preparation.prepared).toBeNull(); expect(preparation.current(version)).toBe(false);
   });
   it.each(["RPC refused", "Export exceeds the bounded response limit", "Invalid export response"])("%s cannot dispatch a file or leave prepared bytes", async (message) => {
-    const web = browser(), preparation = new TokenomicsCsvPreparation(); preparation.update("selection-a");
+    const web = browser(), preparation = tokenomicsCsvPreparation(); preparation.update("selection-a");
     await expect(preparation.prepare(async () => { throw new Error(message); }, "source-a")).rejects.toThrow(message);
     expect(preparation.prepared).toBeNull(); expect(web.createObjectURL).not.toHaveBeenCalled(); expect(web.picker).not.toHaveBeenCalled();
   });
   it("refuses a changed server revision before any download action", async () => {
-    const web = browser(), preparation = new TokenomicsCsvPreparation(); preparation.update("selection-a");
+    const web = browser(), preparation = tokenomicsCsvPreparation(); preparation.update("selection-a");
     await expect(preparation.prepare(async () => ({ ...csv, revision: "source-b" }), "source-a")).rejects.toThrow("csv_snapshot_changed");
     expect(preparation.prepared).toBeNull(); expect(web.createObjectURL).not.toHaveBeenCalled();
   });
   it("does not let an old failure overwrite the newer selection's prepared result", async () => {
-    const preparation = new TokenomicsCsvPreparation(); preparation.update("selection-a");
+    const preparation = tokenomicsCsvPreparation(); preparation.update("selection-a");
     let reject!: (error: Error) => void;
     const old = preparation.prepare(() => new Promise((_resolve, fail) => { reject = fail; }), "source-a");
     preparation.update("selection-b"); await preparation.prepare(async () => csv, "source-a");
