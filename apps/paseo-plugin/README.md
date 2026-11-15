@@ -323,9 +323,10 @@ route in the form's notes and where its rows would be.
 - **Rows.** Each session is one dense row: state on the left, title and opened
   age, then origin (role, scope, desk, workspace, metadata age), then the
   model's vendor mark, alias and effort with qualified usage. Exact-thread
-  Codex 0.160.0 snapshots read **reported ↓ … ↑ …**; Details identifies them as
-  provider cumulative values, with historical completeness and child-thread
-  inclusion unverified. Other or unqualified sources read ↓ — ↑ —; a latest
+  Codex CLI 0.160.0 or newer 0.x snapshots read **reported ↓ … ↑ …**; Details
+  identifies them as provider cumulative values, with historical completeness
+  and child-thread inclusion unverified. Other or unqualified sources read
+  ↓ — ↑ —; a latest
   turn report is never shown as a total. Tapping a row opens the session by native ID through
   the same path as Sessions; the session the switcher was opened from is marked.
   The trailing **…** opens the row's actions: **Add to favorites** or **Remove
@@ -351,8 +352,8 @@ route in the form's notes and where its rows would be.
 
 #### Fork and inherited cumulative qualification
 
-For the supported Codex 0.160.0 format, a recoverable numeric parent snapshot
-is insufficient to qualify a lifetime total. The
+For the supported Codex CLI 0.160.0 or newer 0.x format, a recoverable numeric
+parent snapshot is insufficient to qualify a lifetime total. The
 [versioned provider protocol](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/protocol.rs)
 distinguishes these fields and scopes:
 
