@@ -337,17 +337,20 @@ const without = (state: "refused" | "unknown", message: string): TakeoverRoute =
 /** A model the operator picked for this one takeover; Auto uses the configured chain instead. */
 export const explicitTakeoverRouteSchema = z.object({
   provider: z.string().min(1).max(200), model: z.string().min(1).max(200), effort: z.string().min(1).max(200).nullable(),
+  /** The successor's operating mode for this takeover when the source's own mode cannot be inherited. */
+  mode: z.string().min(1).max(200).optional(),
   featureValues: featureValuesSchema.optional(),
 }).strict();
 export type ExplicitTakeoverRoute = z.infer<typeof explicitTakeoverRouteSchema>;
 export type ExplicitTakeoverSelection = { route: TakeoverRoute; featureValues?: ExplicitTakeoverRoute["featureValues"] };
 
 /**
- * Validates an explicit model selection against the same host provider snapshot session creation reads. The source's
- * own permission mode must be one the provider lists; no read-only or other invented mode is substituted. A missing or
- * unlisted mode is a concrete host-capability answer, not a role or state prohibition.
+ * Validates an explicit model selection against the same host provider snapshot session creation reads. The successor's
+ * effective operating mode must be one the provider lists; no read-only or other invented mode is substituted. A missing
+ * or unlisted mode is a concrete host-capability answer, not a role or state prohibition. `inherited` says whether that
+ * mode came from the source's own provider; when the operator chose it for this takeover, the message says so.
  */
-export function explicitTakeoverRoute(health: RouteHealth, choice: ExplicitTakeoverRoute, mode: string, nowMs = Date.now()): ExplicitTakeoverSelection | { problem: string } {
+export function explicitTakeoverRoute(health: RouteHealth, choice: ExplicitTakeoverRoute, mode: string, nowMs = Date.now(), inherited = true): ExplicitTakeoverSelection | { problem: string } {
   const routeName = `${choice.provider}/${choice.model}`;
   const observations = health.observations.filter((observation) => observation.account === choice.provider && observation.model === choice.model
     && (choice.effort === null || observation.effort === choice.effort));
@@ -368,7 +371,9 @@ export function explicitTakeoverRoute(health: RouteHealth, choice: ExplicitTakeo
   return {
     route: {
       state: "selected",
-      message: `Takes over on the selected ${routeName}${choice.effort ? ` at ${choice.effort}` : ""}, using this session's permission mode ${mode}.`,
+      message: inherited
+        ? `Takes over on the selected ${routeName}${choice.effort ? ` at ${choice.effort}` : ""}, using this session's permission mode ${mode}.`
+        : `Takes over on the selected ${routeName}${choice.effort ? ` at ${choice.effort}` : ""}, starting in operating mode ${mode}, chosen for this takeover because this session's permission mode could not be inherited.`,
       provenance, selected,
       validity: { observedAt: resolverInstant(observed), validUntil: resolverInstant(end) },
       considered: observations.filter((observation) => observation !== available).map((observation) => ({

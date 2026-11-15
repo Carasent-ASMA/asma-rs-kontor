@@ -60,9 +60,10 @@ export function featureLabels(features: readonly CreateFeature[], values: Featur
  * does not scroll already. Choosing another model keeps the effort and settings it also offers and says which it drops. Only a
  * caller that may change the new-lead default passes `defaults`; without it the choice is this operation's only. Make
  * default saves on Use; Reset clears the saved default at once and starts from the Codex default's own settings. A
- * caller that passes `permissions` shows them read-only and never emits a mode.
+ * caller that passes `permissions` shows them read-only and never emits a mode, unless it also passes `modeChoice`: then
+ * the operator chooses the successor's operating mode for this takeover and Use emits it.
  */
-export function ModelPicker({ colors, compact, providers, projectId, value, codex, onUse, onCancel, defaults, permissions, subtitle = "For new leads", onAuto, action, note, hostScrolls = false }: {
+export function ModelPicker({ colors, compact, providers, projectId, value, codex, onUse, onCancel, defaults, permissions, modeChoice, subtitle = "For new leads", onAuto, action, note, hostScrolls = false }: {
   colors: Colors; compact: boolean; providers: readonly CreateProvider[];
   /** The desk whose checkout scopes the settings read. */
   projectId: string | null;
@@ -75,6 +76,11 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
    * model on a provider that cannot keep one seat's mode is refused here, as its host would.
    */
   permissions?: { readonly inherited: string | null; readonly provider: string } | { readonly seats: number };
+  /**
+   * The source's mode cannot be inherited, so the operator must choose the successor's operating mode for this takeover.
+   * `reason` says why Auto cannot run; the chosen provider's modes are offered with no preselection.
+   */
+  modeChoice?: { readonly reason: string };
   subtitle?: string;
   /** Offers Auto, each seat's own chain, above the models; it is checked while no model is picked, and Use then calls this. */
   onAuto?: () => void;
@@ -119,7 +125,11 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
     const kept = pick?.effort && option.efforts.some((entry) => entry.id === pick.effort) ? pick.effort : null;
     const effort = kept ?? option.defaultEffort ?? option.efforts[0]?.id ?? null, was = model?.efforts.find((entry) => entry.id === pick?.effort);
     setChanged(pick?.effort && !kept ? `${option.label} does not offer effort ${was?.label ?? pick.effort}; it uses ${option.efforts.find((entry) => entry.id === effort)?.label ?? "no effort setting"}.` : null);
-    setPick({ provider: next.id, model: option.id, effort, modeId: permissions ? null : pick?.provider === next.id ? pick.modeId : next.defaultMode ?? next.modes[0]?.id ?? null, featureValues: pick?.featureValues ?? {} });
+    // A takeover that must choose its mode keeps it across models on the same provider and clears it with the provider.
+    const modeId = permissions && !modeChoice ? null
+      : modeChoice ? pick?.provider === next.id ? pick.modeId : null
+      : pick?.provider === next.id ? pick.modeId : next.defaultMode ?? next.modes[0]?.id ?? null;
+    setPick({ provider: next.id, model: option.id, effort, modeId, featureValues: pick?.featureValues ?? {} });
   };
   const patch = (next: Partial<PickedModel>) => { if (pick) setPick({ ...pick, ...next }); };
   const tokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -144,20 +154,26 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
   // The settings this model lists keep their values; the rest are dropped, and said. Values wait for the list to be read.
   const listed = settings ? settings.problem ? [] : settings.features : null;
   const values = listed && pick ? keptFeatureValues(listed, pick.featureValues, [...seen.current.values()]) : null;
-  // The inherited operating mode is provider-specific: one seat's mode is checked against the chosen provider; model and effort are checked here.
-  const problem = onAuto && !pick ? null : !pick ? "Choose a model."
-    : (permissions ? ("inherited" in permissions ? inheritedModeProblem(providers, permissions.provider, permissions.inherited, pick.provider) : null)
-      ?? createChoiceProblem(providers.map((entry) => ({ ...entry, modes: [] })), { ...pick, modeId: null }) : createChoiceProblem(providers, pick))
-      ?? (!values && Object.keys(pick.featureValues).length ? "Reading this model's settings…" : null);
+  const reading = !values && pick && Object.keys(pick.featureValues).length ? "Reading this model's settings…" : null;
+  // A mode the source cannot pass on is chosen here, for the picked provider, and validated as that provider's own mode.
+  // Otherwise the inherited operating mode is provider-specific: one seat's mode is checked against the chosen provider.
+  const problem = modeChoice
+    ? (!pick ? "Choose a model." : !pick.modeId ? "Choose an operating mode for the replacement." : createChoiceProblem(providers, pick)) ?? reading
+    : onAuto && !pick ? null : !pick ? "Choose a model."
+      : (permissions ? ("inherited" in permissions ? inheritedModeProblem(providers, permissions.provider, permissions.inherited, pick.provider) : null)
+        ?? createChoiceProblem(providers.map((entry) => ({ ...entry, modes: [] })), { ...pick, modeId: null }) : createChoiceProblem(providers, pick))
+        ?? reading;
   const effort = model?.efforts.find((entry) => entry.id === pick?.effort) ?? null;
-  const modeId = permissions ? "inherited" in permissions ? permissions.inherited : null : pick?.modeId;
+  const modeId = modeChoice ? pick?.modeId ?? null : permissions ? "inherited" in permissions ? permissions.inherited : null : pick?.modeId;
   // An inherited mode is named by the seat's own provider, never by a provider that happens to list the same id.
-  const mode = (permissions && "inherited" in permissions ? providers.find((entry) => entry.id === permissions.provider) : provider)?.modes.find((entry) => entry.id === modeId) ?? null;
+  const mode = (modeChoice ? provider : permissions && "inherited" in permissions ? providers.find((entry) => entry.id === permissions.provider) : provider)?.modes.find((entry) => entry.id === modeId) ?? null;
+  // Auto can only refuse when no mode can be inherited, so it stays visible and disabled with the reason.
+  const autoBlocked = !!modeChoice, autoChecked = !pick && !autoBlocked;
   const useLabel = action ? action(model ? modelAlias(model.id) : null) : model ? `Use ${modelAlias(model.id)}${effort ? ` · ${effort.label}` : ""}` : "Use model";
   const use = () => {
-    if (onAuto && !pick) { onAuto(); return; }
+    if (onAuto && !pick && !modeChoice) { onAuto(); return; }
     if (!pick || problem) return;
-    const choice = { ...pick, modeId: permissions ? null : pick.modeId, featureValues: values?.kept ?? pick.featureValues };
+    const choice = { ...pick, modeId: permissions && !modeChoice ? null : pick.modeId, featureValues: values?.kept ?? pick.featureValues };
     if (makeDefault) defaults?.make(choice);
     onUse(choice);
   };
@@ -169,8 +185,14 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
     if (!codex || !codexRoute) return;
     defaults?.reset(); setMakeDefault(false);
     setChanged(null);
-    setPick({ provider: codex.provider, model: codex.model, effort: codex.effort, modeId: permissions ? null : codexRoute.defaultMode ?? codexRoute.modes[0]?.id ?? null, featureValues: codex.featureValues ?? {} });
+    setPick({ provider: codex.provider, model: codex.model, effort: codex.effort, modeId: permissions && !modeChoice ? null : modeChoice ? null : codexRoute.defaultMode ?? codexRoute.modes[0]?.id ?? null, featureValues: codex.featureValues ?? {} });
   };
+  // The editable operating-mode control, shared by a new lead and a takeover whose mode cannot be inherited.
+  const modeControl = provider && provider.modes.length ? <Disclosure testID="kontor-model-permissions" label="Mode" ref={modeTrigger} value={mode ? modeLabel(mode) : "Choose"} icon={mode ? mode.icon ?? "ShieldCheck" : null}
+    open={open === "permissions"} onToggle={() => toggle("permissions")} colors={colors} tall={tall}>
+    <Choices bare layout="list" label="Mode" colors={colors} tall={tall} selected={pick?.modeId ?? null} onSelect={(next) => { patch({ modeId: next }); restoreModeFocus.current = true; setOpen(null); }}
+      options={provider.modes.map((entry) => ({ id: entry.id, label: modeLabel(entry), note: entry.description, icon: entry.icon ?? "ShieldCheck" }))} />
+  </Disclosure> : null;
   const body = <>
     <View>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>Model & settings</Text>
@@ -188,8 +210,8 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
             <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{model.label}</Text>
             <Text numberOfLines={1} style={muted}>{`${routeLabel(provider.id, provider.label)} · ${modelAlias(model.id)}`}</Text>
           </View>
-        </> : <Text style={{ ...muted, flex: 1 }}>{onAuto && !pick ? "Auto: each seat's chain" : "No model chosen"}</Text>}
-        {model || (onAuto && !pick) ? <Text testID="kontor-model-selected-tag" style={{ color: colors.foreground, fontSize: 11, fontWeight: "600", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: colors.surface2 }}>Selected</Text> : null}
+        </> : <Text style={{ ...muted, flex: 1 }}>{onAuto && !pick && !autoBlocked ? "Auto: each seat's chain" : "No model chosen"}</Text>}
+        {model || (onAuto && !pick && !autoBlocked) ? <Text testID="kontor-model-selected-tag" style={{ color: colors.foreground, fontSize: 11, fontWeight: "600", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: colors.surface2 }}>Selected</Text> : null}
       </View>
       {model ? <View testID="kontor-model-levels" style={{ minHeight: tall ? 44 : 30, justifyContent: "center" }}>
         {model.efforts.length ? <Choices bare dense label="Effort" colors={colors} tall={tall} selected={pick?.effort ?? null} onSelect={(next) => patch({ effort: next })} options={model.efforts} />
@@ -221,14 +243,16 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
     <View testID="kontor-model-list" style={{ gap: 4 }}>
       {withheld.map((entry) => <Text key={entry.id} testID={`kontor-model-withheld-${entry.id}`} accessibilityLiveRegion="polite" style={muted}>{entry.note}</Text>)}
       <View accessibilityRole="radiogroup" accessibilityLabel="Model" style={{ gap: GROUP_GAP }}>
-        {onAuto ? <Pressable testID="kontor-model-auto" accessibilityRole="radio" aria-checked={!pick} accessibilityState={{ checked: !pick }} accessibilityLabel="Auto, use each seat's chain"
-          {...NO_PRESS_DELAY} {...(Platform.OS === "web" ? spaceActivates(() => setPick(null)) : {})} onPress={() => setPick(null)} style={({ pressed }: { pressed: boolean }) => ({ minHeight: rowHeight, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, borderRadius: 6, ...pressFeedback(colors, pressed, !pick) })}>
+        {onAuto ? <Pressable testID="kontor-model-auto" accessibilityRole="radio" aria-checked={autoChecked} aria-disabled={autoBlocked || undefined} accessibilityState={autoBlocked ? { checked: autoChecked, disabled: true } : { checked: autoChecked }}
+          accessibilityLabel={autoBlocked ? `Auto, unavailable. ${modeChoice.reason}` : "Auto, use each seat's chain"} disabled={autoBlocked}
+          {...NO_PRESS_DELAY} {...(Platform.OS === "web" ? spaceActivates(() => { if (!autoBlocked) setPick(null); }) : {})} onPress={() => { if (!autoBlocked) setPick(null); }}
+          style={({ pressed }: { pressed: boolean }) => ({ minHeight: rowHeight, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, borderRadius: 6, ...pressFeedback(colors, pressed, autoChecked), opacity: autoBlocked ? 0.5 : 1 })}>
           <Icon name="RefreshCw" size={18} color={readableInk(colors.accent, colors)} />
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>Auto</Text>
-            <Text numberOfLines={1} style={muted}>Use each seat's chain</Text>
+            <Text numberOfLines={2} style={muted}>{autoBlocked ? modeChoice.reason : "Use each seat's chain"}</Text>
           </View>
-          <Icon name={!pick ? "CircleCheck" : "Circle"} size={18} color={!pick ? readableInk(colors.accent, colors) : colors.foregroundMuted} />
+          <Icon name={autoChecked ? "CircleCheck" : "Circle"} size={18} color={autoChecked ? readableInk(colors.accent, colors) : colors.foregroundMuted} />
         </Pressable> : null}
         {shown.length ? shown.map((group) => <View key={group.provider.id} style={{ gap: ROW_GAP }}>
           <Text style={{ ...muted, fontWeight: "600" }}>{group.provider.label}</Text>
@@ -262,18 +286,14 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
           : settings.features.map((feature) => feature.type === "select"
             ? <Choices key={feature.id} layout="inline" label={feature.label} colors={colors} tall={tall} selected={featureValue(feature, pick?.featureValues ?? {}) as string | null}
               options={feature.options} onSelect={(next) => patch({ featureValues: { ...pick?.featureValues, [feature.id]: next } })} /> : null)}
-        {permissions ? <View testID="kontor-model-permissions-inherited" style={{ gap: 2 }}>
+        {modeChoice ? modeControl : permissions ? <View testID="kontor-model-permissions-inherited" style={{ gap: 2 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <Icon name={mode ? mode.icon ?? "ShieldCheck" : "Lock"} size={14} color={colors.foregroundMuted} />
             <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{"seats" in permissions ? "Mode inherited per session" : "Mode"}</Text>
           </View>
           {"seats" in permissions ? null : <Text testID="kontor-model-permissions-mode" style={{ color: colors.foreground, fontSize: 12 }}>{`${permissions.inherited === null ? "Inherited (unknown)" : `${mode ? modeLabel(mode) : permissions.inherited}`} · ${providers.find((entry) => entry.id === permissions.provider)?.label ?? permissions.provider}`}</Text>}
           <Text style={muted}>Operating mode is inherited from the source. Permission settings are separate.</Text>
-        </View> : provider.modes.length ? <Disclosure testID="kontor-model-permissions" label="Mode" ref={modeTrigger} value={mode ? modeLabel(mode) : "Choose"} icon={mode ? mode.icon ?? "ShieldCheck" : null}
-          open={open === "permissions"} onToggle={() => toggle("permissions")} colors={colors} tall={tall}>
-          <Choices bare layout="list" label="Mode" colors={colors} tall={tall} selected={pick?.modeId ?? null} onSelect={(next) => { patch({ modeId: next }); restoreModeFocus.current = true; setOpen(null); }}
-            options={provider.modes.map((entry) => ({ id: entry.id, label: modeLabel(entry), note: entry.description, icon: entry.icon ?? "ShieldCheck" }))} />
-        </Disclosure> : null}
+        </View> : modeControl}
         {mode?.dangerous ? <Text testID="kontor-model-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {modeLabel(mode)} is marked dangerous by this provider.</Text> : null}
         {mode?.description ? <Text testID="kontor-model-mode-description" style={muted}>{mode.description}</Text> : null}
         {provider.modes.length ? <Text testID="kontor-model-mode-meaning" style={muted}>Mode selects how this provider operates. Its permission settings are separate.</Text> : null}

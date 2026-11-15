@@ -796,7 +796,7 @@ describe("takeover review", () => {
     const predecessor = agent("agent-1", { features: FEATURES });
     const h = await host({ predecessor, features: FEATURES });
     const review = await h.service.review({ agentId: "agent-1", bindingKey: null,
-      route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
     expect(review.state, review.message).toBe("ready");
     expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
     expect(h.effects.create[0]?.config).toMatchObject({ featureValues: { plan: true, speed: "fast" } });
@@ -806,7 +806,7 @@ describe("takeover review", () => {
     const predecessor = agent("agent-1", { features: FEATURES });
     const h = await host({ predecessor, features: FEATURES });
     const review = await h.service.review({ agentId: "agent-1", bindingKey: null,
-      route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", featureValues: { plan: false } } });
+      route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default", featureValues: { plan: false } } });
     expect(review.state, review.message).toBe("ready");
     const listFeatures = h.client.providers.listFeatures;
     h.client.providers.listFeatures = async () => {
@@ -1572,18 +1572,62 @@ describe("universal takeover operation", () => {
 
   it.each(["claude-a", "codex-a"])("takes over on an explicitly picked %s route without the configured-chain resolver", async (targetProvider) => {
     const h = await host({ targetProvider });
-    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: targetProvider, model: "claude-opus-5", effort: "xhigh" } });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: targetProvider, model: "claude-opus-5", effort: "xhigh", mode: "default" } });
     expect(review).toMatchObject({ state: "ready", successor: { provider: targetProvider, model: "claude-opus-5", effort: "xhigh", mode: "default" } });
     expect(h.effects.resolve).toHaveLength(0);
     expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
     expect(h.effects.create[0]!.config).toMatchObject({ provider: `${targetProvider}/claude-opus-5`, modeId: "default", thinkingOptionId: "xhigh" });
   });
 
+  it("takes over with the operator's mode when the source reports none", async () => {
+    const predecessor = agent("agent-1", { provider: "claude-a", currentModeId: undefined });
+    const h = await host({ predecessor });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
+    expect(review).toMatchObject({ state: "ready", successor: { provider: "claude-a", model: "claude-opus-5", mode: "default" } });
+    expect(review.limits).toContain("This session's permission mode could not be inherited, so the successor starts in operating mode default, chosen by the operator for this takeover.");
+    expect(review.message).toContain("starting in operating mode default, chosen for this takeover");
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]!.config).toMatchObject({ modeId: "default" });
+  });
+
+  it("asks for an operating mode when the source reports none and the route names none", async () => {
+    const predecessor = agent("agent-1", { provider: "claude-a", currentModeId: undefined });
+    const h = await host({ predecessor });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "unknown", digest: null, successor: null });
+    expect(review.message).toBe("This session's permission mode cannot be read, so a successor's permission boundary cannot be confirmed. Choose a model and an operating mode for this takeover from the Take over model menu.");
+    expect(h.effects.archive).toEqual([]);
+  });
+
+  it("says Auto cannot confirm a boundary without a reported mode and points at the mode choice", async () => {
+    const h = await host({ predecessor: agent("agent-1", { currentModeId: undefined }) });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review).toMatchObject({ state: "unknown", digest: null });
+    expect(review.message).toBe("This session's permission mode cannot be read, so Auto cannot confirm a successor's permission boundary. Choose a model and an operating mode for this takeover from the Take over model menu.");
+  });
+
+  it("refuses an operating mode the destination provider does not list", async () => {
+    const predecessor = agent("agent-1", { provider: "claude-a", currentModeId: undefined });
+    const h = await host({ predecessor });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "bypassPermissions" } });
+    expect(review).toMatchObject({ state: "refused", digest: null });
+    expect(review.message).toBe("claude-a does not list operating mode bypassPermissions, so this takeover cannot use it. Nothing is chosen.");
+    expect(h.effects.archive).toEqual([]);
+  });
+
+  it("keeps the source's own listed mode even when the route names another", async () => {
+    const predecessor = agent("agent-1", { provider: "claude-a", currentModeId: "default" });
+    const h = await host({ predecessor });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "bypassPermissions" } });
+    expect(review).toMatchObject({ state: "ready", successor: { provider: "claude-a", mode: "default" } });
+    expect(review.limits.join(" ")).not.toContain("chosen by the operator");
+  });
+
   it("accepts a provider repeated across snapshot entries on an explicitly picked route", async () => {
     const h = await host();
     const entry = SNAPSHOT.entries[0]!;
     h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "duplicate-provider", generatedAt: new Date().toISOString(), entries: [entry, { ...entry }] });
-    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
     expect(review).toMatchObject({ state: "ready", successor: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
     expect(review.message).not.toContain("unqualified");
     expect(h.effects.resolve).toHaveLength(0);
@@ -1592,7 +1636,7 @@ describe("universal takeover operation", () => {
   it("refuses an explicit route from an empty provider snapshot", async () => {
     const h = await host();
     h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "empty", generatedAt: new Date().toISOString(), entries: [] });
-    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
     expect(review).toMatchObject({ state: "unknown", successor: null });
     expect(review.message).toBe("The host provider snapshot is unqualified: it names no providers. Nothing is chosen.");
   });
@@ -1603,7 +1647,7 @@ describe("universal takeover operation", () => {
     try {
       h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "stale", generatedAt: new Date(now - 301_000).toISOString(),
         entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
-      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
       expect(review).toMatchObject({ state: "refused", digest: null });
       expect(review.message).toMatch(/old|window/i);
       expect(h.effects.resolve).toHaveLength(0);
@@ -1616,7 +1660,7 @@ describe("universal takeover operation", () => {
     try {
       h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "future", generatedAt: new Date(now + 60_000).toISOString(),
         entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
-      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
       expect(review).toMatchObject({ state: "refused", digest: null });
       expect(review.message).toMatch(/unavailable or unobserved|future/i);
     } finally { vi.useRealTimers(); }
@@ -1627,7 +1671,7 @@ describe("universal takeover operation", () => {
     let request = 0;
     h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: `transport-${++request}`, generatedAt: new Date().toISOString(),
       entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
-    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
     expect(review).toMatchObject({ state: "ready" });
     expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
     expect([h.effects.archive.length, h.effects.create.length]).toEqual([1, 1]);
@@ -1638,7 +1682,7 @@ describe("universal takeover operation", () => {
     vi.useFakeTimers({ now: t0 });
     try {
       const h = await host();
-      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default" } });
       expect(review).toMatchObject({ state: "ready" });
       vi.advanceTimersByTime(1000);
       expect(await h.apply(review)).toMatchObject({ state: "succeeded" });

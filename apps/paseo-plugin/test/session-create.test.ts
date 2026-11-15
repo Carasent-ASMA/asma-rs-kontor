@@ -8,7 +8,7 @@ import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
 import { BOOTSTRAP_TIMELINE_TAIL_LIMIT, SCOPE_LABEL_RULE, SUMMARY_DELIVERY_NOT_VERIFIED, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, personaVersion, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
 import type { SummaryRevision } from "../shared/session-navigator";
-import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
+import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, takeoverModeChoice, topicProblem, type CreateProvider, type CreateRequest, type JiraIssue } from "../shared/session-create";
 import { promotionRecordSchema } from "../shared/session-promotion";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -885,5 +885,28 @@ describe("new session create", () => {
   it("reads the last assistant message of a source session as its summary", async () => {
     const s = await setup({ timelineText: "  Ship the desk layout.  " });
     expect(await sourceSummary(s.client, "agent-source")).toBe("Ship the desk layout.");
+  });
+});
+
+describe("takeover operating mode choice", () => {
+  const provider = (id: string, modes: string[], label = id): CreateProvider => ({ id, label, available: true, note: null, persona: "unverified", status: "ready",
+    models: [], defaultModel: null, modes: modes.map((mode) => ({ id: mode, label: mode, dangerous: false })), defaultMode: modes[0] ?? null });
+  const PROVIDERS = [provider("claude", ["default", "bypassPermissions"], "Claude Code"), provider("codex", ["auto"], "Codex")];
+
+  it("inherits the source's own listed mode on its own provider", () => {
+    expect(takeoverModeChoice(PROVIDERS, "claude", "default", "claude")).toEqual({ kind: "inherit", mode: "default" });
+  });
+
+  it("requires a chosen mode when the source's own provider does not list it", () => {
+    expect(takeoverModeChoice(PROVIDERS, "claude", "plan", "claude")).toEqual({ kind: "require", reason: "Claude Code does not list the source operating mode plan, so it cannot be inherited." });
+  });
+
+  it("requires a chosen mode when the destination is another provider, even for a listed id", () => {
+    expect(takeoverModeChoice(PROVIDERS, "claude", "default", "codex")).toEqual({ kind: "require",
+      reason: "Codex cannot inherit operating mode default from claude. Cross-provider mode and permission equivalence must be verified by the host." });
+  });
+
+  it("requires a chosen mode when the source reported none", () => {
+    expect(takeoverModeChoice(PROVIDERS, "claude", null, "claude")).toEqual({ kind: "require", reason: "Claude Code: the source operating mode was not reported, so its inherited mode cannot be confirmed." });
   });
 });

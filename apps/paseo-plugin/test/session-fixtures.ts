@@ -50,6 +50,7 @@ export function sessionEntry(
       overrides.workspaceId === undefined ? "wks_1" : overrides.workspaceId,
     provider: "opencode/deepseek/deepseek-flash",
     model: null,
+    mode: "build",
     parentAgentId: null,
     labels: overrides.labels ?? {},
     projectKey: overrides.projectKey ?? "prj_1",
