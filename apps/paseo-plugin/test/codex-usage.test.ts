@@ -43,6 +43,19 @@ describe("qualified Codex cumulative snapshots", () => {
     await writeFile(source, lines(meta(ID, patch), event(100, 5)));
     expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
   });
+  it("qualifies the current 0.165.0 host generation and reports its latest cumulative counters", async () => {
+    await writeFile(source, lines(meta(ID, { cli_version: "0.165.0" }), event(100, 5), event(250, 11, { cached_input_tokens: 180, reasoning_output_tokens: 6 })));
+    expect(await reader().read(ID)).toMatchObject({ input: 250, output: 11, scope: "provider-cumulative", source: expect.stringContaining("Codex CLI 0.160.0+") });
+    expect(await createCodexUsageReader(root, join(root, "fresh-cache")).read(ID)).toMatchObject({ input: 250, output: 11 });
+  });
+  it.each(["0.160.0", "0.160.1"])("keeps the qualified generation boundary at %s", async (cli_version) => {
+    await writeFile(source, lines(meta(ID, { cli_version }), event(100, 5), event(200, 7)));
+    expect(await reader().read(ID)).toMatchObject({ input: 200, output: 7, scope: "provider-cumulative" });
+  });
+  it.each([{ cli_version: "0.159.0" }, { cli_version: "1.0.0" }, { cli_version: "0.165" }, { cli_version: "v0.165.0" }, { cli_version: "" }, { cli_version: undefined }])("refuses unqualified CLI version %j", async (patch) => {
+    await writeFile(source, lines(meta(ID, patch), event(100, 5)));
+    expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("unqualified format version") });
+  });
   it.each([{ id: OTHER }, { cli_version: "0.159.0" }, { forked_from_id: OTHER }])("rejects later contradictory metadata before and after a cached restart %j", async (patch) => {
     await writeFile(source, lines(meta(), event(100, 5)));
     expect(await reader().read(ID)).toMatchObject({ input: 100 });

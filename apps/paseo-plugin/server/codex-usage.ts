@@ -21,7 +21,7 @@ export type VendorUsageRead = { input: number | null; output: number | null; sou
 export type CodexUsageRead = VendorUsageRead;
 export const FORK_CUMULATIVE_UNQUALIFIED = "fork or inherited scope is unqualified: no qualified inherited-counter contract; history pointers are not token baselines, and logical fork and physical history boundaries can differ after revert";
 export const CODEX_USAGE_LIMITS = [
-  "Codex 0.160.0 local provider cumulative snapshots and separately labeled recorded child responses, joined by exact native thread ID in this host's configured/default Codex store; a verified Codex alias reads its own CODEX_HOME.",
+  "Codex CLI 0.160.0 or newer 0.x local provider cumulative snapshots and separately labeled recorded child responses, joined by exact native thread ID in this host's configured/default Codex store; a verified Codex alias reads its own CODEX_HOME.",
   "OpenCode session counters are read read-only from the exact native session row; only the exact native session row is read, so child/subagent sessions (parent_id) are excluded; input includes cache read/write and output includes reasoning. Claude Code assistant-message usage is summed from one exact native JSONL, grouped by message ID with the last record winning; sidechains and subagents are excluded.",
   "Historical completeness and child-thread inclusion are unverified. Forked/inherited, reset, ambiguous, unsupported and incomplete sources remain unavailable; Codex snapshots are never summed.",
   "Fork cumulative values remain unknown: history byte/ordinal references do not establish inherited-counter scope. A recovered numeric parent snapshot or child response sum is not a qualified lifetime total.",
@@ -31,6 +31,12 @@ export const CODEX_USAGE_LIMITS = [
 ];
 const unknown = (reason: string): CodexUsageRead => ({ input: null, output: null, source: `Codex cumulative usage unavailable: ${reason}. Historical/complete totals unavailable.`, scope: "provider-cumulative" });
 const countKeys = ["input_tokens", "output_tokens", "total_tokens", "cached_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens"] as const;
+// Qualify the provider format generation, not one exact patch: every 0.x release from 0.160.0 shares this cumulative snapshot contract.
+const qualifiedCodexCliVersion = (value: unknown) => {
+  if (typeof value !== "string") return false;
+  const match = /^(\d+)\.(\d+)\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.exec(value);
+  return !!match && Number(match[1]) === 0 && Number(match[2]) >= 160;
+};
 
 /** Interpret only identity and numeric usage records; never retain transcript text or sum cumulative values. */
 export function consumeCodexLine(state: State, line: string): void {
@@ -42,7 +48,7 @@ export function consumeCodexLine(state: State, line: string): void {
       state.meta = false;
       const meta = row?.payload;
       if (row?.type !== "session_meta" || meta?.id !== state.threadId) { state.problem = "identity mismatch"; return; }
-      if (meta.cli_version !== "0.160.0" || meta.originator !== "codex_cli_rs") { state.problem = "unqualified format version"; return; }
+      if (!qualifiedCodexCliVersion(meta.cli_version) || meta.originator !== "codex_cli_rs") { state.problem = "unqualified format version"; return; }
       if (meta.session_id !== meta.id || meta.parent_thread_id || typeof meta.source !== "string") { state.problem = "fork or inherited scope is unqualified"; return; }
       if (meta.forked_from_id !== undefined && !uuid.safeParse(meta.forked_from_id).success) { state.problem = "invalid identity metadata"; return; }
       state.forked = !!meta.forked_from_id;
@@ -195,7 +201,7 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         if (state.offset < end || !state.meta) return unknown("incomplete bounded source read");
         if (!state.counts) return unknown("no provider cumulative report");
         return { input: state.counts.input_tokens, output: state.counts.output_tokens, scope: "provider-cumulative",
-          source: `Codex 0.160.0 provider cumulative snapshot at ${state.at}. Exact native thread; cache reads and reasoning are already included, not added again. Historical completeness and child-thread inclusion unverified.` };
+          source: `Codex CLI 0.160.0+ provider cumulative snapshot at ${state.at}. Exact native thread; cache reads and reasoning are already included, not added again. Historical completeness and child-thread inclusion unverified.` };
       } finally { await file.close(); }
     } catch { return unknown("source or numeric cache unreadable"); }
   }
