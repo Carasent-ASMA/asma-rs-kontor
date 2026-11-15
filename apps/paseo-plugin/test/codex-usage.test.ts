@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { usageTotalsSchema } from "../shared/session-navigator";
 import { createCodexUsageReader, FORK_CUMULATIVE_UNQUALIFIED } from "../server/codex-usage";
@@ -12,6 +13,14 @@ const lines = (...values: string[]) => values.join("\n") + "\n";
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "kontor-codex-usage-")); cache = join(root, "cache"); const dir = join(root, "sessions", "2026", "01", "01"); await mkdir(dir, { recursive: true }); source = join(dir, `rollout-fixture-${ID}.jsonl`); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 const reader = () => createCodexUsageReader(root, cache);
+const cachePath = (threadId: string) => join(cache, `${createHash("sha256").update(`${createHash("sha256").update(resolve(root)).digest("hex")}\0${threadId}`).digest("hex")}.json`);
+const poison = async (patch: { problem: string; offset?: number; meta?: boolean }) => {
+  const current = await stat(source);
+  await mkdir(cache, { recursive: true });
+  await writeFile(cachePath(ID), JSON.stringify({ version: 4, threadId: ID, file: relative(root, source), inode: `${current.dev}:${current.ino}`, size: current.size,
+    modified: current.mtimeMs, offset: patch.offset ?? Buffer.byteLength(lines(meta(ID, { cli_version: "0.165.0" }))), meta: patch.meta ?? false, forked: false,
+    recorded: { input: 0, output: 0, total: 0, seen: {}, problem: null }, problem: patch.problem, counts: null, baseline: null, at: null }));
+};
 
 describe("qualified Codex cumulative snapshots", () => {
   it("takes the latest cumulative report, including explicit zeros, without summing caches or reasoning", async () => {
@@ -42,6 +51,19 @@ describe("qualified Codex cumulative snapshots", () => {
   it.each([{ cli_version: "0.159.0" }, { originator: "other" }])("rejects an unqualified format %j", async (patch) => {
     await writeFile(source, lines(meta(ID, patch), event(100, 5)));
     expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
+  });
+  it("qualifies the current 0.165.0 host generation and reports its latest cumulative counters", async () => {
+    await writeFile(source, lines(meta(ID, { cli_version: "0.165.0" }), event(100, 5), event(250, 11, { cached_input_tokens: 180, reasoning_output_tokens: 6 })));
+    expect(await reader().read(ID)).toMatchObject({ input: 250, output: 11, scope: "provider-cumulative", source: expect.stringContaining("Codex CLI 0.160.0+") });
+    expect(await createCodexUsageReader(root, join(root, "fresh-cache")).read(ID)).toMatchObject({ input: 250, output: 11 });
+  });
+  it.each(["0.160.0", "0.160.1"])("keeps the qualified generation boundary at %s", async (cli_version) => {
+    await writeFile(source, lines(meta(ID, { cli_version }), event(100, 5), event(200, 7)));
+    expect(await reader().read(ID)).toMatchObject({ input: 200, output: 7, scope: "provider-cumulative" });
+  });
+  it.each([{ cli_version: "0.159.0" }, { cli_version: "1.0.0" }, { cli_version: "0.165" }, { cli_version: "v0.165.0" }, { cli_version: "" }, { cli_version: undefined }])("refuses unqualified CLI version %j", async (patch) => {
+    await writeFile(source, lines(meta(ID, patch), event(100, 5)));
+    expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("unqualified format version") });
   });
   it.each([{ id: OTHER }, { cli_version: "0.159.0" }, { forked_from_id: OTHER }])("rejects later contradictory metadata before and after a cached restart %j", async (patch) => {
     await writeFile(source, lines(meta(), event(100, 5)));
@@ -124,6 +146,23 @@ describe("qualified Codex cumulative snapshots", () => {
     const stored = await readFile(join(cache, files[0]!), "utf8");
     expect(stored).not.toContain(secret); expect(stored).not.toContain(root);
     expect(stored).not.toContain("base_instructions");
+  });
+});
+
+describe("cached format refusals after a widened qualification rule", () => {
+  it("re-reads a cached unqualified-format refusal instead of trusting it", async () => {
+    await writeFile(source, lines(meta(ID, { cli_version: "0.165.0" }), event(100, 5), event(300, 12)));
+    await poison({ problem: "unqualified format version" });
+    expect(await reader().read(ID)).toMatchObject({ input: 300, output: 12, scope: "provider-cumulative", source: expect.stringContaining("Codex CLI 0.160.0+") });
+    const stored = JSON.parse(await readFile(cachePath(ID), "utf8"));
+    expect(stored).toMatchObject({ version: 4, problem: null });
+    expect(stored.counts).toMatchObject({ input_tokens: 300, output_tokens: 12 });
+  });
+  it("still reuses a cached entry with an unrelated problem", async () => {
+    await writeFile(source, lines(meta(ID, { cli_version: "0.165.0" }), event(300, 12)));
+    await poison({ problem: "identity mismatch", offset: 0 });
+    expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("identity mismatch") });
+    expect(JSON.parse(await readFile(cachePath(ID), "utf8")).problem).toBe("identity mismatch");
   });
 });
 
