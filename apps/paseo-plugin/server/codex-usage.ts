@@ -87,6 +87,9 @@ export function consumeCodexLine(state: State, line: string): void {
   } catch { state.problem = state.meta ? "malformed usage record" : "invalid identity metadata"; }
 }
 
+// A cached refusal from a narrower qualification rule is not authoritative: a widened rule re-reads it.
+const staleFormatRefusal = (state: State) => state.problem === "unqualified format version";
+
 /** Bounded, on-demand source index and incremental numeric cache. Provider files are opened read-only. */
 export function createCodexUsageReader(providerRoot: string, cacheRoot: string, now = Date.now) {
   let indexedAt = -Infinity, paths = new Map<string, string[]>(), indexing: Promise<void> | null = null;
@@ -160,7 +163,7 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         const stat = await file.stat(), inode = `${stat.dev}:${stat.ino}`;
         if (!stat.isFile()) return unknown("source is not a regular file");
         const old = await cached(threadId);
-        const state: State = old && old.file === matches[0] && old.inode === inode && old.offset <= stat.size && !(old.size === stat.size && old.modified !== stat.mtimeMs) ? old
+        const state: State = old && old.file === matches[0] && old.inode === inode && old.offset <= stat.size && !(old.size === stat.size && old.modified !== stat.mtimeMs) && !staleFormatRefusal(old) ? old
           : { version: 4, forked: false, recorded: emptyRecorded(), threadId, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, meta: false, problem: old?.problem === "cumulative counter reset" ? old.problem : null, counts: null, baseline: old?.baseline ?? old?.counts ?? null, at: null };
         let position = state.offset, pending = Buffer.alloc(0);
         const end = stat.size;
