@@ -42,8 +42,10 @@ Tracker keys must be confirmed keys that match
 `{{ project.tracker.key_pattern }}`; the validator checks shape/uniqueness, not
 remote existence. Draft `null` bindings are honest and accepted for structural
 review. Launch-ready validation requires a tracker key on the epic and every
-task, and Kontor IDs when frontmatter selects `orchestration: kontor`. It does
-not select the surface, replace the paired governance markers or query `kontord`.
+task, and Kontor IDs when frontmatter selects `orchestration: kontor`; a
+[milestone-scoped launch check](#milestone-scoped-launch-check) narrows that to
+one milestone's rows. It does not select the surface, replace the paired
+governance markers or query `kontord`.
 
 ## Generate and validate
 
@@ -128,6 +130,46 @@ exits nonzero without graph output on failure. Consumers must not fall back to
 ASCII/Mermaid or prose extraction when a canonical block is absent or invalid.
 Show graph unavailable with the diagnostic. No `kontord` connection is needed
 for these read-only facts.
+
+## Milestone-scoped launch check
+
+A plan whose frontmatter selects `delivery_strategy: milestone` defines later
+milestones only shortly before they are scheduled, so their rows honestly keep
+`null` bindings and the whole-plan check cannot pass yet. When the project
+validator offers a scoped mode, such a plan admits one milestone on a
+launch-ready check scoped to that milestone's rows:
+
+```sh
+{{ project.cli.command }} plan validate --for-launch --tasks TASK-001,TASK-002 path/to/plan.md
+```
+
+- Whole-graph structural validation is unchanged. Bindings are required on the
+  epic, on every named task and on the transitive closure of their
+  `depends_on`, plus Kontor IDs for the same set on governed work. A
+  prerequisite without a tracker issue cannot have its completion verified.
+- The validator refuses an empty scope, an unknown task, a scope on a plan
+  without exactly one `delivery_strategy: milestone`, and a scoped run over
+  more than one plan. Admission also refuses a scope that does not equal
+  exactly one milestone's mapped rows: a subset, a superset or a mix across
+  milestones. The graph carries no milestone field, so the validator cannot
+  detect this; the coordinator checks the printed scope against the map.
+- The scope equals that milestone's rows as mapped in the plan's milestone
+  section, on the authoritative saved revision. The PASS line names the scope,
+  its dependency closure and how many rows outside it are unbound. The receipt
+  records the scope as well as the command, exit code, SHA-256, path and
+  revision. A scoped PASS never stands for whole-plan readiness.
+- Rows outside the scope's dependency closure need not be bound: existing
+  confirmed bindings are preserved, and unbound future rows may remain `null`.
+  Each later milestone needs its own scoped receipt, and a plan edit invalidates
+  earlier receipts as usual.
+- Final epic closure requires an unscoped launch-ready PASS: every delivered row
+  is bound and every dropped row has been removed from the plan.
+- A plan without milestone delivery, or a project whose validator has no scoped
+  mode, keeps the whole-plan check. Never hand-write a scoped receipt or waive
+  rows to get one.
+
+A scoped PASS proves structure only. It does not prove remote binding readback,
+the task content contract or admission authority.
 
 ## Enforcement and existing plans
 
