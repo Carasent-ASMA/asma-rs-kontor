@@ -45,6 +45,42 @@ const resolve = (document: unknown, input: unknown = { agentId: "agent-1", bindi
   return resolveTakeoverRoute(config, ordinary, input, evidence, runner.run).then((result) => ({ result, calls: runner.calls }));
 };
 
+describe("configured account catalog", () => {
+  it("accepts one alias repeated under the same provider and deduplicates it", () => {
+    const catalog = configuredAccountCatalogFromFleet([
+      { provider: "opencode", accounts: ["opencode"] },
+      { provider: "opencode", accounts: ["opencode"] },
+      { provider: "opencode", accounts: ["opencode"] },
+      { provider: "claude", accounts: ["claude-a"] },
+    ], "fleet-rev-1");
+    expect(catalog).toEqual({ accounts: new Set(["opencode", "claude-a"]), revision: "fleet-rev-1" });
+  });
+
+  it("refuses one alias under different providers", () => {
+    expect(configuredAccountCatalogFromFleet([
+      { provider: "opencode", accounts: ["shared"] },
+      { provider: "claude", accounts: ["shared"] },
+    ], "fleet-rev-1")).toBeNull();
+  });
+
+  it("refuses an empty account list", () => {
+    expect(configuredAccountCatalogFromFleet([], "fleet-rev-1")).toBeNull();
+    expect(configuredAccountCatalogFromFleet([{ provider: "opencode", accounts: [] }], "fleet-rev-1")).toBeNull();
+  });
+
+  it("treats a missing provider as one group", () => {
+    expect(configuredAccountCatalogFromFleet([{ accounts: ["opencode"] }, { accounts: ["opencode"] }], "fleet-rev-1"))
+      .toEqual({ accounts: new Set(["opencode"]), revision: "fleet-rev-1" });
+  });
+
+  it("refuses an alias that is both unnamed and named by a provider", () => {
+    expect(configuredAccountCatalogFromFleet([
+      { accounts: ["opencode"] },
+      { provider: "opencode", accounts: ["opencode"] },
+    ], "fleet-rev-1")).toBeNull();
+  });
+});
+
 describe("takeover ownership", () => {
   it("decides the adapter only from protected ownership evidence", () => {
     expect(takeoverAdapter({ labels: {} })).toEqual({ adapter: "direct", basis: "ordinary", owner: null, createRequest: null });
