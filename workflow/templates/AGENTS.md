@@ -60,15 +60,16 @@ held pull requests draft.
 Read the decision router at
 `{{ project.decision_authorities.decision_records_root }}` before an
 architectural change. Accepted decisions govern their scope; a deviation
-requires an explicitly superseding record. Platform or engineering-effect
-decisions are accepted only by the named authority in the project block.
+requires an explicitly superseding record. Platform decision records are accepted
+only by the named authority in the project block. Local decisions follow the
+project's declared epic, service and repository authority.
 
 ## Planning and investigation
 
-Use the canonical planning terms and the ambiguity rule in the project's
-planning procedure. The plan or owning item records unresolved questions and
-their disposition. New document placement and naming follow the project's
-document-organization procedure.
+Use the project's canonical planning terms and ambiguity rule. Record unresolved
+questions and their disposition in the owning plan or item. Follow project naming
+conventions for every entity and the document-organization procedure for document
+placement.
 
 ## Working context and memory
 

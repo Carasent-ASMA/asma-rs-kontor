@@ -45,27 +45,35 @@ that root owns status at a glance and the discovery key for each record.
 >
 > ### Rule 2 — a record binds a discipline or the platform
 >
-> Ask one question: would another team — or the other discipline — have to
-> change code, a contract or enforced behaviour if this were reverted?
+> Apply the consuming project's declared decision-authority boundary and the
+> governing accepted records first. A confirmed epic owner or service owner
+> decides within the scope the project delegates, including important engineering
+> choices and coordinated changes across that epic's repositories. Importance,
+> engineering effect or crossing a service/repository boundary alone does not
+> make a local decision a platform record. Record it in the owning plan or domain
+> documentation.
+>
+> Ask: does this change project-wide architecture, bind contracts beyond the
+> delegated scope, or require a new, changed or excepted decision record?
 >
 > - **No → not a decision record.** Write it in the owning area's own
 >   documentation root and stop. This is the common case.
 > - **Yes, and every effect stays inside one discipline → a discipline-scoped
 >   record.** It uses the same lifecycle, proposals folder and number sequence,
 >   and is accepted by that discipline's named authority.
-> - **Yes, and any effect reaches engineering → a platform record.** It is
+> - **Yes, and the qualifying record has an engineering effect → a platform record.** It is
 >   accepted by `{{ project.decision_authorities.architecture }}`.
 >
 > | | Platform record | Discipline record | Domain document |
 > |---|---|---|---|
-> | Binds | every service and any engineering effect | one discipline's contracts only, with no engineering effect | one service, slice, app or schema |
-> | Accepted by | `{{ project.decision_authorities.architecture }}` | the discipline's named authority | the owning team |
-> | Reverting it | forces coordinated cross-boundary change | forces coordinated change across that discipline | touches one team's work |
+> | Binds | project-wide architecture or shared rules beyond delegated epic/service scope | one discipline's contracts only, with no engineering effect | one epic or its services, repositories, slices, apps or schemas within accepted records |
+> | Accepted by | `{{ project.decision_authorities.architecture }}` | the discipline's named authority | the confirmed epic owner or owning service/team under project policy |
+> | Reverting it | changes a project-wide contract or architectural rule | forces coordinated change across that discipline | stays within delegated ownership, even across the epic's repositories |
 >
-> A discipline label never exempts an engineering rule. The moment a record has
-> any engineering effect it is a platform record. Important, hard-won and
-> well-argued does not by itself mean a record; binding a whole discipline or
-> every service does.
+> A discipline label never exempts an engineering record from its accepting
+> authority. Engineering effect alone does not turn a local decision into a
+> record. Delegation never permits an exception to an accepted record; that
+> remains with the record's accepting authority.
 
 ## 1. Is this even a record? (genre fork)
 
@@ -73,12 +81,12 @@ Write a record only when all three hold:
 
 1. **Architectural or structural** — it shapes how components fit together,
    not how one function is implemented.
-2. **Crosses a boundary or sets a pattern others must follow** — service,
-   schema, team, discipline or repository. A choice local to one module is not
-   platform-level.
-3. **Wide blast radius** — changing or reverting it later forces coordinated
-   change across a boundary. Calibrate by blast radius; do not treat all
-   migrations as equal.
+2. **Binds beyond delegated ownership or changes a governing record** — apply
+   the project's authority boundary; coordination inside one delegated epic is
+   not alone platform-level.
+3. **Wide blast radius** — changing or reverting it later changes architecture
+   or contracts beyond that delegated scope. Calibrate by blast radius; do not
+   treat all migrations as equal.
 
 Otherwise use the sibling genre. Placement and naming rules live in
 [`document-organization`](../document-organization/SKILL.md); this table only
@@ -86,12 +94,12 @@ chooses the genre.
 
 | The thing you are writing is… | Genre | Where |
 |---|---|---|
-| A cross-service or cross-schema decision; a pattern others adopt | decision record | the decision-records root |
+| A qualifying project-wide or cross-domain rule beyond delegated scope | decision record | the decision-records root |
 | A decision binding one discipline, with no engineering effect | discipline record | that discipline's register view |
 | How a subsystem works, or how to build against it | spec | the owning documentation root |
 | An investigation, options weighed, open questions | analysis | the owning documentation root |
 | The result of doing the work | report | the owning documentation root |
-| A decision scoped to one domain only | domain document | that domain |
+| A decision within delegated epic/service scope | domain document or owning plan | that domain or epic |
 
 > Rule of thumb: if you could implement it three different ways and the
 > document would still be true, it is a decision. If it tells you which lines
@@ -321,8 +329,8 @@ When you detect staleness, do not edit the decision and do not delete it:
 
 ## 8. Quality checklist
 
-- [ ] Rule 2: reverting it would force another team or discipline to change
-      code, a contract or enforced behaviour. If not, it is a domain document.
+- [ ] Rule 2: it meets the project's decision-authority scope test or changes
+      a governing record. Otherwise it belongs to the delegated epic/service owner.
 - [ ] Rule 1: it is an unnumbered proposal, status `Proposed`, with no register
       row, and the accepting authority has been asked to decide.
 - [ ] Rule 0: no plan, ticket, prompt or instruction was treated as
