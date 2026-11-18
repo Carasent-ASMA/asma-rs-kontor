@@ -51,7 +51,8 @@ that root owns status at a glance and the discovery key for each record.
 > choices and coordinated changes across that epic's repositories. Importance,
 > engineering effect or crossing a service/repository boundary alone does not
 > make a local decision a platform record. Record it in the owning plan or domain
-> documentation.
+> documentation. Record the confirmed owner and delegated scope; a role title or
+> an agent's own claim does not establish delegation.
 >
 > Ask: does this change project-wide architecture, bind contracts beyond the
 > delegated scope, or require a new, changed or excepted decision record?
