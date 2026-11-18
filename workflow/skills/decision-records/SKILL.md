@@ -5,10 +5,10 @@ description: "Author and govern decision records. Use for writing a new record, 
 
 # Decision records — author and govern
 
-Decision records are the project's immutable decision log: one file per
-architecturally significant, hard-to-reverse, cross-boundary decision. They
-record what was decided, why, what was rejected and what it costs — not how to
-build it.
+Decision records are the project's immutable log of architectural decisions
+beyond delegated ownership, as defined in Rule 2. They record what was decided,
+why, what was rejected and what it costs — not how to build it. Local epic and
+service decisions use their owning plan or domain documentation.
 
 The canonical root is
 `{{ project.decision_authorities.decision_records_root }}`. The register in
