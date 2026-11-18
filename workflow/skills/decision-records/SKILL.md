@@ -52,7 +52,12 @@ that root owns status at a glance and the discovery key for each record.
 > engineering effect or crossing a service/repository boundary alone does not
 > make a local decision a platform record. Record it in the owning plan or domain
 > documentation. Record the confirmed owner and delegated scope; a role title or
-> an agent's own claim does not establish delegation.
+> an agent's own claim does not establish delegation. A project records confirmed
+> delegation in the register at
+> `{{ project.decision_authorities.decision_records_root }}` or in the owning
+> plan. Where the project has no confirmed delegation for this owner and scope,
+> nothing is delegated: if another team or discipline would have to change code,
+> a contract or enforced behaviour when this is reverted, it is a record.
 >
 > Ask: does this change project-wide architecture, bind contracts beyond the
 > delegated scope, or require a new, changed or excepted decision record?
@@ -336,8 +341,9 @@ When you detect staleness, do not edit the decision and do not delete it:
       row, and the accepting authority has been asked to decide.
 - [ ] Rule 0: no plan, ticket, prompt or instruction was treated as
       authorization to skip Rule 1.
-- [ ] Passes the three-part test: architectural, cross-boundary, costly to
-      reverse.
+- [ ] Passes the three-part test: architectural, binds beyond delegated
+      ownership or changes a governing record, costly to reverse beyond that
+      scope.
 - [ ] One decision per file; the title states the decision.
 - [ ] All multi-item sections use coded bullets; no existing code is renumbered.
 - [ ] Decision-pure: heavy mechanics are linked out, not inlined.
