@@ -15,6 +15,22 @@ acceptance, transitions and the supported writer; this skill grants none.
 Component-specific formats and limits apply alongside this rule. Full manuals,
 status documents and READMEs use the project's authoring skills.
 
+## Names and references
+
+- Follow the owning project's naming convention for every named entity, from
+  services, repositories and packages to branches, worktrees, workspaces and
+  agent sessions. Read the authoritative naming rules and selected configuration
+  before creating or renaming one; do not invent a shorthand or a new pattern.
+- Preserve canonical names, spelling, case, separators and role labels when
+  referring to existing entities. Use the owning workflow for any rename;
+  this rule does not authorize renaming existing resources.
+- Always identify a pull request as `repository#number`, for example
+  `example-service#123`, never just `#123` or `PR 123`. This applies to prose,
+  tables, status updates, handoffs, checkpoints and link labels, even when the
+  surrounding context names the repository. Add the organization as
+  `organization/repository#number` when needed to disambiguate. Keep machine
+  fields and command arguments in their required schema.
+
 ## Write for the reader
 
 - Use clear, simple English for a non-native reader. Prefer familiar words,
@@ -79,7 +95,7 @@ all blocking findings, using brief lines and links when there are many.
 
 Use real keys and links when posting; the values below are illustrative.
 
-**Status:** PR #123 merged. {{ project.tracker.project_key }}-1234 is awaiting
+**Status:** example-service#123 merged. {{ project.tracker.project_key }}-1234 is awaiting
 deployed verification. The delivery team will check the new version.
 [Merge and test evidence](https://example.invalid/evidence).
 
@@ -87,16 +103,16 @@ deployed verification. The delivery team will check the new version.
 records. Reject a missing tenant ID before querying. The isolation test fails
 with an empty ID; [reproduction](https://example.invalid/evidence).
 
-**Sync failure:** PR #123 merged. {{ project.tracker.project_key }}-1234 should
+**Sync failure:** example-service#123 merged. {{ project.tracker.project_key }}-1234 should
 show the configured state for awaiting verification; the tracker did not accept
 the update. [Pending effect](https://example.invalid/evidence).
 Recovery owner: the PR desk. Synchronization is pending.
 
 **Bilingual, when requested:**
 
-EN: PR #123 is merged. {{ project.tracker.project_key }}-1234 is awaiting verification in dev.
+EN: example-service#123 is merged. {{ project.tracker.project_key }}-1234 is awaiting verification in dev.
 
-NO: PR #123 er flettet inn. {{ project.tracker.project_key }}-1234 venter på kontroll i dev-miljøet.
+NO: example-service#123 er flettet inn. {{ project.tracker.project_key }}-1234 venter på kontroll i dev-miljøet.
 
 Before sending, check: is this new, accurate, needed by this audience and as
 short as its purpose allows?

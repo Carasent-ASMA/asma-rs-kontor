@@ -65,10 +65,10 @@ decisions are accepted only by the named authority in the project block.
 
 ## Planning and investigation
 
-Use the canonical planning terms and the ambiguity rule in the project's
-planning procedure. The plan or owning item records unresolved questions and
-their disposition. New document placement and naming follow the project's
-document-organization procedure.
+Use the project's canonical planning terms and ambiguity rule. Record unresolved
+questions and their disposition in the owning plan or item. Follow project naming
+conventions for every entity and the document-organization procedure for document
+placement.
 
 ## Working context and memory
 

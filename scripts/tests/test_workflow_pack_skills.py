@@ -96,6 +96,7 @@ OPERATIONAL_DOMAIN = REPO_ROOT / "crates" / "kontor-profiles" / "fixtures" / "op
 CONSULTATION_PRESETS = REPO_ROOT / "crates" / "kontor-profiles" / "fixtures" / "consultation-presets.json"
 CORE_TEAM = REPO_ROOT / "config" / "examples" / "orchestration" / "teams" / "core-team.yml"
 PR_REVIEW = SKILLS / "pr-review" / "SKILL.md"
+COMMUNICATION = SKILLS / "kontor-communication" / "SKILL.md"
 FLEET = REPO_ROOT / "config" / "examples" / "orchestration" / "fleet.yml"
 
 NON_SEAT_FLEET_SLOTS = ("fallback", "open")
@@ -1288,6 +1289,57 @@ class TemplateContractTests(unittest.TestCase):
         self.assertIn('"external_fences": []', text)
         self.assertIn("<!-- plan-graph:derived:start -->", text)
         self.assertIn("<!-- plan-graph:derived:end -->", text)
+
+
+NAMING_SECTION = "## Names and references"
+BARE_PULL_REQUEST_RE = re.compile(r"(?<![\w-])PR\s*#\d+")
+
+
+def naming_reference_errors(text: str) -> list[str]:
+    """The naming rules live in the pack, and no bare pull-request number does."""
+    errors: list[str] = []
+    if NAMING_SECTION not in text:
+        errors.append(f"the pack lacks {NAMING_SECTION}")
+    else:
+        section = text.split(NAMING_SECTION, 1)[1].split("\n## ", 1)[0]
+        for phrase in (
+            "`repository#number`",
+            "`example-service#123`",
+            "never just `#123` or `PR 123`",
+        ):
+            if phrase not in section:
+                errors.append(f"the naming section lacks {phrase}")
+    for match in BARE_PULL_REQUEST_RE.finditer(text):
+        errors.append(f"bare pull-request reference {match.group(0)}")
+    return errors
+
+
+class KontorCommunicationTests(unittest.TestCase):
+    """The naming rules come from the pack, not from a hand-edited render."""
+
+    def setUp(self) -> None:
+        self.text = read(COMMUNICATION)
+
+    def test_the_naming_rules_are_present_without_a_bare_pull_request(self) -> None:
+        self.assertEqual(naming_reference_errors(self.text), [])
+
+    def test_deleting_the_naming_section_is_rejected(self) -> None:
+        without = re.sub(
+            rf"^{re.escape(NAMING_SECTION)}$.*?(?=^## )",
+            "",
+            self.text,
+            flags=re.M | re.S,
+        )
+        self.assertNotIn(NAMING_SECTION, without)
+        self.assertTrue(naming_reference_errors(without))
+
+    def test_a_bare_pull_request_reference_is_rejected(self) -> None:
+        mutated = self.text.replace(
+            "**Status:** example-service#123 merged.",
+            "**Status:** PR #123 merged.",
+        )
+        self.assertIn("PR #123", mutated)
+        self.assertTrue(naming_reference_errors(mutated))
 
 
 class NeutralityTests(unittest.TestCase):
