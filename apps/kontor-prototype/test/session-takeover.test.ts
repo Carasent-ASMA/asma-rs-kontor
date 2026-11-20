@@ -337,12 +337,23 @@ describe("simulated takeover confirmation", () => {
   });
 });
 
-describe("simulated clipboard", () => {
+describe("harness browser clipboard", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
-  it("refuses the write with clipboard=denied and accepts it otherwise", async () => {
+  it("refuses explicitly simulated denial before dispatching a browser write", async () => {
+    const writeText = vi.fn(); vi.stubGlobal("navigator", { clipboard: { writeText } });
     vi.stubGlobal("location", { search: "?clipboard=denied" });
     await expect(copyText("summary")).rejects.toThrow("SIMULATED: the clipboard refused the write");
+    expect(writeText).not.toHaveBeenCalled();
+  });
+  it("delegates to the browser and propagates write failures", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined); vi.stubGlobal("navigator", { clipboard: { writeText } });
     vi.stubGlobal("location", { search: "" });
-    await expect(copyText("summary")).resolves.toBeUndefined();
+    await expect(copyText("summary")).resolves.toBeUndefined(); expect(writeText).toHaveBeenCalledWith("summary");
+    writeText.mockRejectedValueOnce(new Error("Browser denied the write"));
+    await expect(copyText("summary")).rejects.toThrow("Browser denied the write");
+  });
+  it("refuses an unavailable clipboard rather than reporting simulated success", async () => {
+    vi.stubGlobal("navigator", {}); vi.stubGlobal("location", { search: "" });
+    await expect(copyText("summary")).rejects.toThrow("Browser clipboard is unavailable");
   });
 });

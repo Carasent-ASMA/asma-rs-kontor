@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../paseo-plugin/node_modules/@types"]
+  },
+  "include": ["server", "test/tokenomics-server.test.ts", "vite.config.ts"],
+  "exclude": []
+}

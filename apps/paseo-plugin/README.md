@@ -5,6 +5,73 @@ the KR-11 foundation of the Kontor relaunch plan (ASMA-8507): the decided
 binding hooks plus the `before("workspace.create")` placement guard. The
 navigator reads Paseo directly and works without `kontord`.
 
+## Native Tokenomics reports
+
+Open **More → Tokenomics** in the existing Kontor screen. This read-only native
+destination reads reports already produced on the selected host. It does not
+collect transcripts, schedule work, price usage or require `kontord` or a central
+ledger. Kontor's project/epic header does not filter the report; its own controls do.
+
+Configure the host-owned `$PASEO_HOME/plugin-config/kontor/tokenomics.json`:
+
+```json
+{ "root": "/srv/example-tokenomics-report" }
+```
+
+The root must be absolute. `KONTOR_PLUGIN_TOKENOMICS_ROOT`, when present, takes
+precedence; invalid configuration fails visibly. Clients cannot supply paths.
+The reader accepts `data.json` (`consumption/data@2`, at most 32 MiB) and the
+optional private `_stats/live.js` (at most 16 MiB). The latter must contain only
+`window.ASMA_LIVE = <JSON object>;`; no JavaScript runs. Reads require regular
+files, reject file symlinks, check size/change during reading and close descriptors.
+The source stays outside this repository. Use synthetic data for public fixtures.
+
+| Group | Native pages | Accounting and controls |
+| --- | --- | --- |
+| Tokenomics | Overview; Progress between checks; Activity; Roles & models; Pivot; All usage; Coverage & prices | Periods in Oslo time; workstream lifecycle and multi-select dimensions; revision cuts and re-cut deltas; captured progression; timeline metrics/range, parallel work, flags and dates; role shares, Adam lifecycle, model cost splits; four-level pivot with drill-down/presets; local-store categories, epic/Unknown ledger and coverage; original price bases. |
+| Code Review | Overview; Fix rate; Submitters; Repositories; PRs | Period only, live desk state; findings/outcomes, decided-finding fix-rate floor, reviewer/file breakdown, review/fix/coordination costs and finding details. |
+| Delivery | Overview; People; Repositories; Jira vs GitHub; Bugs & code quality; Pull requests | Period only, live collection; bot exclusion, default-branch lines, test/doc shares, merge times, churn/rework, Jira/PR joins, SZZ attribution and trace details. |
+
+Progress uses each captured check's aggregates; other Tokenomics pages re-cut the
+current extract at the selected cut. All usage ignores the main filters and
+revision. Live analytics ignore the revision and other filters. Unknown epic/role,
+missing evidence, coverage floors and unpriced tokens remain explicit. Cost bases
+stay those of the collector, including billed and blended rows.
+
+Native tables and inline SVG preserve the report’s chart families, time axes,
+stacking, legends and hierarchy. The supported SDK validates each SVG against
+its 64 KiB limit. An over-limit chart is composed from lossless layers on the same
+scale; the composition is bounded to 32 MiB and refuses visibly rather than
+omitting data. Pointer/touch inspection and selectable chart data expose exact
+values. All ordinary selectors float in anchored overlays, including choices
+inside filter sheets; short lists omit search. Phone navigation and grouped
+filters keep data visible, and contextual info controls hold secondary prose.
+The surrounding Paseo chrome stays host-owned. Tables fetch bounded 50-row chunks
+continuously after full aggregation; search and sorting cover the full result.
+CSV exports include every matching row, independently of loaded display chunks.
+Pivot exports leaves, excluding duplicated subtotals. CSV includes generation,
+revision, selection and coverage/cost qualifiers; unpriced zero cells are not
+known zero costs. On desktop, **Export CSV…** opens the existing sheet without a
+read or file action. **Prepare CSV** validates the complete snapshot, then a
+separate **Download CSV** gesture hands those bytes to the Web/Electron download
+manager. This path never opens the native save picker. Closing or changing the
+selection, observed source or connection discards prepared/in-flight results.
+Cancelling before preparation makes no export request; cancelling preparation
+ignores its already-issued read. A later browser cancellation cannot undo that
+read and triggers no further request. Dispatch reports only **Download requested**;
+the browser owns save/cancel/write completion.
+**Copy complete CSV** remains available; native iOS/Android additionally offer
+Share CSV text, with truthful cancel/error outcomes. No export writes a daemon
+host file. Spreadsheet formulas in text are escaped. Exports are refused when
+their source is unavailable, and a changed content hash requires a refresh.
+
+Reports older than 48 hours, absent/malformed live data, partial collection and
+offline/failed reads remain visible. An offline retained snapshot is marked stale
+and cannot be refreshed/exported. This is prototype support; browser rendering in
+the review harness does not qualify a physical phone or an installed Paseo build.
+The existing `apps/kontor-prototype` harness exposes synthetic `tokenomics` and
+`tokenomics-offline` scenarios without installation.
+
 ## Saved session summaries on stock Paseo
 
 Summarize & copy uses stock Paseo 0.12 agent creation, timeline and finish APIs.

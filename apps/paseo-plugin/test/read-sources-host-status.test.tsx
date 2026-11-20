@@ -118,6 +118,7 @@ describe("actual source hook and native indicator agree on SDK host status", () 
 
 describe("per-route exact source demand", () => {
   it("demands the selected plan and linked associations, context sources, or nothing on Sessions", () => {
+    expect(demandedSourceIdsFor({ tab: "Tokenomics", sourceId: "canonical" }, [planSource], ["linked"])).toEqual([]);
     expect(demandedSourceIdsFor({ tab: "Sessions", sourceId: "canonical" }, [planSource], ["linked"])).toEqual([]);
     expect(demandedSourceIdsFor({ tab: "Plan", sourceId: "canonical" }, [planSource], ["linked", "canonical"])).toEqual(["canonical", "linked"]);
     expect(demandedSourceIdsFor({ tab: "Graph", sourceId: null }, [planSource], ["linked"])).toEqual(["linked"]);

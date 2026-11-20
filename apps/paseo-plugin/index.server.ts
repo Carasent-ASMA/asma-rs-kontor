@@ -14,11 +14,13 @@ import { contributeSessionCreate } from "./server/session-create";
 import { contributeSessionPromotion } from "./server/session-promotion";
 import { contributeResponsibility } from "./server/responsibility";
 import { contributeKontorStatus } from "./server/kontor-status";
+import { contributeTokenomics } from "./server/tokenomics";
 import { readInstalledNavigatorCapabilities } from "./server/session-navigator";
 import { contributeSessionSummaries } from "./server/session-summaries";
 import { contributeWorkCatalog } from "./server/work-catalog";
 
 export default function plugin(server: PluginServerContext): () => void {
+  contributeTokenomics(server);
   contributeSessionLifecycle(server);
   contributeProceduralTakeover(server);
   // Registered whatever the floor; each request reads create.json: absent defaults on, explicit off or invalid/unreadable paths fail closed.

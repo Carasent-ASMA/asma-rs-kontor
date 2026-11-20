@@ -9,6 +9,51 @@ The entry imports `../paseo-plugin/index.client.tsx` directly. There is no copie
 plugin client. [Source-sync audit](SOURCE-SYNC.md) pins the source and records
 the reference delta, retained files and remaining boundaries.
 
+## Tokenomics report preview
+
+The candidate targets Paseo 0.13.2 or later, matching the SDK used for the native
+UI/scrolling contracts and host compiler checks. This preview does not install it.
+
+`?scenario=tokenomics` uses synthetic usage, review and delivery fixtures.
+`?scenario=tokenomics-scroll` uses 73 synthetic delivery rows to check continuous
+bounded scrolling and complete exports. Copy CSV explicitly writes to this
+browser’s clipboard when supported; errors are shown and the harness never reads
+the clipboard. Other fixture host effects remain simulated.
+
+For report layout diagnostics, append `&textScale=1.3`, `1.5` or `2`. The default
+is `1`. The banner labels **SIMULATED TEXT SCALE**; native plugin Text
+props and layout scale are emulated, including Kontor’s own navigation. Paseo
+host headers remain unscaled. Nested Text inherits unscaled sizes to avoid
+double scaling, and opt-out/multiplier caps are respected. This does not qualify
+native Dynamic Type, host chrome, keyboards, touch or physical accessibility.
+To inspect an existing local report, start the development harness with an
+explicit **server-only** root and open `?scenario=tokenomics-local`:
+
+```sh
+KONTOR_PLUGIN_TOKENOMICS_ROOT=/srv/example-tokenomics-report node apps/kontor-prototype/node_modules/vite/bin/vite.js --config apps/kontor-prototype/vite.config.ts --port 58143 --strictPort
+```
+
+The existing native plugin client calls the same bounded report adapter through
+the development server. The server binds loopback, checks Host/Origin, limits
+JSON requests to 2 MiB and replies to 32 MiB, validates native RPC contracts,
+and disables response caching. Missing configuration returns unavailable.
+Report paths and files are never exposed as Vite aliases, allowed filesystem
+roots, client environment variables or bundled assets. Static builds keep the
+synthetic scenarios; local reports require the development server. The frame
+labels local report data and the simulated surrounding Paseo host explicitly.
+
+The Tokenomics browser interaction check attaches to Chrome already started by
+`asma debug chrome`. It creates and closes only its own tabs (Node 24; no package
+install or separate browser launch):
+
+```sh
+EVIDENCE_DIR=/tmp/tokenomics-browser PROTOTYPE_URL=http://127.0.0.1:58143/ node apps/paseo-plugin/test/tokenomics.browser.cjs
+```
+
+Paired original-report visual evidence is a separate check on identical input,
+content dimensions, theme and selections; a render-count report is not visual
+acceptance.
+
 ## Run
 
 From the repository root:
@@ -85,6 +130,10 @@ All reference scenario IDs remain available. Each uses fictional data only.
 
 | ID | Scenario |
 | --- | --- |
+| `tokenomics` | Native Tokenomics: all 18 report pages, synthetic usage/review/delivery data |
+| `tokenomics-scroll` | 73 synthetic delivery rows, continuous bounded reads and complete CSV |
+| `tokenomics-local` | The same native client over the explicit bounded server-side local report source |
+| `tokenomics-offline` | Tokenomics source becomes stale when the synthetic host disconnects |
 | `session-recovery` | Native availability and archive (simulated) |
 | `compact-icons` | Compact controls: combined review |
 | `compact-icons-stale` | Compact controls: stale inventory |

@@ -20,5 +20,6 @@
       "react-native": ["../paseo-plugin/node_modules/react-native"]
     }
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  "exclude": ["test/tokenomics-server.test.ts"]
 }

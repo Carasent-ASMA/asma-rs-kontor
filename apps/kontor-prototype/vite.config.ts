@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
+import { tokenomicsMiddleware } from "./server/tokenomics";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(here, "../paseo-plugin");
@@ -20,6 +21,13 @@ if (missing.length) throw new Error(`KONTOR_PROTOTYPE_FIXTURE lacks ${missing.jo
 const capturedFile = (file: (typeof CAPTURED)[number]) => captured ? path.join(captured, file) : path.join(here, "src/fixtures/captured-empty.json");
 
 export default defineConfig({
+  plugins: [{ name: "kontor-local-tokenomics", configureServer(server) {
+    server.middlewares.use(tokenomicsMiddleware(process.env.KONTOR_PLUGIN_TOKENOMICS_ROOT ?? null));
+  }, transformIndexHtml(html, context) {
+    // Only this development scenario may read same-origin projections; static/synthetic pages stay disconnected.
+    return context.server && new URL(context.originalUrl ?? "/", "http://localhost").searchParams.get("scenario") === "tokenomics-local"
+      ? html.replace("connect-src 'none'", "connect-src 'self'") : html;
+  } }],
   root: here,
   base: "./",
   resolve: {
