@@ -47,7 +47,7 @@ concurrency:
 jobs:
   identity:
     name: Publication branch and title identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Fetch the trusted sources from the exact workflow revision
         shell: bash
