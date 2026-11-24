@@ -1872,7 +1872,7 @@ describe("universal takeover operation", () => {
     };
     // The summary helper is created only in its designated workspace, never with a bare cwd.
     (h.client as unknown as { agents: { create: () => Promise<never> } }).agents.create = async () => { throw new Error("A summary helper is never created by bare cwd."); };
-    const summaryWorkspace = { ...WORKSPACE, id: "wks-summary", projectId: "prj-summary", workspaceDirectory: "/fixtures/summary-helpers" };
+    const summaryWorkspace = { ...WORKSPACE, id: "wks-summary", projectId: "prj-summary", workspaceDirectory: "/fixtures/summary-helpers", projectKind: "non_git", workspaceKind: "directory" };
     const workspaceRef = h.client.workspaces.ref;
     h.client.workspaces.ref = ((id: string) => id !== summaryWorkspace.id ? workspaceRef(id) : {
       refresh: async () => summaryWorkspace,

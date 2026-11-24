@@ -30,7 +30,9 @@ async function harness() {
   let waits = 0, sends = 0, refuseCreate = false, refuseBeforeEffect = false;
   const archived = new Set<string>();
   // The designated workspace; a helper is created only through its workspace-scoped create, never a cwd create.
-  const workspace: Record<string, unknown> = { id: PLACEMENT.workspaceId, projectId: PLACEMENT.projectId, workspaceDirectory: PLACEMENT.cwd, archivingAt: null };
+  const workspace: Record<string, unknown> = { id: PLACEMENT.workspaceId, projectId: PLACEMENT.projectId, workspaceDirectory: PLACEMENT.cwd, archivingAt: null, projectKind: "non_git", workspaceKind: "directory" };
+  // The host's creation receipts: one request fingerprint per idempotency key. The same key with another request is refused.
+  const receipts = new Map<string, string>();
   const workspaceReads: string[] = [];
   const placementFile = join(root, "summary.json");
   await writeFile(placementFile, JSON.stringify(PLACEMENT));
@@ -63,6 +65,11 @@ async function harness() {
       refresh: async () => { workspaceReads.push(id); return id === PLACEMENT.workspaceId && !workspace.absent ? { ...workspace } : null; },
       agents: { create: async (options: Record<string, any>) => {
         if (refuseBeforeEffect) { refuseBeforeEffect = false; throw new Error("Creation request lost"); }
+        const fingerprint = JSON.stringify({ agentId: options.agentId, cwd: workspace.workspaceDirectory, workspaceId: id });
+        const receipt = receipts.get(options.idempotencyKey);
+        if (receipt !== undefined && receipt !== fingerprint) throw new Error("agent_request_key_conflict");
+        if (receipt === fingerprint) return api.agents.ref(options.agentId);
+        receipts.set(options.idempotencyKey, fingerprint);
         created.push({ ...options, cwd: workspace.workspaceDirectory, workspaceId: id }); workers.add(options.agentId);
         if (refuseCreate) { refuseCreate = false; throw new Error("Creation answer lost"); }
         return api.agents.ref(options.agentId);
@@ -74,7 +81,7 @@ async function harness() {
   const host = { env: {}, home: join(root, "home"), system: false, stopAt: root };
   const generator = () => stockSummaryGenerator(api as never, root, host, placementFile)!;
   const service = () => createSessionSummaryService(api as never, root, stockSummaryGenerator(api as never, root, host, placementFile));
-  return { root, api, source, workspace, workspaceReads, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
+  return { root, api, source, workspace, workspaceReads, receipts, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
 }
 
 describe("stock summary generator", () => {
@@ -566,6 +573,10 @@ describe("stock summary generator", () => {
 });
 
 describe("summary helper placement and lifecycle (ASMA-8580)", () => {
+  async function jobFiles(h: Awaited<ReturnType<typeof harness>>) {
+    return (await readdir(join(h.root, "generation-jobs"))).filter(name => name.endsWith(".json") && !name.endsWith(".capture.json"));
+  }
+
   async function jobOf(h: Awaited<ReturnType<typeof harness>>) {
     const jobs = join(h.root, "generation-jobs");
     const name = (await readdir(jobs)).find(name => name.endsWith(".json") && !name.endsWith(".capture.json"))!;
@@ -598,8 +609,7 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("need one designated workspace");
     expect(h.created).toEqual([]);
     expect(h.workspaceReads).toEqual([]);
-    expect((await jobOf(h)).job).toMatchObject({ state: "creating" });
-    expect((await jobOf(h)).job).not.toHaveProperty("placement");
+    expect(await jobFiles(h)).toEqual([]);
   });
 
   it.each([
@@ -608,13 +618,18 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     ["another project", { projectId: "prj_other" }],
     ["another directory", { workspaceDirectory: "/fixture/elsewhere" }],
     ["an archiving workspace", { archivingAt: "2026-11-24T00:00:00Z" }],
+    ["a git project", { projectKind: "git" }],
+    ["a checkout workspace", { workspaceKind: "local_checkout" }],
+    ["a worktree workspace", { workspaceKind: "worktree" }],
+    ["no workspace kind", { workspaceKind: undefined }],
+    ["no project kind", { projectKind: undefined }],
   ])("fails closed with no helper when the native workspace reads back with %s", async (_name, change) => {
     const h = await harness();
     Object.assign(h.workspace, change);
-    await expect(h.generator().generate(SOURCE)).rejects.toThrow("does not read back with its configured project");
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(`The summary workspace ${PLACEMENT.workspaceId} named in summary.json does not read back as a directory workspace with no repository`);
     expect(h.created).toEqual([]);
-    expect((await jobOf(h)).job).not.toHaveProperty("placement");
-    Object.assign(h.workspace, { id: PLACEMENT.workspaceId, projectId: PLACEMENT.projectId, workspaceDirectory: PLACEMENT.cwd, archivingAt: null, absent: false });
+    expect(await jobFiles(h)).toEqual([]);
+    Object.assign(h.workspace, { id: PLACEMENT.workspaceId, projectId: PLACEMENT.projectId, workspaceDirectory: PLACEMENT.cwd, archivingAt: null, absent: false, projectKind: "non_git", workspaceKind: "directory" });
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(1);
   });
@@ -703,15 +718,61 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect(h.counts().sends).toBe(0);
   });
 
-  it("adopts the designated placement for a legacy creating job whose helper never existed", async () => {
-    const h = await harness(); h.loseCreateRequest();
-    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
-    const { file, job } = await jobOf(h);
-    delete job.placement; await writeFile(file, JSON.stringify(job));
+  it("accepts a plain directory project kind as well as non_git", async () => {
+    const h = await harness();
+    Object.assign(h.workspace, { projectKind: "directory" });
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(1);
-    expect(h.created[0]).toMatchObject({ agentId: job.workerId, workspaceId: PLACEMENT.workspaceId });
-    expect((await jobOf(h)).job).toMatchObject({ state: "complete", placement: { ...PLACEMENT, owned: false } });
+  });
+
+  it("names the workspace a job recorded when it no longer reads back, so it can be restored", async () => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    Object.assign(h.workspace, { archivingAt: "2026-11-24T00:00:00Z" });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(`The summary workspace ${PLACEMENT.workspaceId} recorded by this job does not read back`);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Restore that workspace to retry this job.");
+    expect(h.created).toEqual([]);
+    Object.assign(h.workspace, { archivingAt: null });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+  });
+
+  it("refuses a resend under an existing key with another request, as the host does (fixture check)", async () => {
+    const h = await harness();
+    h.receipts.set("kontor-summary:held", JSON.stringify({ agentId: "held", cwd: "/elsewhere" }));
+    await expect(h.api.workspaces.ref(PLACEMENT.workspaceId).agents.create({ agentId: "held", idempotencyKey: "kontor-summary:held" })).rejects.toThrow("agent_request_key_conflict");
+  });
+
+  it("retires a legacy creating job that may have been sent, without rewriting it, a key conflict or a duplicate", async () => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const { jobs, file, job: legacy } = await jobOf(h);
+    // The legacy shape: no placement, and the host holds a receipt for its key from a per-job cwd create.
+    delete legacy.placement; await writeFile(file, JSON.stringify(legacy));
+    h.receipts.set(`kontor-summary:${legacy.workerId}`, JSON.stringify({ agentId: legacy.workerId, cwd: join(jobs, legacy.workerId) }));
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    const fresh = (await jobOf(h)).job;
+    expect(fresh.workerId).not.toBe(legacy.workerId);
+    expect(h.created[0]).toMatchObject({ agentId: fresh.workerId, idempotencyKey: `kontor-summary:${fresh.workerId}`, workspaceId: PLACEMENT.workspaceId });
+    expect(fresh).toMatchObject({ state: "complete", cleaned: true, previousWorkers: [legacy.workerId], placement: { ...PLACEMENT, owned: false } });
+    // The legacy record is kept as it was: never given a placement it did not run in.
+    const retired = JSON.parse(await readFile(join(jobs, "superseded", `${legacy.workerId}.json`), "utf8"));
+    expect(retired).toEqual(legacy);
+    expect([...h.archived]).toEqual([fresh.workerId]);
+  });
+
+  it("does not retire a legacy creating job whose helper exists; it keeps the per-job cwd check", async () => {
+    const h = await harness(); h.loseCreateAnswer();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation answer lost");
+    const { jobs, file, job } = await jobOf(h);
+    delete job.placement; await writeFile(file, JSON.stringify(job));
+    Object.assign(h.created[0]!, { cwd: join(jobs, job.workerId), workspaceId: "wks_legacy" });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect((await jobOf(h)).job).toMatchObject({ workerId: job.workerId, state: "complete" });
+    expect((await jobOf(h)).job).not.toHaveProperty("placement");
+    await expect(readdir(join(jobs, "superseded"))).rejects.toThrow();
   });
 });
 

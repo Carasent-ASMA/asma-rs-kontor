@@ -36,38 +36,59 @@ The helper session runs in one operator-designated workspace, named in
 `$PASEO_HOME/plugin-config/kontor/summary.json` (default
 `~/.paseo/plugin-config/kontor/summary.json`) as
 `{"workspaceId": "…", "projectId": "…", "cwd": "/absolute/directory"}`. A new
-helper reads that file, and the native workspace must read back with exactly
-that project and directory before anything is created. The helper's own
-readback must match too, also on retry. A missing or invalid file, or a
-workspace that does not read back as configured, creates no helper and keeps the
-capture. A helper whose own readback does not match right after create is kept
-with its correlation, and its output stays held; nothing is resent. The helper
-is created through
-the workspace's own create, so no job makes a project or workspace. The job
-records the placement with `owned: false`. A retry uses the recorded placement,
-not a changed file. Cleanup archives only the helper and never closes the
-designated workspace. The helper's working directory is the workspace
-directory, so designate an empty directory that holds no repository.
+job reads that file, and the native workspace must read back with exactly that
+id, project and directory, not archiving, as a `directory` workspace in a
+`non_git` or `directory` project, before the job is recorded. A repository or
+worktree workspace is refused. A missing or invalid file, or a workspace that
+does not read back that way, records no job, creates no helper and keeps the
+capture; the message names the workspace id. The job records the placement
+with `owned: false` before anything is sent, and a retry uses the recorded
+placement, not a changed file. If the recorded workspace no longer reads back,
+the retry is refused with that recorded id, so it can be restored. The helper is
+created through the workspace's own create, so no job makes a project or
+workspace. The helper's own readback must match too, also on retry. A helper
+whose own readback does not match right after create is kept with its
+correlation, and its output stays held; nothing is resent. Cleanup archives only
+the helper and never closes the designated workspace.
+
+A `creating` job recorded by an earlier version has no placement and may
+already have been sent with a per-job directory under its helper's key. It is
+never rewritten or re-sent under that key, which the host would refuse for any
+other request. When its helper does not exist, the job is retired: its record is
+kept unchanged under `generation-jobs/superseded/`, and a fresh helper with a new
+key runs in the designated workspace. Its old container stays held in the dry
+run below. A legacy job whose helper exists keeps its per-job directory check.
+
+**Takeover depends on it.** Taking over an idle session saves its handoff
+summary first. Without a valid `summary.json`, that summary cannot be generated,
+so every idle-source takeover answers "Its handoff summary could not be
+generated: …" and is not started, and Summarize & copy fails closed. A running
+source is worse off: apply stops it first and then fails to take its final
+summary, so it stays stopped with no successor and the takeover ends uncertain.
 
 The designated workspace is one singleton utility workspace named `SUMMARIES`
 in the `DESK • ADAM` desk project, on the directory `summaries` under that
 desk's root (by default `~/.local/share/paseo/desk-projects/ADAM/summaries`).
 It holds only summary helpers. It is not an orchestration role or seat, and a
 helper carries only its summary job and source labels. Its native ids live only
-in `summary.json`, never in source. Activation, after install, in this order:
+in `summary.json`, never in source. Activation is one install step, in this
+order, before the plugin with this change is reloaded:
 
 1. Find the existing `SUMMARIES` workspace in `DESK • ADAM`, or create it
    exactly once from that directory with the desk's explicit `projectId`. Read
-   back its id, project, title, kind (directory, no repository) and directory.
-   Another matching workspace, a path collision or a foreign occupant stops
-   activation; nothing existing is renamed, moved or archived.
+   back its id, project, title, kinds (`directory` workspace, `non_git` or
+   `directory` project) and directory. Another matching workspace, a path
+   collision or a foreign occupant stops activation; nothing existing is
+   renamed, moved or archived.
 2. Write `summary.json` with that `workspaceId`, `projectId` and `cwd`, keeping
-   the previous file for rollback.
-3. Enable summary generation only then. Until `summary.json` reads back,
-   Summarize fails closed with a clear message and keeps the capture.
+   the previous file for rollback, and read it back.
+3. Only then install or reload the plugin with this change. A failure in step 1
+   or 2 stops the install, so takeover never runs without a bound workspace.
 
-Rollback restores the previous `summary.json`, or removes it, which disables
-new helpers without touching the workspace or saved summaries.
+Rollback reinstalls the previous plugin build first. Removing or changing
+`summary.json` while this change is installed blocks new summaries and
+idle-source takeover, as above. It never touches the workspace or saved
+summaries.
 
 Helpers created before this change made one project and workspace per job
 under `generation-jobs/<helper id>`. Nothing closes those automatically.

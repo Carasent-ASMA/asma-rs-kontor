@@ -65,10 +65,12 @@ export function summaryPlacementFile(): string {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "summary.json");
 }
 const PLACEMENT_UNSET = "Summary helpers need one designated workspace (plugin-config/kontor/summary.json: workspaceId, projectId, cwd). Capture retained; no helper was created.";
-const PLACEMENT_MISMATCH = "The designated summary workspace does not read back with its configured project and directory. Capture retained; no helper was created.";
+const placementMismatch = (placement: SummaryHelperPlacement, recorded: boolean) =>
+  `The summary workspace ${placement.workspaceId} ${recorded ? "recorded by this job" : "named in summary.json"} does not read back as a directory workspace with no repository, in project ${placement.projectId} at ${placement.cwd}.${recorded ? " Restore that workspace to retry this job." : ""} Capture retained; no helper was created.`;
 
-// `placement` is the designated workspace the job ran in; `owned: false` records that the job never owns or closes it.
-// A job without `placement` is legacy: its helper made a per-job project and workspace, left to the gated dry-run reconcile.
+// `placement` is the designated workspace the job ran in, written with the job before any dispatch; `owned: false` records
+// that the job never owns or closes it. A job without `placement` is legacy: its helper made a per-job project and
+// workspace, left to the gated dry-run reconcile, and placement is never written into it.
 // `cleaned` means the job's own effect, its helper, is archived and read back.
 export const summaryJobSchema = z.object({ workerId: z.string().uuid(), state: z.enum(["creating", "waiting", "failed", "complete"]), previousWorkers: z.array(z.string()), clientMessageId: z.string().uuid().optional(), promptHash: z.string().optional(), workerSessionId: z.string().optional(), sections: sectionsSchema.optional(), route: routeSchema.optional(), placement: placementSchema.extend({ owned: z.literal(false) }).strict().optional(), cleaned: z.boolean().optional(), promptVersion: z.literal(SUMMARY_PROMPT_VERSION).optional() }).strict();
 type Job = z.infer<typeof summaryJobSchema>;
@@ -103,7 +105,10 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     return run.finally(() => { if (tails.get(key) === run) tails.delete(key); });
   } };
 
-  /** The recorded placement wins on retry; a new job reads the operator file. Either way the native workspace must match exactly. */
+  /**
+   * The recorded placement wins on retry; a new job reads the operator file. Either way the native workspace must match
+   * exactly and be a plain directory workspace outside any repository, so a helper never runs inside a checkout.
+   */
   async function designatedWorkspace(recorded: SummaryHelperPlacement | undefined) {
     let placement = recorded;
     if (!placement) {
@@ -111,7 +116,8 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     }
     const workspace = paseo.workspaces.ref(placement.workspaceId);
     const read = await workspace.refresh();
-    if (!read || read.id !== placement.workspaceId || read.projectId !== placement.projectId || read.workspaceDirectory !== placement.cwd || read.archivingAt) throw new Error(PLACEMENT_MISMATCH);
+    if (!read || read.id !== placement.workspaceId || read.projectId !== placement.projectId || read.workspaceDirectory !== placement.cwd || read.archivingAt
+      || read.workspaceKind !== "directory" || (read.projectKind !== "non_git" && read.projectKind !== "directory")) throw new Error(placementMismatch(placement, !!recorded));
     return { placement: { workspaceId: placement.workspaceId, projectId: placement.projectId, cwd: placement.cwd }, workspace };
   }
 
@@ -186,16 +192,23 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       job.cleaned = true; await writeJob(file, job);
     }
     if (job?.state === "complete" && job.sections) { await cleanup(); return { sections: job.sections, cutoff, historyBoundary }; }
-    if (!job || job.state === "failed") {
-      if (job) await cleanup();
-      if (migrateLegacyFailure && job) {
+    // A creating job without placement was written by an earlier version, which may already have sent its create with a
+    // per-job cwd under this helper's key. The host refuses that key for any other request, so the job is not re-sent: it
+    // is retired with its record kept, and a fresh helper with a new key takes its place. Its container stays held.
+    const legacyCreating = job?.state === "creating" && !job.placement && !(await paseo.agents.ref(job.workerId).refresh());
+    let designated: Awaited<ReturnType<typeof designatedWorkspace>> | null = null;
+    if (!job || job.state === "failed" || legacyCreating) {
+      if (job?.state === "failed") await cleanup();
+      if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
+      designated = await designatedWorkspace(undefined);
+      const route = await selectSummaryRoute(paseo, agent.cwd, host);
+      if (job && (migrateLegacyFailure || legacyCreating)) {
         const superseded = join(jobs, "superseded");
         await mkdir(superseded, { recursive: true, mode: 0o700 });
         await writeJob(join(superseded, `${job.workerId}.json`), job);
       }
-      if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
-      const route = await selectSummaryRoute(paseo, agent.cwd, host);
-      job = { workerId: randomUUID(), state: "creating", previousWorkers: job ? [...job.previousWorkers, job.workerId] : [], clientMessageId: randomUUID(), promptHash: digest(prompt), route, promptVersion: SUMMARY_PROMPT_VERSION };
+      job = { workerId: randomUUID(), state: "creating", previousWorkers: job ? [...job.previousWorkers, job.workerId] : [], clientMessageId: randomUUID(), promptHash: digest(prompt), route, promptVersion: SUMMARY_PROMPT_VERSION,
+        placement: { ...designated.placement, owned: false } };
       await writeJob(file, job);
     }
     if (!job.route) throw new Error("The recorded worker has no validated summarizer route. It remains held.");
@@ -205,8 +218,7 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     if (existing && existing.agent.id !== job.workerId) throw new Error("The summary worker identity did not match. Nothing was sent.");
     if (!existing) {
       if (job.state !== "creating") throw new Error(`Summary generation is unconfirmed. Inspect summary session ${job.workerId}; retry never sends another prompt.`);
-      const { placement, workspace } = await designatedWorkspace(job.placement);
-      if (!job.placement) { job.placement = { ...placement, owned: false }; await writeJob(file, job); }
+      const { placement, workspace } = designated ?? await designatedWorkspace(job.placement);
       // Workspace-scoped creation: the host places the helper in the designated workspace and creates no project or workspace.
       worker = await workspace.agents.create({
         agentId: job.workerId, clientMessageId: job.clientMessageId, idempotencyKey: `kontor-summary:${job.workerId}`,
