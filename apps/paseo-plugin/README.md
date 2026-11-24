@@ -52,12 +52,18 @@ correlation, and its output stays held; nothing is resent. Cleanup archives only
 the helper and never closes the designated workspace.
 
 A `creating` job recorded by an earlier version has no placement and may
-already have been sent with a per-job directory under its helper's key. It is
-never rewritten or re-sent under that key, which the host would refuse for any
-other request. When its helper does not exist, the job is retired: its record is
-kept unchanged under `generation-jobs/superseded/`, and a fresh helper with a new
-key runs in the designated workspace. Its old container stays held in the dry
-run below. A legacy job whose helper exists keeps its per-job directory check.
+already have been sent with a per-job directory under its helper's key. A helper
+that does not read back does not prove that create had no effect, so the job is
+held: it is never rewritten, never re-sent under that key, and no new helper is
+started. A fresh helper with a new key replaces it only on one of two grounds:
+its helper reads back archived by its exact id (the old create is terminal), or
+an operator records a recovery disposition in the job,
+`"recovery": {"disposition": "retire-legacy-create", "evidence": "…", "recordedAt": "…"}`,
+naming the reconciled evidence. The old record is then kept unchanged under
+`generation-jobs/superseded/` and its container stays held in the dry run
+below. A legacy helper that reads back live keeps its per-job directory check.
+The host refuses a key it holds for a different request; the generator holds
+that job with a plain message and never escapes the refusal with a new key.
 
 **Takeover depends on it.** Taking over an idle session saves its handoff
 summary first. Without a valid `summary.json`, that summary cannot be generated,

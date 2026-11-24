@@ -743,26 +743,88 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     await expect(h.api.workspaces.ref(PLACEMENT.workspaceId).agents.create({ agentId: "held", idempotencyKey: "kontor-summary:held" })).rejects.toThrow("agent_request_key_conflict");
   });
 
-  it("retires a legacy creating job that may have been sent, without rewriting it, a key conflict or a duplicate", async () => {
-    const h = await harness(); h.loseCreateRequest();
+  /** A legacy `creating` record: no placement, and the host holds a receipt for its key from a per-job cwd create. */
+  async function legacyCreating(h: Awaited<ReturnType<typeof harness>>, recovery?: Record<string, string>) {
+    h.loseCreateRequest();
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
-    const { jobs, file, job: legacy } = await jobOf(h);
-    // The legacy shape: no placement, and the host holds a receipt for its key from a per-job cwd create.
-    delete legacy.placement; await writeFile(file, JSON.stringify(legacy));
-    h.receipts.set(`kontor-summary:${legacy.workerId}`, JSON.stringify({ agentId: legacy.workerId, cwd: join(jobs, legacy.workerId) }));
-    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
-    expect(h.created).toHaveLength(1);
-    const fresh = (await jobOf(h)).job;
-    expect(fresh.workerId).not.toBe(legacy.workerId);
-    expect(h.created[0]).toMatchObject({ agentId: fresh.workerId, idempotencyKey: `kontor-summary:${fresh.workerId}`, workspaceId: PLACEMENT.workspaceId });
-    expect(fresh).toMatchObject({ state: "complete", cleaned: true, previousWorkers: [legacy.workerId], placement: { ...PLACEMENT, owned: false } });
-    // The legacy record is kept as it was: never given a placement it did not run in.
-    const retired = JSON.parse(await readFile(join(jobs, "superseded", `${legacy.workerId}.json`), "utf8"));
-    expect(retired).toEqual(legacy);
-    expect([...h.archived]).toEqual([fresh.workerId]);
+    const { jobs, file, job } = await jobOf(h);
+    delete job.placement; if (recovery) job.recovery = recovery;
+    await writeFile(file, JSON.stringify(job));
+    h.receipts.set(`kontor-summary:${job.workerId}`, JSON.stringify({ agentId: job.workerId, cwd: join(jobs, job.workerId) }));
+    return { jobs, file, legacy: job, text: await readFile(file, "utf8") };
+  }
+
+  it("holds a legacy creating job whose helper does not read back: no rewrite, resend, new key or duplicate", async () => {
+    const h = await harness();
+    const { jobs, file, text, legacy } = await legacyCreating(h);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+      expect(String(error)).toContain(`Summary helper ${legacy.workerId} was requested by an earlier version`);
+      expect(String(error)).toContain("The job is held");
+      expect(String(error)).not.toContain("key_conflict");
+    }
+    expect(h.created).toEqual([]);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(await readdir(jobs)).not.toContain("superseded");
+    expect([...h.receipts.keys()]).toEqual([`kontor-summary:${legacy.workerId}`]);
   });
 
-  it("does not retire a legacy creating job whose helper exists; it keeps the per-job cwd check", async () => {
+  it("holds, rather than re-keys, a job whose own key the host holds for another request", async () => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const { file, job } = await jobOf(h);
+    h.receipts.set(`kontor-summary:${job.workerId}`, JSON.stringify({ agentId: job.workerId, cwd: "/fixture/another-request" }));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+      expect(String(error)).toContain(`Summary helper ${job.workerId} was already requested under its key with a different request. The job is held`);
+      expect(String(error)).not.toContain("agent_request_key_conflict");
+    }
+    expect(h.created).toEqual([]);
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual(job);
+    expect(h.receipts.size).toBe(1);
+  });
+
+  it("(a) retires a legacy creating job whose helper reads back archived, keeping its record, for a fresh helper and key", async () => {
+    const h = await harness(); h.loseCreateAnswer();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation answer lost");
+    const { jobs, file, job: legacy } = await jobOf(h);
+    delete legacy.placement; await writeFile(file, JSON.stringify(legacy));
+    h.archived.add(legacy.workerId);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const fresh = (await jobOf(h)).job;
+    expect(fresh.workerId).not.toBe(legacy.workerId);
+    expect(fresh).toMatchObject({ state: "complete", cleaned: true, previousWorkers: [legacy.workerId], placement: { ...PLACEMENT, owned: false } });
+    expect(h.created.map(item => item.idempotencyKey)).toEqual([`kontor-summary:${legacy.workerId}`, `kontor-summary:${fresh.workerId}`]);
+    expect(JSON.parse(await readFile(join(jobs, "superseded", `${legacy.workerId}.json`), "utf8"))).toEqual(legacy);
+  });
+
+  it("(b) retires a legacy creating job on its recorded recovery disposition, keeping its record, for a fresh helper and key", async () => {
+    const h = await harness();
+    const recovery = { disposition: "retire-legacy-create", evidence: "operator readback of the old key: no agent, create failed", recordedAt: "2026-11-25T00:00:00Z" };
+    const { jobs, legacy } = await legacyCreating(h, recovery);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const fresh = (await jobOf(h)).job;
+    expect(fresh.workerId).not.toBe(legacy.workerId);
+    expect(fresh).toMatchObject({ state: "complete", previousWorkers: [legacy.workerId], placement: { ...PLACEMENT, owned: false } });
+    expect(fresh).not.toHaveProperty("recovery");
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]).toMatchObject({ agentId: fresh.workerId, idempotencyKey: `kontor-summary:${fresh.workerId}`, workspaceId: PLACEMENT.workspaceId });
+    expect(JSON.parse(await readFile(join(jobs, "superseded", `${legacy.workerId}.json`), "utf8"))).toEqual(legacy);
+  });
+
+  it.each([
+    ["no evidence", { disposition: "retire-legacy-create", recordedAt: "2026-11-25T00:00:00Z" }],
+    ["blank evidence", { disposition: "retire-legacy-create", evidence: " ", recordedAt: "2026-11-25T00:00:00Z" }],
+    ["another disposition", { disposition: "retry", evidence: "e", recordedAt: "2026-11-25T00:00:00Z" }],
+  ])("mints no fresh key on an incomplete recovery disposition (%s)", async (_name, recovery) => {
+    const h = await harness();
+    const { jobs } = await legacyCreating(h, recovery as Record<string, string>);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow();
+    expect(h.created).toEqual([]);
+    expect(await readdir(jobs)).not.toContain("superseded");
+  });
+
+  it("does not retire a legacy creating job whose helper reads back live; it keeps the per-job cwd check", async () => {
     const h = await harness(); h.loseCreateAnswer();
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation answer lost");
     const { jobs, file, job } = await jobOf(h);

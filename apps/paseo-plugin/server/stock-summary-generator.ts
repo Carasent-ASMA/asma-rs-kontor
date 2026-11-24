@@ -70,9 +70,10 @@ const placementMismatch = (placement: SummaryHelperPlacement, recorded: boolean)
 
 // `placement` is the designated workspace the job ran in, written with the job before any dispatch; `owned: false` records
 // that the job never owns or closes it. A job without `placement` is legacy: its helper made a per-job project and
-// workspace, left to the gated dry-run reconcile, and placement is never written into it.
+// workspace, left to the gated dry-run reconcile, and placement is never written into it. `recovery` is an operator's
+// recorded disposition for a held legacy `creating` job, naming the evidence that its earlier create was reconciled.
 // `cleaned` means the job's own effect, its helper, is archived and read back.
-export const summaryJobSchema = z.object({ workerId: z.string().uuid(), state: z.enum(["creating", "waiting", "failed", "complete"]), previousWorkers: z.array(z.string()), clientMessageId: z.string().uuid().optional(), promptHash: z.string().optional(), workerSessionId: z.string().optional(), sections: sectionsSchema.optional(), route: routeSchema.optional(), placement: placementSchema.extend({ owned: z.literal(false) }).strict().optional(), cleaned: z.boolean().optional(), promptVersion: z.literal(SUMMARY_PROMPT_VERSION).optional() }).strict();
+export const summaryJobSchema = z.object({ workerId: z.string().uuid(), state: z.enum(["creating", "waiting", "failed", "complete"]), previousWorkers: z.array(z.string()), clientMessageId: z.string().uuid().optional(), promptHash: z.string().optional(), workerSessionId: z.string().optional(), sections: sectionsSchema.optional(), route: routeSchema.optional(), placement: placementSchema.extend({ owned: z.literal(false) }).strict().optional(), recovery: z.object({ disposition: z.literal("retire-legacy-create"), evidence: z.string().trim().min(1), recordedAt: z.string().trim().min(1) }).strict().optional(), cleaned: z.boolean().optional(), promptVersion: z.literal(SUMMARY_PROMPT_VERSION).optional() }).strict();
 type Job = z.infer<typeof summaryJobSchema>;
 const tails = new Map<string, Promise<unknown>>();
 
@@ -193,9 +194,16 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     }
     if (job?.state === "complete" && job.sections) { await cleanup(); return { sections: job.sections, cutoff, historyBoundary }; }
     // A creating job without placement was written by an earlier version, which may already have sent its create with a
-    // per-job cwd under this helper's key. The host refuses that key for any other request, so the job is not re-sent: it
-    // is retired with its record kept, and a fresh helper with a new key takes its place. Its container stays held.
-    const legacyCreating = job?.state === "creating" && !job.placement && !(await paseo.agents.ref(job.workerId).refresh());
+    // per-job cwd under this helper's key; an absent helper does not prove that create had no effect. It is never
+    // rewritten or re-sent under its key, and it is held. Only native evidence that its create is terminal (the helper
+    // reads back archived by its exact id) or a recovery disposition recorded in the job retires it, record kept, for a
+    // fresh helper and key. A helper that reads back live keeps the legacy per-job cwd check below.
+    let legacyCreating = false;
+    if (job?.state === "creating" && !job.placement) {
+      const legacy = await paseo.agents.ref(job.workerId).refresh();
+      if (!legacy && !job.recovery) throw new Error(`Summary helper ${job.workerId} was requested by an earlier version and may exist on the host although it does not read back. The job is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
+      legacyCreating = legacy ? legacy.agent.id === job.workerId && !!legacy.agent.archivedAt : true;
+    }
     let designated: Awaited<ReturnType<typeof designatedWorkspace>> | null = null;
     if (!job || job.state === "failed" || legacyCreating) {
       if (job?.state === "failed") await cleanup();
@@ -219,7 +227,9 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     if (!existing) {
       if (job.state !== "creating") throw new Error(`Summary generation is unconfirmed. Inspect summary session ${job.workerId}; retry never sends another prompt.`);
       const { placement, workspace } = designated ?? await designatedWorkspace(job.placement);
+      const workerId = job.workerId;
       // Workspace-scoped creation: the host places the helper in the designated workspace and creates no project or workspace.
+      // The host refuses a key it holds for another request; that refusal is held, never escaped with a new key.
       worker = await workspace.agents.create({
         agentId: job.workerId, clientMessageId: job.clientMessageId, idempotencyKey: `kontor-summary:${job.workerId}`,
         title: `Summary · ${agent.title ?? agentId}`,
@@ -227,6 +237,9 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
         labels: { "kontor.summary.source": agentId, "kontor.summary.job": jobKey },
         outputSchema,
         prompt,
+      }).catch((error: unknown) => {
+        if (error instanceof Error && /_request_key_conflict$/.test(error.message)) throw new Error(`Summary helper ${workerId} was already requested under its key with a different request. The job is held: nothing was resent and no new helper was started. Capture retained.`);
+        throw error;
       });
       if (worker.id !== job.workerId) throw new Error("The created summary worker identity did not match. Inspect the generation session before retrying.");
       job.state = "waiting";
