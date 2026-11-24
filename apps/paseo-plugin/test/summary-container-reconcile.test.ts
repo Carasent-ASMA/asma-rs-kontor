@@ -10,6 +10,8 @@ const dirs: string[] = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 
 type Agent = { id: string; workspaceId?: string; cwd: string; archivedAt: string | null };
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+type Container = Awaited<ReturnType<Fixture["container"]>>;
 
 /** Real job, capture and summary-store files; a read-only host fake with no mutation method at all. */
 async function fixture() {
@@ -20,22 +22,28 @@ async function fixture() {
   const agents: Agent[] = [];
   const terminals = new Map<string, number>();
   const reads: string[] = [];
+  const helperProjects = new Map<string, string>();
   /** One legacy container: per-job project and workspace rooted at generation-jobs/<helper>, its helper archived inside. */
-  async function container(options: { state?: string; cleaned?: boolean | null; saved?: boolean; helper?: "archived" | "active" | "absent"; job?: boolean; previous?: boolean } = {}) {
-    const helperId = randomUUID(), jobKey = createHash("sha256").update(helperId).digest("hex"), source = `source-${helperId}`;
+  async function container(options: { state?: string; cleaned?: boolean | null; saved?: boolean; helper?: "archived" | "active" | "absent"; job?: boolean; previous?: boolean;
+    placement?: boolean; savedBoundary?: Record<string, unknown>; savedSections?: Record<string, string>; savedCutoff?: string; savedSource?: string; capture?: "missing" | "corrupt" } = {}) {
+    const helperId = randomUUID(), source = `source-${helperId}`;
     const directory = join(jobs, helperId), workspaceId = `wks_${helperId.slice(0, 8)}`, projectId = `prj_${helperId.slice(0, 8)}`;
-    const snapshotHash = createHash("sha256").update(source).digest("hex");
+    const snapshotHash = createHash("sha256").update(source).digest("hex"), cutoff = "2026-11-01T00:00:00Z";
     const boundary = { epoch: "e", fromSeq: 1, toSeq: 2, snapshotHash, partial: false, provider: "codex", providerSessionId: null };
+    // The generator's key: the job and capture files are named by sha256([source, boundary]).
+    const jobKey = createHash("sha256").update(JSON.stringify([source, boundary])).digest("hex");
     if (options.job !== false) {
       const workerId = options.previous ? randomUUID() : helperId;
       await writeFile(join(jobs, `${jobKey}.json`), JSON.stringify({ workerId, state: options.state ?? "complete", previousWorkers: options.previous ? [helperId] : [],
         clientMessageId: randomUUID(), promptHash: "h", ...((options.state ?? "complete") === "complete" ? { sections: SECTIONS } : {}),
+        ...(options.placement ? { placement: { workspaceId, projectId, cwd: directory, owned: false } } : {}),
         ...(options.cleaned === null ? {} : { cleaned: options.cleaned ?? true }), promptVersion: 2 }));
-      await writeFile(join(jobs, `${jobKey}.capture.json`), JSON.stringify({ sourceAgentId: source, historyBoundary: boundary }));
+      if (options.capture !== "missing") await writeFile(join(jobs, `${jobKey}.capture.json`), options.capture === "corrupt" ? "{\"sourceAgentId\":" : JSON.stringify({ sourceAgentId: source, cutoff, historyBoundary: boundary }));
     }
     if (options.saved !== false) {
       const summaryId = randomUUID();
-      const revision = { summaryId, revision: 1, sourceAgentId: source, sourceTitle: "S", cutoff: "2026-11-01T00:00:00Z", savedAt: "2026-11-01T00:00:01Z", historyBoundary: boundary, sections: SECTIONS, text: "x" };
+      const revision = { summaryId, revision: 1, sourceAgentId: options.savedSource ?? source, sourceTitle: "S", cutoff: options.savedCutoff ?? cutoff, savedAt: "2026-11-01T00:00:01Z",
+        historyBoundary: { ...boundary, ...options.savedBoundary }, sections: options.savedSections ?? SECTIONS, text: "x" };
       await writeFile(join(root, `source-${createHash("sha256").update(source).digest("hex")}.json`), JSON.stringify({ summaryId, sourceAgentId: source, sourceTitle: "S", latestRevision: 1, revisions: { "1": revision } }));
     }
     workspaces.push({ id: workspaceId, projectId, projectRootPath: directory, workspaceDirectory: directory });
@@ -49,6 +57,12 @@ async function fixture() {
       ref: (id: string) => ({ terminals: { list: async () => { reads.push(`terminals:${id}`); return { requestId: "r", entries: Array.from({ length: terminals.get(id) ?? 0 }, (_, index) => ({ id: `t${index}` })) }; } } }),
     },
     agents: {
+      ref: (id: string) => ({ refresh: async () => {
+        reads.push(`helper:${id}`);
+        const agent = agents.find(entry => entry.id === id);
+        const workspace = workspaces.find(entry => entry.id === agent?.workspaceId);
+        return agent ? { agent, project: workspace ? { projectKey: helperProjects.get(id) ?? workspace.projectId } : null } : null;
+      } }),
       list: async (options: { filter: { projectKeys: string[]; includeArchived: boolean; includeBackground: boolean } }) => {
         reads.push(`agents:${options.filter.projectKeys.join(",")}:${options.filter.includeArchived}:${options.filter.includeBackground}`);
         const ids = new Set(workspaces.filter(workspace => options.filter.projectKeys.includes(workspace.projectId as string)).map(workspace => workspace.id));
@@ -57,7 +71,7 @@ async function fixture() {
     },
   };
   const run = () => reconcileSummaryContainers(paseo as never, root, "127.0.0.1:6767");
-  return { root, jobs, workspaces, agents, terminals, reads, container, run };
+  return { root, jobs, workspaces, agents, terminals, reads, helperProjects, container, run };
 }
 
 describe("legacy summary container dry-run reconcile (ASMA-8580)", () => {
@@ -71,7 +85,7 @@ describe("legacy summary container dry-run reconcile (ASMA-8580)", () => {
       occupants: [{ agentId: ok.helperId, own: true, archived: true }], closeout: `paseo workspace archive ${ok.workspaceId} --json --host 127.0.0.1:6767` });
     expect(result.projectResidual).toContain("not proposed");
     expect(await readdir(f.root)).toEqual(before);
-    expect(f.reads).toEqual(["workspaces:true", `agents:${ok.projectId}:true:true`, `terminals:${ok.workspaceId}`]);
+    expect(f.reads).toEqual(["workspaces:true", `helper:${ok.helperId}`, `agents:${ok.projectId}:true:true`, `terminals:${ok.workspaceId}`]);
   });
 
   it("closes out an earlier attempt's container of a complete job", async () => {
@@ -117,8 +131,9 @@ describe("legacy summary container dry-run reconcile (ASMA-8580)", () => {
     await g.container();
     (g as unknown as { agents: unknown }).agents = null;
     const run = reconcileSummaryContainers({ workspaces: { list: async () => ({ entries: g.workspaces, pageInfo: { hasMore: false } }), ref: () => ({ terminals: { list: async () => { throw new Error("gone"); } } }) },
-      agents: { list: async () => { throw new Error("down"); } } } as never, g.root);
-    expect((await run).rows[0]).toMatchObject({ closeout: null, occupants: null, terminals: null, holds: ["Its occupants could not be read.", "Its terminals could not be read."] });
+      agents: { ref: () => ({ refresh: async () => { throw new Error("down"); } }), list: async () => { throw new Error("down"); } } } as never, g.root);
+    expect((await run).rows[0]).toMatchObject({ closeout: null, occupants: null, terminals: null,
+      holds: ["The helper's own readback does not bind this workspace and project.", "Its occupants could not be read.", "Its terminals could not be read."] });
   });
 
   it("ignores workspaces outside the job directory, including a nested or sibling path", async () => {
@@ -135,6 +150,82 @@ describe("legacy summary container dry-run reconcile (ASMA-8580)", () => {
     const [row] = (await f.run()).rows;
     expect(row!.holds).toContain("The directory is not a helper id.");
     expect(row!.closeout).toBeNull();
+  });
+
+  it("always holds a job that records a designated placement it does not own (explicit-nonowned-container)", async () => {
+    const f = await fixture();
+    const held = await f.container({ placement: true });
+    const [row] = (await f.run()).rows;
+    expect(row).toMatchObject({ workspaceId: held.workspaceId, closeout: null });
+    expect(row!.holds).toEqual(["The job records a designated workspace it does not own (owned: false)."]);
+  });
+
+  it.each([
+    ["in the same project (same-directory-second-workspace)", (projectId: string) => projectId],
+    ["in another project", () => "prj_other"],
+  ])("proposes only the workspace the helper is bound to when a sibling shares its directory %s", async (_name, siblingProject) => {
+    const f = await fixture();
+    const owned = await f.container();
+    f.workspaces.push({ id: "wks_sibling", projectId: siblingProject(owned.projectId), projectRootPath: owned.directory, workspaceDirectory: owned.directory });
+    const result = await f.run();
+    expect(result).toMatchObject({ containers: 2, closeout: 1, held: 1 });
+    const [bound, sibling] = [result.rows.find(row => row.workspaceId === owned.workspaceId)!, result.rows.find(row => row.workspaceId === "wks_sibling")!];
+    expect(bound).toMatchObject({ holds: [], closeout: `paseo workspace archive ${owned.workspaceId} --json --host 127.0.0.1:6767` });
+    expect(sibling.closeout).toBeNull();
+    expect(sibling.holds).toContain("The helper's own readback does not bind this workspace and project.");
+    expect(sibling.occupants).toEqual([{ agentId: owned.helperId, own: false, archived: true }]);
+  });
+
+  it.each([
+    ["another workspace", (f: Fixture, c: Container) => { f.agents.find(a => a.id === c.helperId)!.workspaceId = "wks_elsewhere"; }],
+    ["another project", (f: Fixture, c: Container) => { f.helperProjects.set(c.helperId, "prj_elsewhere"); }],
+    ["another directory", (f: Fixture, c: Container) => { f.agents.find(a => a.id === c.helperId)!.cwd = "/fixture/elsewhere"; }],
+  ])("holds the container when the helper's own readback names %s", async (_name, mutate) => {
+    const f = await fixture();
+    const c = await f.container();
+    mutate(f, c);
+    const row = (await f.run()).rows.find(entry => entry.workspaceId === c.workspaceId)!;
+    expect(row.closeout).toBeNull();
+    expect(row.holds).toContain("The helper's own readback does not bind this workspace and project.");
+  });
+
+  it.each([
+    ["a different epoch", { savedBoundary: { epoch: "e2" } }],
+    ["a different provider session", { savedBoundary: { providerSessionId: "session-2" } }],
+    ["a different sequence range", { savedBoundary: { toSeq: 3 } }],
+    ["a partial flag", { savedBoundary: { partial: true } }],
+    ["a different cutoff", { savedCutoff: "2026-11-02T00:00:00Z" }],
+    ["other sections", { savedSections: { ...SECTIONS, nextStep: "other" } }],
+    ["another source on the revision", { savedSource: "another-source" }],
+  ])("holds a container whose only saved revision has the same input hash but %s", async (_name, options) => {
+    const f = await fixture();
+    await f.container(options);
+    const [row] = (await f.run()).rows;
+    expect(row).toMatchObject({ summarySaved: false, closeout: null });
+    expect(row!.holds).toEqual(["No saved summary revision matches the job's capture."]);
+  });
+
+  it("accepts the matching full boundary as saved (control)", async () => {
+    const f = await fixture();
+    await f.container({ savedBoundary: {} });
+    expect((await f.run()).rows[0]).toMatchObject({ summarySaved: true, holds: [] });
+  });
+
+  it.each([["missing", "missing"], ["unreadable", "corrupt"]] as const)("holds a complete, cleaned container whose capture is %s", async (_name, capture) => {
+    const f = await fixture();
+    await f.container({ capture });
+    const [row] = (await f.run()).rows;
+    expect(row).toMatchObject({ summarySaved: false, closeout: null });
+    expect(row!.holds).toEqual(["No saved summary revision matches the job's capture."]);
+  });
+
+  it("holds a capture that is not the job's own, even when a saved revision matches it", async () => {
+    const f = await fixture();
+    await f.container({ savedBoundary: { fromSeq: 0 } });
+    const name = (await readdir(f.jobs)).find(file => file.endsWith(".capture.json"))!;
+    const capture = JSON.parse(await readFile(join(f.jobs, name), "utf8"));
+    await writeFile(join(f.jobs, name), JSON.stringify({ ...capture, historyBoundary: { ...capture.historyBoundary, fromSeq: 0 } }));
+    expect((await f.run()).rows[0]!.holds).toEqual(["No saved summary revision matches the job's capture."]);
   });
 
   it("treats an unreadable job record as naming no helper", async () => {

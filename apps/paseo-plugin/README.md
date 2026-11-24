@@ -9,10 +9,13 @@ navigator reads Paseo directly and works without `kontord`.
 
 Summarize & copy uses stock Paseo 0.12 agent creation, timeline and finish APIs.
 It reads a bounded tail of up to 48 source history items and 24,000 message
-characters, then runs a separate, visible read-only Codex summary session. It
-never prompts the source or a destination. A working source must finish first;
-other providers remain explicitly unsupported. Provider execution and installed
-client behavior still need release-owner readback.
+characters, then runs a separate, visible summary helper session. The helper's
+route is an available provider and model from the host catalogue with a
+supported non-dangerous mode, or the host's `summary` agent profile when one is
+configured, independently of the source provider. No read-only sandbox is
+claimed. It never prompts the source or a destination. A working source must
+finish first. Provider execution and installed client behavior still need
+release-owner readback.
 
 Kontor saves immutable revisions in its own plugin state. Each new revision
 records the exact source ID, captured history epoch/sequence range and input
@@ -35,22 +38,51 @@ The helper session runs in one operator-designated workspace, named in
 `{"workspaceId": "…", "projectId": "…", "cwd": "/absolute/directory"}`. A new
 helper reads that file, and the native workspace must read back with exactly
 that project and directory before anything is created. The helper's own
-readback must match too, also on retry. A missing or invalid file, or any
-mismatch, creates no helper and keeps the capture. The helper is created through
+readback must match too, also on retry. A missing or invalid file, or a
+workspace that does not read back as configured, creates no helper and keeps the
+capture. A helper whose own readback does not match right after create is kept
+with its correlation, and its output stays held; nothing is resent. The helper
+is created through
 the workspace's own create, so no job makes a project or workspace. The job
 records the placement with `owned: false`. A retry uses the recorded placement,
 not a changed file. Cleanup archives only the helper and never closes the
 designated workspace. The helper's working directory is the workspace
 directory, so designate an empty directory that holds no repository.
 
+The designated workspace is one singleton utility workspace named `SUMMARIES`
+in the `DESK • ADAM` desk project, on the directory `summaries` under that
+desk's root (by default `~/.local/share/paseo/desk-projects/ADAM/summaries`).
+It holds only summary helpers. It is not an orchestration role or seat, and a
+helper carries only its summary job and source labels. Its native ids live only
+in `summary.json`, never in source. Activation, after install, in this order:
+
+1. Find the existing `SUMMARIES` workspace in `DESK • ADAM`, or create it
+   exactly once from that directory with the desk's explicit `projectId`. Read
+   back its id, project, title, kind (directory, no repository) and directory.
+   Another matching workspace, a path collision or a foreign occupant stops
+   activation; nothing existing is renamed, moved or archived.
+2. Write `summary.json` with that `workspaceId`, `projectId` and `cwd`, keeping
+   the previous file for rollback.
+3. Enable summary generation only then. Until `summary.json` reads back,
+   Summarize fails closed with a clear message and keeps the capture.
+
+Rollback restores the previous `summary.json`, or removes it, which disables
+new helpers without touching the workspace or saved summaries.
+
 Helpers created before this change made one project and workspace per job
 under `generation-jobs/<helper id>`. Nothing closes those automatically.
 `bun scripts/summary-container-reconcile.ts <daemon-port> [summary-state-root]`
-is a read-only dry run that lists each container with its proof: job state,
-confirmed helper archive, a saved revision of the job's capture, occupants and
-terminals. Only when every proof holds does a row name the supported
-`paseo workspace archive <workspace-id>` command. Waiting, creating, failed and
-unknown jobs, foreign occupants and open terminals are always held. Running the
+is a read-only dry run on `127.0.0.1:<daemon-port>`; the port must be a decimal
+integer from 1 to 65535. It lists each container with its proof: job state,
+confirmed helper archive, a saved revision of the job's own capture (same
+source, complete history boundary, cutoff and sections, not the input hash
+alone), the helper's own readback bound to that exact workspace and project,
+occupants and terminals. A matching directory only finds occupants; it never
+proves ownership, so a second workspace on the same directory is held. Only
+when every proof holds does a row name the supported
+`paseo workspace archive <workspace-id>` command. Jobs that record a designated
+placement (`owned: false`), waiting, creating, failed and unknown jobs, foreign
+occupants and open terminals are always held. Running the
 commands is a separate, gated operator step. An archived container leaves its
 per-job project: `paseo project delete` would delete it, so it is not proposed.
 
