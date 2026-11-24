@@ -29,6 +29,31 @@ These files
 have one plugin worker as writer; multiple workers sharing a root are not
 qualified.
 
+The helper session runs in one operator-designated workspace, named in
+`$PASEO_HOME/plugin-config/kontor/summary.json` (default
+`~/.paseo/plugin-config/kontor/summary.json`) as
+`{"workspaceId": "…", "projectId": "…", "cwd": "/absolute/directory"}`. A new
+helper reads that file, and the native workspace must read back with exactly
+that project and directory before anything is created. The helper's own
+readback must match too, also on retry. A missing or invalid file, or any
+mismatch, creates no helper and keeps the capture. The helper is created through
+the workspace's own create, so no job makes a project or workspace. The job
+records the placement with `owned: false`. A retry uses the recorded placement,
+not a changed file. Cleanup archives only the helper and never closes the
+designated workspace. The helper's working directory is the workspace
+directory, so designate an empty directory that holds no repository.
+
+Helpers created before this change made one project and workspace per job
+under `generation-jobs/<helper id>`. Nothing closes those automatically.
+`bun scripts/summary-container-reconcile.ts <daemon-port> [summary-state-root]`
+is a read-only dry run that lists each container with its proof: job state,
+confirmed helper archive, a saved revision of the job's capture, occupants and
+terminals. Only when every proof holds does a row name the supported
+`paseo workspace archive <workspace-id>` command. Waiting, creating, failed and
+unknown jobs, foreign occupants and open terminals are always held. Running the
+commands is a separate, gated operator step. An archived container leaves its
+per-job project: `paseo project delete` would delete it, so it is not proposed.
+
 Copy rereads the exact saved pin. Copy again uses that revision without
 regeneration. A failed read or clipboard write keeps the saved revision visible.
 Stock `copyText` confirms the write, not readback: paste into the sheet's

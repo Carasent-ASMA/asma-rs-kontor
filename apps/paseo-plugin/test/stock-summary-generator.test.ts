@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, readFile, realpath, readdir, rm, symlink, writeF
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { stockSummaryGenerator, SUMMARY_SOURCE_ITEMS, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
 import { contributeSessionSummaries, createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
 
@@ -12,8 +12,9 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 const SECTIONS = { task: "Review the parser", decisions: "Keep the grammar", currentState: "Ready", nextStep: "Review" };
 const SOURCE = "00000000-0000-4000-8000-000000000001";
+const PLACEMENT = { workspaceId: "wks_summary", projectId: "prj_summary", cwd: "/fixture/summary-helpers" };
 const dirs: string[] = [];
-afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 
 /** In-memory stock API adapter, not a real provider or installed-host qualification. Files remain real. */
 async function harness() {
@@ -26,14 +27,19 @@ async function harness() {
   const historyCalls: unknown[] = [];
   const workers = new Set<string>();
   let result = { status: "idle", lastMessage: JSON.stringify(SECTIONS), error: null, final: null };
-  let waits = 0, sends = 0, refuseCreate = false;
+  let waits = 0, sends = 0, refuseCreate = false, refuseBeforeEffect = false;
   const archived = new Set<string>();
+  // The designated workspace; a helper is created only through its workspace-scoped create, never a cwd create.
+  const workspace: Record<string, unknown> = { id: PLACEMENT.workspaceId, projectId: PLACEMENT.projectId, workspaceDirectory: PLACEMENT.cwd, archivingAt: null };
+  const workspaceReads: string[] = [];
+  const placementFile = join(root, "summary.json");
+  await writeFile(placementFile, JSON.stringify(PLACEMENT));
   const catalog = { entries: [{ provider: "codex", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "model-mini", label: "Mini", isDefault: true }], modes: [{ id: "auto", label: "Auto" }, { id: "auto-review", label: "Review" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }] };
   let foreignTurn = false, missingCorrelation = false, workerGap = false;
   const workerOverrides: Record<string, unknown> = {};
   const workerAgent = (id: string) => {
     const options = created.find(item => item.agentId === id)!;
-    return { id, provider: options.config.provider.split("/")[0], model: options.config.provider.split("/").slice(1).join("/"), cwd: options.cwd, currentModeId: options.config.modeId, archivedAt: archived.has(id) ? "2026-10-29T00:00:00Z" : null, status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides };
+    return { id, provider: options.config.provider.split("/")[0], model: options.config.provider.split("/").slice(1).join("/"), cwd: options.cwd, workspaceId: options.workspaceId, currentModeId: options.config.modeId, archivedAt: archived.has(id) ? "2026-10-29T00:00:00Z" : null, status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides };
   };
   const forbidden = async () => { sends++; throw new Error("Must not send a source/destination turn"); };
   const refresh = async () => ({ requestId: "fixture", acknowledged: true });
@@ -41,7 +47,7 @@ async function harness() {
     ref: (id: string) => id === SOURCE ? {
       refresh: async () => ({ agent: source }), timeline: { refetch: async (options: unknown) => { historyCalls.push(options); return page; } }, run: forbidden, send: forbidden,
     } : {
-      id, archive: async () => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; }, refresh: async () => workers.has(id) ? { agent: workerAgent(id) } : null,
+      id, archive: async () => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; }, refresh: async () => workers.has(id) ? { agent: workerAgent(id), project: { projectKey: workerProject } } : null,
       timeline: { refetch: async () => {
         const options = created.find(item => item.agentId === id)!;
         return { agentId: id, agent: workerAgent(id), epoch: "worker-epoch", error: null, gap: workerGap, staleCursor: false, hasNewer: false, hasOlder: false,
@@ -51,13 +57,24 @@ async function harness() {
       } },
       waitForFinish: async () => { waits++; return result; }, run: forbidden, send: forbidden,
     },
-    create: async (options: Record<string, any>) => { created.push(options); workers.add(options.agentId); if (refuseCreate) { refuseCreate = false; throw new Error("Creation answer lost"); } return api.agents.ref(options.agentId); },
+    create: async () => { throw new Error("A summary helper is never created by bare cwd."); },
+  }, workspaces: {
+    ref: (id: string) => ({
+      refresh: async () => { workspaceReads.push(id); return id === PLACEMENT.workspaceId && !workspace.absent ? { ...workspace } : null; },
+      agents: { create: async (options: Record<string, any>) => {
+        if (refuseBeforeEffect) { refuseBeforeEffect = false; throw new Error("Creation request lost"); }
+        created.push({ ...options, cwd: workspace.workspaceDirectory, workspaceId: id }); workers.add(options.agentId);
+        if (refuseCreate) { refuseCreate = false; throw new Error("Creation answer lost"); }
+        return api.agents.ref(options.agentId);
+      } },
+    }),
   } };
+  let workerProject = PLACEMENT.projectId;
   // The OpenCode configuration is never read from the machine running the test: a synthetic host with no documents.
   const host = { env: {}, home: join(root, "home"), system: false, stopAt: root };
-  const generator = () => stockSummaryGenerator(api as never, root, host)!;
-  const service = () => createSessionSummaryService(api as never, root, stockSummaryGenerator(api as never, root, host));
-  return { root, api, source, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
+  const generator = () => stockSummaryGenerator(api as never, root, host, placementFile)!;
+  const service = () => createSessionSummaryService(api as never, root, stockSummaryGenerator(api as never, root, host, placementFile));
+  return { root, api, source, workspace, workspaceReads, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
 }
 
 describe("stock summary generator", () => {
@@ -524,6 +541,10 @@ describe("stock summary generator", () => {
 
   it("registers the R28-only capability/save/read/latest closure and persists through its RPCs", async () => {
     const h = await harness();
+    // The default generator reads the operator file under the Paseo home, so the test points that home at its own root.
+    vi.stubEnv("PASEO_HOME", h.root);
+    await mkdir(join(h.root, "plugin-config", "kontor"), { recursive: true });
+    await writeFile(join(h.root, "plugin-config", "kontor", "summary.json"), JSON.stringify(PLACEMENT));
     const handlers = new Map<string, (...args: any[]) => any>();
     contributeSessionSummaries({ handle: (rpc: { name: string }, handler: (...args: any[]) => any) => {
       expect(handlers.has(rpc.name)).toBe(false); handlers.set(rpc.name, handler);
@@ -542,6 +563,156 @@ describe("stock summary generator", () => {
     expect(h.counts().sends).toBe(0);
   });
 
+});
+
+describe("summary helper placement and lifecycle (ASMA-8580)", () => {
+  async function jobOf(h: Awaited<ReturnType<typeof harness>>) {
+    const jobs = join(h.root, "generation-jobs");
+    const name = (await readdir(jobs)).find(name => name.endsWith(".json") && !name.endsWith(".capture.json"))!;
+    return { jobs, file: join(jobs, name), job: JSON.parse(await readFile(join(jobs, name), "utf8")) };
+  }
+
+  it("creates the helper in the designated workspace only, records it as not owned and archives only the helper", async () => {
+    const h = await harness();
+    expect((await h.service().save(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]).toMatchObject({ workspaceId: PLACEMENT.workspaceId, cwd: PLACEMENT.cwd });
+    expect(h.created[0]).not.toHaveProperty("worktree");
+    const { jobs, job } = await jobOf(h);
+    expect(job).toMatchObject({ state: "complete", cleaned: true, placement: { ...PLACEMENT, owned: false } });
+    // No per-job directory: the helper's cwd is the designated workspace, so nothing roots a project here.
+    expect((await readdir(jobs)).filter(name => !name.endsWith(".json"))).toEqual([]);
+    expect([...h.archived]).toEqual([job.workerId]);
+    expect(h.workspaceReads).toEqual([PLACEMENT.workspaceId]);
+  });
+
+  it.each([
+    ["missing file", null],
+    ["unparsable file", "{"],
+    ["relative directory", JSON.stringify({ ...PLACEMENT, cwd: "summary-helpers" })],
+    ["unknown key", JSON.stringify({ ...PLACEMENT, background: true })],
+    ["missing project", JSON.stringify({ workspaceId: PLACEMENT.workspaceId, cwd: PLACEMENT.cwd })],
+  ])("fails closed with no helper when the designated placement is a %s", async (_name, text) => {
+    const h = await harness();
+    if (text === null) await rm(h.placementFile); else await writeFile(h.placementFile, text);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("need one designated workspace");
+    expect(h.created).toEqual([]);
+    expect(h.workspaceReads).toEqual([]);
+    expect((await jobOf(h)).job).toMatchObject({ state: "creating" });
+    expect((await jobOf(h)).job).not.toHaveProperty("placement");
+  });
+
+  it.each([
+    ["no workspace", { absent: true }],
+    ["another workspace id", { id: "wks_other" }],
+    ["another project", { projectId: "prj_other" }],
+    ["another directory", { workspaceDirectory: "/fixture/elsewhere" }],
+    ["an archiving workspace", { archivingAt: "2026-11-24T00:00:00Z" }],
+  ])("fails closed with no helper when the native workspace reads back with %s", async (_name, change) => {
+    const h = await harness();
+    Object.assign(h.workspace, change);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("does not read back with its configured project");
+    expect(h.created).toEqual([]);
+    expect((await jobOf(h)).job).not.toHaveProperty("placement");
+    Object.assign(h.workspace, { id: PLACEMENT.workspaceId, projectId: PLACEMENT.projectId, workspaceDirectory: PLACEMENT.cwd, archivingAt: null, absent: false });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+  });
+
+  it.each([
+    ["project", (h: Awaited<ReturnType<typeof harness>>) => h.setWorkerProject("prj_other")],
+    ["workspace", (h: Awaited<ReturnType<typeof harness>>) => { h.workerOverrides.workspaceId = "wks_other"; }],
+    ["directory", (h: Awaited<ReturnType<typeof harness>>) => { h.workerOverrides.cwd = "/fixture/elsewhere"; }],
+  ])("holds a helper whose %s reads back outside the designated placement, on retry too", async (_name, misplace) => {
+    const h = await harness(); misplace(h);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("did not read back in the designated workspace");
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("correlation is unconfirmed");
+    expect(h.created).toHaveLength(1);
+    expect(h.archived.size).toBe(0);
+    expect(h.counts().sends).toBe(0);
+  });
+
+  it("closes out only the helper after a provider error and retries into the same designated workspace", async () => {
+    const h = await harness(); h.setResult({ status: "error", lastMessage: null as never });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("summary provider failed");
+    const failed = (await jobOf(h)).job;
+    expect(failed).toMatchObject({ state: "failed", cleaned: true, placement: { ...PLACEMENT, owned: false } });
+    expect([...h.archived]).toEqual([failed.workerId]);
+    h.setResult({ status: "idle", lastMessage: JSON.stringify(SECTIONS) });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created.map(item => item.workspaceId)).toEqual([PLACEMENT.workspaceId, PLACEMENT.workspaceId]);
+    expect((await jobOf(h)).job).toMatchObject({ state: "complete", cleaned: true, previousWorkers: [failed.workerId] });
+    expect(h.archived.size).toBe(2);
+  });
+
+  it("re-sends a lost creation request with the same helper id, key and recorded placement, not the changed file", async () => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const pending = (await jobOf(h)).job;
+    expect(pending).toMatchObject({ state: "creating", placement: { ...PLACEMENT, owned: false } });
+    await writeFile(h.placementFile, JSON.stringify({ ...PLACEMENT, workspaceId: "wks_other" }));
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]).toMatchObject({ agentId: pending.workerId, idempotencyKey: `kontor-summary:${pending.workerId}`, clientMessageId: pending.clientMessageId, workspaceId: PLACEMENT.workspaceId });
+    expect(h.workspaceReads).toEqual([PLACEMENT.workspaceId, PLACEMENT.workspaceId]);
+  });
+
+  it("recovers a lost creation answer from the existing helper without a second helper or workspace read", async () => {
+    const h = await harness(); h.loseCreateAnswer();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation answer lost");
+    await rm(h.placementFile);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(h.workspaceReads).toEqual([PLACEMENT.workspaceId]);
+  });
+
+  it("replays an already-cleaned job without any create, archive or workspace read", async () => {
+    const h = await harness();
+    const first = await h.generator().generate(SOURCE);
+    const before = { reads: h.workspaceReads.length, archived: h.archived.size };
+    h.archived.clear();
+    expect(await h.generator().generate(SOURCE)).toEqual(first);
+    expect(h.created).toHaveLength(1);
+    expect(h.archived.size).toBe(0);
+    expect(h.workspaceReads).toHaveLength(before.reads);
+    expect(before.archived).toBe(1);
+  });
+
+  it("replays a legacy cleaned=true job without placement and leaves its per-job container to the reconcile", async () => {
+    const h = await harness();
+    const first = await h.generator().generate(SOURCE);
+    const { file, job } = await jobOf(h);
+    delete job.placement; await writeFile(file, JSON.stringify(job));
+    h.archived.clear();
+    expect(await h.generator().generate(SOURCE)).toEqual(first);
+    expect(h.archived.size).toBe(0);
+    expect(h.workspaceReads).toEqual([PLACEMENT.workspaceId]);
+    expect(JSON.parse(await readFile(file, "utf8"))).not.toHaveProperty("placement");
+  });
+
+  it.each([true, false])("keeps a legacy waiting helper's per-job cwd check (in per-job cwd: %s)", async inLegacyCwd => {
+    const h = await harness(); h.setResult({ status: "timeout" });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("retry reads its result");
+    const { jobs, file, job } = await jobOf(h);
+    delete job.placement; await writeFile(file, JSON.stringify(job));
+    Object.assign(h.created[0]!, { cwd: inLegacyCwd ? join(jobs, job.workerId) : PLACEMENT.cwd, workspaceId: "wks_legacy" });
+    h.setResult({ status: "idle" });
+    if (inLegacyCwd) expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    else await expect(h.generator().generate(SOURCE)).rejects.toThrow("correlation is unconfirmed");
+    expect(h.created).toHaveLength(1);
+    expect(h.counts().sends).toBe(0);
+  });
+
+  it("adopts the designated placement for a legacy creating job whose helper never existed", async () => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const { file, job } = await jobOf(h);
+    delete job.placement; await writeFile(file, JSON.stringify(job));
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]).toMatchObject({ agentId: job.workerId, workspaceId: PLACEMENT.workspaceId });
+    expect((await jobOf(h)).job).toMatchObject({ state: "complete", placement: { ...PLACEMENT, owned: false } });
+  });
 });
 
 const summaryCheckoutRoot = fileURLToPath(new URL("../../../", import.meta.url));

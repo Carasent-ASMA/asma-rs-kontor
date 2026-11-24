@@ -65,6 +65,11 @@ async function readStore(root: string, agentId: string): Promise<SummaryStore | 
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return null; throw error; }
 }
 
+/** Every saved revision of one source, oldest first by key; empty when none is stored. */
+export async function savedRevisions(root: string, agentId: string): Promise<SummaryRevision[]> {
+  return Object.values((await readStore(root, agentId))?.revisions ?? {});
+}
+
 export async function latestStoredSummary(root: string, agentId: string): Promise<SummaryRevision | null> {
   const store = await readStore(root, agentId);
   return store?.revisions[String(store.latestRevision)] ?? null;

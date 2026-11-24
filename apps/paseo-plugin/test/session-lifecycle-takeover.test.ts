@@ -1856,6 +1856,8 @@ describe("universal takeover operation", () => {
     h.client.agents.ref = (id: string) => {
       const handle = ref(id);
       return { ...handle,
+        // The host reports the helper's project; the generator reads it back against the designated placement.
+        refresh: async () => { const read = await handle.refresh(); return read && read.agent.workspaceId === "wks-summary" ? { ...read, project: { projectKey: "prj-summary" } } : read; },
         archive: async () => { if (id === "agent-1") order.push("archive"); return handle.archive(); },
         timeline: { refetch: async (options?: { projection?: string }) => options?.projection === "canonical"
           ? (id === "agent-1" ? sourcePage() : { agent: h.agents.get(id), agentId: id, entries: h.timelines.get(id) ?? [], epoch: "helper-epoch", gap: null, staleCursor: null, hasOlder: false, hasNewer: false }) as never
@@ -1868,15 +1870,23 @@ describe("universal takeover operation", () => {
         },
       } as typeof handle;
     };
-    (h.client as unknown as { agents: { create: (input: Record<string, unknown> & { agentId: string; config: { provider: string }; prompt?: string; clientMessageId: string; title: string; cwd: string; labels: Record<string, string> }) => Promise<unknown> } }).agents.create = async (input) => {
-      const [provider, model] = input.config.provider.split("/");
-      const helper = agent(input.agentId, { title: input.title, labels: input.labels, provider: provider!, model: model!, cwd: input.cwd, workspaceId: "wks-1", status: "idle", currentModeId: "default", persistence: { sessionId: `helper-${input.agentId}` } } as Partial<Agent>);
-      h.agents.set(helper.id, helper);
-      h.timelines.set(helper.id, [{ item: { type: "user_message", text: input.prompt ?? "", clientMessageId: input.clientMessageId }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:01:30Z" } as never]);
-      return { id: helper.id, ...h.client.agents.ref(helper.id) };
-    };
-    const summaryRoot = join(h.root, "..", "summaries");
-    const summaries = createSessionSummaryService(h.client as never, summaryRoot, stockSummaryGenerator(h.client as never, summaryRoot));
+    // The summary helper is created only in its designated workspace, never with a bare cwd.
+    (h.client as unknown as { agents: { create: () => Promise<never> } }).agents.create = async () => { throw new Error("A summary helper is never created by bare cwd."); };
+    const summaryWorkspace = { ...WORKSPACE, id: "wks-summary", projectId: "prj-summary", workspaceDirectory: "/fixtures/summary-helpers" };
+    const workspaceRef = h.client.workspaces.ref;
+    h.client.workspaces.ref = ((id: string) => id !== summaryWorkspace.id ? workspaceRef(id) : {
+      refresh: async () => summaryWorkspace,
+      agents: { create: async (input: { agentId: string; config: { provider: string }; prompt?: string; clientMessageId: string; title: string; labels: Record<string, string> }) => {
+        const [provider, model] = input.config.provider.split("/");
+        const helper = agent(input.agentId, { title: input.title, labels: input.labels, provider: provider!, model: model!, cwd: summaryWorkspace.workspaceDirectory, workspaceId: summaryWorkspace.id, status: "idle", currentModeId: "default", persistence: { sessionId: `helper-${input.agentId}` } } as Partial<Agent>);
+        h.agents.set(helper.id, helper);
+        h.timelines.set(helper.id, [{ item: { type: "user_message", text: input.prompt ?? "", clientMessageId: input.clientMessageId }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:01:30Z" } as never]);
+        return { id: helper.id, ...h.client.agents.ref(helper.id) };
+      } },
+    }) as typeof h.client.workspaces.ref;
+    const summaryRoot = join(h.root, "..", "summaries"), placementFile = join(h.root, "..", "summary.json");
+    await writeFile(placementFile, JSON.stringify({ workspaceId: summaryWorkspace.id, projectId: summaryWorkspace.projectId, cwd: summaryWorkspace.workspaceDirectory }));
+    const summaries = createSessionSummaryService(h.client as never, summaryRoot, stockSummaryGenerator(h.client as never, summaryRoot, {}, placementFile));
     h.deps.summaries = summaries;
     const saveOriginal = summaries.save.bind(summaries);
     const save = vi.spyOn(summaries, "save").mockImplementation(async (id) => { order.push("save"); return saveOriginal(id); });
