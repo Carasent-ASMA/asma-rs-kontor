@@ -453,4 +453,8 @@ describe("row note density", () => {
     expect(sessionRowExtras(missing, "Desk").note).toBe("title says TPM · Native record absent · check availability to retry");
     expect(sessionRowExtras(sessionEntry("old", { archivedAt: "2026-10-20T00:00:00.000Z" }), "Desk").note).toBe("Archived");
   });
+
+  it("leaves reported background work to the shared dense row instead of repeating it in the note", () => {
+    expect(sessionRowExtras(sessionEntry("bg", { backgroundWork: { count: 2, runningCount: 1 } }), "Desk").note).toBeNull();
+  });
 });

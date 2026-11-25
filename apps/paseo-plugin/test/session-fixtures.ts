@@ -1,4 +1,5 @@
 import type {
+  BackgroundWork,
   DirectoryEntry,
   SessionStatus,
 } from "../client/session-directory";
@@ -12,6 +13,7 @@ type SessionEntryOverrides = {
   needsInput?: boolean;
   activeTurn?: boolean;
   activeTurnStartedAt?: string | null;
+  backgroundWork?: BackgroundWork;
   archivedAt?: string | null;
   workspaceName?: string | null;
   projectName?: string | null;
@@ -61,6 +63,9 @@ export function sessionEntry(
   };
   return {
     ...merged,
+    ...(overrides.backgroundWork === undefined
+      ? {}
+      : { backgroundWork: overrides.backgroundWork }),
     searchText: [
       merged.title,
       merged.workspaceName,

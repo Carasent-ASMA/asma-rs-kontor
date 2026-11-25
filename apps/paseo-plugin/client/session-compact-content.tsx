@@ -2,11 +2,12 @@ import { Text } from "react-native";
 import type { SessionProjection } from "../shared/session-lifecycle";
 import type { Colors } from "./page-controls";
 import type { DirectoryEntry } from "./session-directory";
-import { attentionLabel, earlierErrorLabel, sessionAvailabilityLabel } from "./session-view";
+import { attentionLabel, backgroundWorkDetail, earlierErrorLabel, sessionAvailabilityLabel } from "./session-view";
 
 export function sessionRowDetails(entry: DirectoryEntry) {
   return [
     { label: "Native status", value: entry.status },
+    { label: "Background work", value: backgroundWorkDetail(entry) },
     { label: "Archive membership", value: entry.archivedAt === null ? "Not archived" : `Archived · ${entry.archivedAt}` },
     { label: "Attention", value: attentionLabel(entry) ?? "None recorded" },
     { label: "Earlier error", value: earlierErrorLabel(entry) ?? "None recorded" },

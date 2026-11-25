@@ -144,6 +144,25 @@ pill is the in-session return control where the composer supports it.
   a stale badge. The badge is only as current as the host snapshot: a host that
   omits both public fields cannot be distinguished from a resolved permission.
   No question subtype is inferred.
+- **Background work.** Paseo 0.16 and later report how many background tasks
+  (background shells, monitors and other tasks that outlive a turn) a session
+  has. Paseo 0.17 adds a running split (and, from 0.17.1, heartbeats); it sends
+  only the total when every task counts as running. The plugin carries that summary into the
+  row note and its Details. It uses Paseo's own running test (`isAgentRunning`):
+  a session with background work still **running** counts as **Running**, while
+  reported work with nothing running (a heartbeat waiting for its next run, for
+  example) keeps the native state and says **waiting**. The plugin keeps its
+  own precedence: Needs input, then a native error, then Running, then
+  Attention. Paseo raises only an unread error above Running. **More →
+  Background tasks** lists every session with reported work, including ones
+  that show Needs input or Error, and work still running also matches
+  **Running**. Counts are live runtime state from the direct directory only. On
+  a shared-catalog read, or a read in which no session carries a summary, the
+  state count, the matching count and an empty list say unavailable rather
+  than zero, in Sessions and in the switcher. A summary is read as
+  strictly as Paseo validates it: a malformed one, or one the host stops
+  reporting, shows as not reported and is never carried forward. The declared
+  Paseo floor is unchanged.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
@@ -303,7 +322,7 @@ route in the form's notes and where its rows would be.
   what it counts. Counts follow this host's non-archived sessions and the search;
   partial, stale or unavailable reads show updating or unknown counts. **More**
   lists All, Current, Idle, Favorites, Attention, Starting, Closed, Earlier
-  errors and Provider blocked with their counts, plus **Archived sessions**,
+  errors, Background tasks and Provider blocked with their counts, plus **Archived sessions**,
   which Kontor lists. Provider blocked needs exact refusal evidence, so unchecked
   errors are never counted blocked or reported as a verified zero; the switcher
   never probes providers and opens that state in Kontor, which reads the

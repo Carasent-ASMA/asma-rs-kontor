@@ -4,7 +4,7 @@ import { QUICK_STATUS_FILTERS, statusFilterLabel, type StatusFilter } from "./se
 export const QUICK_FILTER_ICONS: Record<StatusFilter, string> = {
   recent: "Clock", activity: "Activity", current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
   needs_input: "MessageCircleQuestion", attention: "Bell", favorites: "Star",
-  initializing: "Loader", closed: "Square", earlier_error: "History", provider_blocked: "Ban",
+  initializing: "Loader", closed: "Square", earlier_error: "History", provider_blocked: "Ban", background: "Zap",
 };
 
 export const QUICK_FILTER_MEANINGS: Record<StatusFilter, string> = {
@@ -22,6 +22,7 @@ export const QUICK_FILTER_MEANINGS: Record<StatusFilter, string> = {
   closed: "Closed sessions in the current scope.",
   earlier_error: "Sessions with a retained error that are no longer in error.",
   provider_blocked: "Error sessions whose exact read in the last minute saw a provider refusal. Sessions not checked are counted, not listed. Not a provider health check.",
+  background: "Sessions whose Paseo host reports background work: background shells, monitors, heartbeats and other tasks that outlive a turn. Work still running also counts as Running; a heartbeat waiting for its next run does not. Counts are live and disappear when the host stops the work. Such a session may also be waiting for input or in error; a host that does not report background work lists nothing here.",
 };
 
 export function quickFilterLabel(status: StatusFilter): string {

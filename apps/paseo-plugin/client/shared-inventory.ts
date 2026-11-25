@@ -122,6 +122,8 @@ function catalogEntry(
     updatedAt: session.updatedAt ?? live?.updatedAt ?? "",
     lastUserMessageAt: session.lastUserMessageAt ?? live?.lastUserMessageAt ?? null,
     activeTurnStartedAt: live?.activeTurnStartedAt ?? null,
+    // Live runtime state only: the catalog never carries it, so a catalog-only row stays unknown.
+    backgroundWork: live?.backgroundWork,
     cwd,
     workspaceId: session.workspaceId ?? live?.workspaceId ?? null,
     provider: session.provider || live?.provider || "unknown",
