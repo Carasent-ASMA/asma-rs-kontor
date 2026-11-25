@@ -1296,20 +1296,23 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const h = await harness();
     const { jobs, file, job, text } = await unansweredAttempt(h);
     h.workerState.set(job.workerId, { status: "closed", ...state });
-    for (let attempt = 0; attempt < 2; attempt++) await expect(h.generator().generate(SOURCE)).rejects.toThrow();
+    const errors = [await h.generator().generate(SOURCE).catch((cause: Error) => cause), await h.generator().generate(SOURCE).catch((cause: Error) => cause)];
+    // The unsafe effects first: no replacement helper, the job's bytes as they were, nothing superseded.
     expect(h.created).toHaveLength(1);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await readdir(jobs)).not.toContain("superseded");
+    for (const error of errors) expect(error).toBeInstanceOf(Error);
   });
 
   it("M5: never retires a waiting attempt whose helper does not read back (unknown termination)", async () => {
     const h = await harness();
     const { jobs, file, job, text } = await unansweredAttempt(h);
     h.workers.delete(job.workerId);
-    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Summary generation is unconfirmed");
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
     expect(h.created).toHaveLength(1);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await readdir(jobs)).not.toContain("superseded");
+    expect(String(error)).toContain("Summary generation is unconfirmed");
   });
 
   it.each([
@@ -1347,10 +1350,10 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const text = await readFile(current.file, "utf8");
     const b = await formerRow(h, "72b054e2", "waiting");
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
-    expect(String(error)).toContain(reason);
     expect(h.created).toHaveLength(1);
     expect(await readFile(current.file, "utf8")).toBe(text);
     expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(String(error)).toContain(reason);
   });
 
   it.each([
@@ -1360,10 +1363,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const h = await harness();
     const { jobs, file, job, text } = await unansweredAttempt(h);
     h.workerState.set(job.workerId, before); h.onHistory.set(job.workerId, after);
-    await expect(h.generator().generate(SOURCE)).rejects.toThrow("correlation is unconfirmed");
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
     expect(h.created).toHaveLength(1);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await readdir(jobs)).not.toContain("superseded");
+    expect(String(error)).toContain("correlation is unconfirmed");
   });
 
   it("M5: never retires a legacy creating job whose helper reads back archived but running", async () => {
@@ -1372,11 +1376,12 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const { jobs, file, job } = await jobOf(h);
     delete job.placement; await writeFile(file, JSON.stringify(job));
     h.archived.add(job.workerId); h.workerState.set(job.workerId, { status: "running" });
-    await expect(h.generator().generate(SOURCE)).rejects.toThrow("correlation is unconfirmed");
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
     expect(h.created).toHaveLength(1);
     // The existing read path records the helper's session id; the job keeps its helper and state.
     expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ workerId: job.workerId, state: "creating", previousWorkers: [] });
     expect(await readdir(jobs)).not.toContain("superseded");
+    expect(String(error)).toContain("correlation is unconfirmed");
   });
 
   it.each([
@@ -1394,10 +1399,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     if (variant === "has a gap in its helper's history") h.workerGap();
     await writeFile(file, JSON.stringify(changed));
     const text = await readFile(file, "utf8");
-    await expect(h.generator().generate(SOURCE)).rejects.toThrow(reason);
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
     expect(h.created).toHaveLength(1);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await readdir(jobs)).not.toContain("superseded");
+    expect(String(error)).toContain(reason);
   });
 
   it("M7: concurrent and repeated retries of an unanswered attempt make one replacement; the recorder takes no disposition for it", async () => {
