@@ -1672,6 +1672,12 @@ If any part is missing, it refuses with "the no-live-provider envelope is not
 in place" and starts nothing. `--paseo <cli>` names the Paseo CLI to qualify;
 `--envelope-only` checks the envelope and stops.
 
+The harness builds and checks its stubs from the same lists, so a name dropped
+from them would pass that check. The required set, traced in Paseo 0.17.4 as
+the 13 provider executables and `security`, is therefore pinned separately in
+`test/placement-qualification-envelope.test.ts`, which fails when the lists,
+the stub builder or the check no longer cover it.
+
 Before the floor, or `placement.json`, is turned on for the live host:
 
 - this build is installed and its placement mode line reads back from the
