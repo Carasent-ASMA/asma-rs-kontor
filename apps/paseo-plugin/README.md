@@ -63,10 +63,17 @@ agent messages were captured (d29bd08d), both over user and assistant messages
 only. Before anything is dispatched, the generator looks up every former key
 for the same source and history, also when a row under the current key exists.
 Each `creating` or `waiting` row found there is an earlier attempt at this
-history. It holds the history, naming that row's file, until it is qualified:
-its helper reads back archived by its exact id, or a recovery is recorded in it
-and its helper does not read back. A helper that reads back but not archived by
-its exact id may still be running, so its row holds. Once every earlier attempt is qualified, each is
+history. It is qualified when its helper is terminal, or when a recovery is
+recorded in it and its helper does not read back. A helper is terminal when it
+reads back by its exact id, archived, with a settled status (not `running` or
+`initializing`) and no active turn; `archivedAt` beside a running status or an
+active turn means its runtime has not settled, so its row is not qualified. An
+unqualified row is never folded, rewritten or marked: it holds every path that
+could start a helper for this history (a fresh helper, or a keyed create sent
+again), naming that row's file. It does not withhold a summary that is already
+complete under the current key, and it does not stop the generator reading the
+correlated result of the current key's own helper: neither starts a helper.
+Once every earlier attempt is qualified, each is
 kept byte for byte under `superseded/`, named in `previousWorkers` of the one job
 this history keeps, and removed; at most one new helper and key is made. A
 `complete` or `failed` former row is history and is left as it is. A row it cannot map, for example because
@@ -74,9 +81,10 @@ the source's model or history has changed since, is not found, so a new
 summary of that source may start another helper. Such a row is never treated as
 settled: its `creating` state keeps its container held in the dry run below.
 
-A fresh helper with a new key replaces a held job only on one of two grounds:
-its helper reads back archived by its exact id (the old create is terminal), or
-an operator records a recovery disposition in the job,
+A fresh helper with a new key replaces a held job only on one of three grounds:
+its helper is terminal as above (the old create is terminal); a `waiting` job's
+own attempt ended unanswered; or an operator records a recovery disposition in
+the job,
 `"recovery": {"disposition": "retire-legacy-create", "evidence": "…", "recordedAt": "…"}`,
 naming the reconciled evidence. The same applies to a job whose create the host
 could not confirm (`agent_request_outcome_unknown`): it is held with a plain
@@ -86,6 +94,16 @@ the helper does not read back. On retirement the job's exact bytes are kept at
 with the same bytes is a replay, and one with other bytes holds the job and is
 never replaced. A `waiting` job with a recorded recovery whose helper does not
 read back is retired the same way.
+A `waiting` job's attempt ended unanswered when its helper is terminal and its
+canonical history holds exactly the job's correlated prompt (its client message
+id and prompt hash, for this capture) and no reply: an archived helper that
+never replied, for example one archived after the generator timed out. The host
+then reports the helper `idle` with no last message, which no retry can
+correlate, so the generator retires that job itself, keeping its bytes and
+capture as above; it needs no recovery. A helper that is not terminal or reads
+back as another agent, a history with any reply, or one that does not correlate
+keeps the job on its existing path: a reply is read and validated, and anything
+else holds.
 A legacy helper that reads back live keeps its per-job directory check. The
 host refuses a key it holds for a different request; the generator holds that
 job with a plain message, never shows the host's text, and never escapes the
@@ -102,7 +120,10 @@ bun scripts/summary-container-reconcile.ts <daemon-port> <summary-state-root> \
 ```
 
 It accepts only a `creating` or `waiting` job whose helper does not read back
-by its exact id. The job name, disposition and evidence are checked before the
+by its exact id. A job whose helper reads back takes no recovery: the generator
+reads its result, or retires an unanswered `waiting` job itself once its helper
+is terminal, so archive that helper rather than record a recovery. The job
+name, disposition and evidence are checked before the
 runner opens any connection. The dry run prints the job's `beforeSha256`;
 `--apply` must name it, and a job whose bytes have changed since is refused
 unchanged, so drift stops that job. An apply holds `<job-file>.lock`, created

@@ -27,11 +27,13 @@ async function harness() {
   const created: Array<Record<string, any>> = [];
   const historyCalls: unknown[] = [];
   const workers = new Set<string>();
-  let result = { status: "idle", lastMessage: JSON.stringify(SECTIONS), error: null, final: null };
+  let result: { status: string; lastMessage: string | null; error: null; final: null } = { status: "idle", lastMessage: JSON.stringify(SECTIONS), error: null, final: null };
   let waits = 0, sends = 0, refuseCreate = false, refuseBeforeEffect = false;
   const archived = new Set<string>();
-  // Helpers an earlier attempt started: they read back by id, running, or archived when also in `archived`.
+  // Helpers an earlier attempt started: they read back by id, running, or archived and closed when also in `archived`
+  // (0.16.2 closes the runtime it archives and keeps `closed`). `earlierState` overrides a readback, e.g. an unsettled one.
   const earlier = new Set<string>();
+  const earlierState = new Map<string, Record<string, unknown>>();
   // An earlier helper the host answers for with another agent's record.
   const earlierAs = new Map<string, string>();
   // The designated workspace; a helper is created only through its workspace-scoped create, never a cwd create.
@@ -46,9 +48,15 @@ async function harness() {
   const catalog = { entries: [{ provider: "codex", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "model-mini", label: "Mini", isDefault: true }], modes: [{ id: "auto", label: "Auto" }, { id: "auto-review", label: "Review" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }] };
   let foreignTurn = false, missingCorrelation = false, workerGap = false;
   const workerOverrides: Record<string, unknown> = {};
+  // Per-helper readback state (e.g. `closed` once archived), and helpers that never answered: their history has no
+  // assistant message and the host's finish reports `idle` with no last message (0.16.2 session.js:6955-6986).
+  const workerState = new Map<string, Record<string, unknown>>();
+  const silent = new Set<string>();
+  // A readback state a helper takes once its history has been read (one shot), e.g. one that settles or resumes meanwhile.
+  const onHistory = new Map<string, Record<string, unknown>>();
   const workerAgent = (id: string) => {
     const options = created.find(item => item.agentId === id)!;
-    return { id, provider: options.config.provider.split("/")[0], model: options.config.provider.split("/").slice(1).join("/"), cwd: options.cwd, workspaceId: options.workspaceId, currentModeId: options.config.modeId, archivedAt: archived.has(id) ? "2026-10-29T00:00:00Z" : null, status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides };
+    return { id, provider: options.config.provider.split("/")[0], model: options.config.provider.split("/").slice(1).join("/"), cwd: options.cwd, workspaceId: options.workspaceId, currentModeId: options.config.modeId, archivedAt: archived.has(id) ? "2026-10-29T00:00:00Z" : null, status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides, ...workerState.get(id) };
   };
   const forbidden = async () => { sends++; throw new Error("Must not send a source/destination turn"); };
   const refresh = async () => ({ requestId: "fixture", acknowledged: true });
@@ -57,15 +65,18 @@ async function harness() {
       refresh: async () => ({ agent: source }), timeline: { refetch: async (options: unknown) => { historyCalls.push(options); return page; } }, run: forbidden, send: forbidden,
     } : {
       id, archive: async () => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; }, refresh: async () => workers.has(id) ? { agent: workerAgent(id), project: { projectKey: workerProject } }
-        : earlier.has(id) ? { agent: { id: earlierAs.get(id) ?? id, status: "running", activeTurn: null, labels: {}, archivedAt: archived.has(id) ? "2026-10-30T00:00:00Z" : null }, project: null } : null,
+        : earlier.has(id) ? { agent: { id: earlierAs.get(id) ?? id, status: archived.has(id) ? "closed" : "running", activeTurn: null, labels: {}, archivedAt: archived.has(id) ? "2026-10-30T00:00:00Z" : null, ...earlierState.get(id) }, project: null } : null,
       timeline: { refetch: async () => {
         const options = created.find(item => item.agentId === id)!;
+        const next = onHistory.get(id);
+        if (next) queueMicrotask(() => { onHistory.delete(id); workerState.set(id, { ...workerState.get(id), ...next }); });
         return { agentId: id, agent: workerAgent(id), epoch: "worker-epoch", error: null, gap: workerGap, staleCursor: false, hasNewer: false, hasOlder: false,
           entries: [{ seqStart: 1, seqEnd: 1, item: { type: "user_message", text: options.prompt, clientMessageId: missingCorrelation ? undefined : options.clientMessageId } },
             ...(foreignTurn ? [{ seqStart: 3, seqEnd: 3, item: { type: "user_message", text: "Unrelated payroll task", clientMessageId: "foreign-turn" } }] : []),
-            { seqStart: 4, seqEnd: 4, item: { type: "assistant_message", text: result.lastMessage } }] };
+            // A helper that never answered has no assistant message; the host's finish then reports no last message.
+            ...(result.lastMessage === null || silent.has(id) ? [] : [{ seqStart: 4, seqEnd: 4, item: { type: "assistant_message", text: result.lastMessage } }])] };
       } },
-      waitForFinish: async () => { waits++; return result; }, run: forbidden, send: forbidden,
+      waitForFinish: async () => { waits++; return silent.has(id) ? { ...result, status: "idle", lastMessage: null } : result; }, run: forbidden, send: forbidden,
     },
     create: async () => { throw new Error("A summary helper is never created by bare cwd."); },
   }, workspaces: {
@@ -96,7 +107,7 @@ async function harness() {
   const host = { env: {}, home: join(root, "home"), system: false, stopAt: root };
   const generator = () => stockSummaryGenerator(api as never, root, host, placementFile)!;
   const service = () => createSessionSummaryService(api as never, root, stockSummaryGenerator(api as never, root, host, placementFile));
-  return { root, api, source, workspace, workspaceReads, otherWorkspaces, earlier, earlierAs, wrapCreateErrors: (wrap: (error: Error) => Error) => { wrapCreateError = wrap; }, receipts, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
+  return { root, api, source, workspace, workspaceReads, otherWorkspaces, earlier, earlierAs, earlierState, workerState, silent, onHistory, workers, wrapCreateErrors: (wrap: (error: Error) => Error) => { wrapCreateError = wrap; }, receipts, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
 }
 
 describe("stock summary generator", () => {
@@ -1177,6 +1188,253 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect(h.created).toEqual([]);
     expect(await jobFiles(h)).toEqual([]);
     expect(String(error)).toContain(`has another active workspace beneath ${PLACEMENT.cwd}`);
+  });
+
+  /**
+   * LSA lifecycle-closure design (83f8f4c1) acceptance matrix, rows M1-M7. A waiting attempt ends unanswered the way the
+   * installed 0.16.2 host leaves it: the generator timed out, then the helper was archived before it replied. Archive
+   * closes its runtime, so it reads back archived and `closed` (agent-manager.js:1403, :3226; agent-projections.js:208),
+   * and its finish reports `idle` with no last message (session.js:6955-6986, :4380-4389).
+   */
+  async function unansweredAttempt(h: Awaited<ReturnType<typeof harness>>, legacy = false) {
+    h.setResult({ status: "timeout" });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("retry reads its result");
+    const { jobs, file, job } = await jobOf(h);
+    expect(job.state).toBe("waiting");
+    if (legacy) {
+      delete job.placement; await writeFile(file, JSON.stringify(job));
+      Object.assign(h.created[0]!, { cwd: join(jobs, job.workerId), workspaceId: "wks_legacy" });
+    }
+    h.archived.add(job.workerId); h.silent.add(job.workerId); h.workerState.set(job.workerId, { status: "closed" });
+    h.setResult({ status: "idle" });
+    const captureFile = file.replace(/\.json$/, ".capture.json");
+    return { jobs, file, job, text: await readFile(file, "utf8"), captureFile, capture: await readFile(captureFile, "utf8") };
+  }
+
+  it.each(["unknown", "live"])("M1 (RR-B1): returns a complete current summary beside an %s former attempt, with no create, fold or foreign cleanup", async kind => {
+    const h = await harness(); omittedEvent(h);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const current = await jobOf(h), currentText = await readFile(current.file, "utf8");
+    const b = await formerRow(h, "72b054e2", "waiting");
+    if (kind === "live") h.earlier.add(b.job.workerId);
+    const archivedBefore = [...h.archived];
+    for (let attempt = 0; attempt < 2; attempt++) expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(current.file, "utf8")).toBe(currentText);
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect((await jobFiles(h)).sort()).toEqual([basename(current.file), b.name].sort());
+    expect(await readdir(b.jobs)).not.toContain("superseded");
+    expect([...h.archived]).toEqual(archivedBefore);
+    expect(h.counts().sends).toBe(0);
+  });
+
+  it.each([["placed", false], ["legacy", true]] as const)("M2 (A-07): retires a %s current-key waiting attempt archived before it replied: exact original kept, one replacement, none on retry", async (_name, legacy) => {
+    const h = await harness();
+    const { jobs, file, job, text, captureFile, capture } = await unansweredAttempt(h, legacy);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const fresh = JSON.parse(await readFile(file, "utf8"));
+    expect(fresh.workerId).not.toBe(job.workerId);
+    expect(fresh).toMatchObject({ state: "complete", cleaned: true, previousWorkers: [job.workerId], placement: { ...PLACEMENT, owned: false } });
+    expect(h.created.map(item => item.agentId)).toEqual([job.workerId, fresh.workerId]);
+    expect(h.created[1]).toMatchObject({ idempotencyKey: `kontor-summary:${fresh.workerId}`, workspaceId: PLACEMENT.workspaceId });
+    expect(await readFile(join(jobs, "superseded", `${job.workerId}.json`), "utf8")).toBe(text);
+    expect(await readFile(captureFile, "utf8")).toBe(capture);
+    expect(await jobFiles(h)).toEqual([basename(file)]);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(2);
+    expect(await readdir(join(jobs, "superseded"))).toEqual([`${job.workerId}.json`]);
+    expect(h.counts().sends).toBe(0);
+  });
+
+  it("M2 control: an archived helper whose history holds its correlated reply is read, not retired", async () => {
+    const h = await harness();
+    const { jobs, file, job } = await unansweredAttempt(h);
+    // The reply exists; reading its history loads it as an archived history session, which reads back idle (agent-manager.js:88-89).
+    h.silent.delete(job.workerId); h.workerState.set(job.workerId, { status: "idle" });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ workerId: job.workerId, state: "complete", previousWorkers: [] });
+    expect(await readdir(jobs)).not.toContain("superseded");
+  });
+
+  it.each(["unknown", "live"])("M3 (RR-B1): reads a current waiting helper's correlated output beside an %s former attempt, with no resend or new helper", async kind => {
+    const h = await harness(); omittedEvent(h); h.setResult({ status: "timeout" });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("retry reads its result");
+    const current = await jobOf(h);
+    const b = await formerRow(h, "72b054e2", "waiting");
+    if (kind === "live") h.earlier.add(b.job.workerId);
+    h.setResult({ status: "idle" });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(h.counts().sends).toBe(0);
+    expect(JSON.parse(await readFile(current.file, "utf8"))).toMatchObject({ workerId: current.job.workerId, state: "complete", previousWorkers: [] });
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(h.archived.has(b.job.workerId)).toBe(false);
+    expect(await readdir(b.jobs)).not.toContain("superseded");
+  });
+
+  it.each(["unknown", "live"])("M4: holds the replacement for an unanswered attempt while an %s former attempt remains, losing no original byte", async kind => {
+    const h = await harness(); omittedEvent(h);
+    const { jobs, file, text } = await unansweredAttempt(h);
+    const b = await formerRow(h, "72b054e2", "waiting");
+    if (kind === "live") h.earlier.add(b.job.workerId);
+    const errors = [await h.generator().generate(SOURCE).catch((cause: Error) => cause), await h.generator().generate(SOURCE).catch((cause: Error) => cause)];
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(await readdir(jobs)).not.toContain("superseded");
+    for (const error of errors) expect(String(error)).toContain(kind === "live" ? `of the earlier job ${b.name} does not read back archived` : `Its job ${b.name} is held`);
+  });
+
+  it.each([
+    ["archived but running", { status: "running" }],
+    ["archived with an active turn", { activeTurn: { id: "turn-1" } }],
+    ["archived but initializing", { status: "initializing" }],
+    ["read back as another agent", { id: "00000000-0000-4000-8000-0000000000ff" }],
+    ["not archived", { archivedAt: null }],
+  ])("M5: never retires a waiting attempt whose helper reads back %s", async (_name, state) => {
+    const h = await harness();
+    const { jobs, file, job, text } = await unansweredAttempt(h);
+    h.workerState.set(job.workerId, { status: "closed", ...state });
+    for (let attempt = 0; attempt < 2; attempt++) await expect(h.generator().generate(SOURCE)).rejects.toThrow();
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(await readdir(jobs)).not.toContain("superseded");
+  });
+
+  it("M5: never retires a waiting attempt whose helper does not read back (unknown termination)", async () => {
+    const h = await harness();
+    const { jobs, file, job, text } = await unansweredAttempt(h);
+    h.workers.delete(job.workerId);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Summary generation is unconfirmed");
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(await readdir(jobs)).not.toContain("superseded");
+  });
+
+  it.each([
+    ["archived but running", { status: "running" }],
+    ["archived with an active turn", { activeTurn: { id: "turn-1" } }],
+  ])("M5: holds a former attempt whose helper reads back %s: archivedAt alone does not qualify it", async (_name, state) => {
+    const h = await harness(); omittedEvent(h);
+    const b = await formerRow(h, "72b054e2", "waiting");
+    h.earlier.add(b.job.workerId); h.archived.add(b.job.workerId); h.earlierState.set(b.job.workerId, state);
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h.created).toEqual([]);
+    expect(await jobFiles(h)).toEqual([b.name]);
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(await readdir(b.jobs)).not.toContain("superseded");
+    expect(String(error)).toContain(`of the earlier job ${b.name} does not read back archived`);
+  });
+
+  it.each([
+    ["a changed prompt", "no matching prompt correlation"],
+    ["no sections", "Summary generation is unconfirmed"],
+    ["a changed capture", "retained summary capture does not match"],
+  ])("M6: never returns a complete current row with %s beside an unknown former attempt", async (variant, reason) => {
+    const h = await harness(); omittedEvent(h);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const current = await jobOf(h);
+    const job = { ...current.job };
+    if (variant === "a changed prompt") job.promptHash = sha("another prompt");
+    if (variant === "no sections") { delete job.sections; h.workers.delete(job.workerId); }
+    await writeFile(current.file, JSON.stringify(job));
+    if (variant === "a changed capture") {
+      const captureFile = current.file.replace(/\.json$/, ".capture.json");
+      const capture = JSON.parse(await readFile(captureFile, "utf8")); capture.entries[0].text = "Another captured history";
+      await writeFile(captureFile, JSON.stringify(capture));
+    }
+    const text = await readFile(current.file, "utf8");
+    const b = await formerRow(h, "72b054e2", "waiting");
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(String(error)).toContain(reason);
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(current.file, "utf8")).toBe(text);
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+  });
+
+  it.each([
+    ["settled before its history read but running after it", { status: "closed" }, { status: "running" }],
+    ["running before its history read and settled after it", { status: "running" }, { status: "closed" }],
+  ])("M5: never retires a waiting attempt whose helper reads back %s", async (_name, before, after) => {
+    const h = await harness();
+    const { jobs, file, job, text } = await unansweredAttempt(h);
+    h.workerState.set(job.workerId, before); h.onHistory.set(job.workerId, after);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("correlation is unconfirmed");
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(await readdir(jobs)).not.toContain("superseded");
+  });
+
+  it("M5: never retires a legacy creating job whose helper reads back archived but running", async () => {
+    const h = await harness(); h.loseCreateAnswer();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation answer lost");
+    const { jobs, file, job } = await jobOf(h);
+    delete job.placement; await writeFile(file, JSON.stringify(job));
+    h.archived.add(job.workerId); h.workerState.set(job.workerId, { status: "running" });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("correlation is unconfirmed");
+    expect(h.created).toHaveLength(1);
+    // The existing read path records the helper's session id; the job keeps its helper and state.
+    expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ workerId: job.workerId, state: "creating", previousWorkers: [] });
+    expect(await readdir(jobs)).not.toContain("superseded");
+  });
+
+  it.each([
+    ["was issued for another capture", "no matching prompt correlation"],
+    ["records no prompt identity", "no matching prompt correlation"],
+    ["records no route", "no validated summarizer route"],
+    ["has a gap in its helper's history", "correlation is unconfirmed"],
+  ])("M6: never retires an unanswered attempt that %s", async (variant, reason) => {
+    const h = await harness();
+    const { jobs, file, job } = await unansweredAttempt(h);
+    const changed = { ...job };
+    if (variant === "was issued for another capture") { h.created[0]!.prompt = "A prompt for another capture"; changed.promptHash = sha("A prompt for another capture"); }
+    if (variant === "records no prompt identity") { delete changed.clientMessageId; h.missingCorrelation(); }
+    if (variant === "records no route") delete changed.route;
+    if (variant === "has a gap in its helper's history") h.workerGap();
+    await writeFile(file, JSON.stringify(changed));
+    const text = await readFile(file, "utf8");
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(reason);
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(await readdir(jobs)).not.toContain("superseded");
+  });
+
+  it("M7: concurrent and repeated retries of an unanswered attempt make one replacement; the recorder takes no disposition for it", async () => {
+    const h = await harness();
+    const { jobs, file, job, text } = await unansweredAttempt(h);
+    await expect(recordSummaryRecovery(h.api as never, h.root, { job: basename(file), disposition: "retire-legacy-create", evidence: RECOVERY.evidence, applySha256: sha(text) }))
+      .rejects.toThrow("reads back on this host");
+    expect(await readFile(file, "utf8")).toBe(text);
+    const results = await Promise.all([h.generator().generate(SOURCE), h.generator().generate(SOURCE), h.service().save(SOURCE)]);
+    for (const result of results) expect(result.sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(2);
+    expect(JSON.parse(await readFile(file, "utf8")).previousWorkers).toEqual([job.workerId]);
+    expect(await readFile(join(jobs, "superseded", `${job.workerId}.json`), "utf8")).toBe(text);
+    expect(await readdir(join(jobs, "superseded"))).toEqual([`${job.workerId}.json`]);
+  });
+
+  it("M7: after a stop between keeping the original and writing the replacement, a retry replays the archive and makes one replacement", async () => {
+    const h = await harness();
+    const { jobs, file, job, text } = await unansweredAttempt(h);
+    await mkdir(join(jobs, "superseded"), { recursive: true });
+    await writeFile(join(jobs, "superseded", `${job.workerId}.json`), text);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(2);
+    expect(await readFile(join(jobs, "superseded", `${job.workerId}.json`), "utf8")).toBe(text);
+    expect(JSON.parse(await readFile(file, "utf8")).previousWorkers).toEqual([job.workerId]);
+  });
+
+  it("M7: never overwrites an existing archive with other evidence: the unanswered attempt is held unchanged", async () => {
+    const h = await harness();
+    const { jobs, file, job, text } = await unansweredAttempt(h);
+    const archive = join(jobs, "superseded", `${job.workerId}.json`);
+    await mkdir(dirname(archive), { recursive: true });
+    await writeFile(archive, "earlier retained evidence");
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("already holds other evidence");
+    expect(await readFile(archive, "utf8")).toBe("earlier retained evidence");
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(h.created).toHaveLength(1);
   });
 });
 

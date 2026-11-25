@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import type { PaseoApi, PaseoAgent } from "@getpaseo/client";
+import type { PaseoApi, PaseoAgent, PaseoAgentHandle } from "@getpaseo/client";
 import { summaryRevisionSchema, type SummaryHistoryBoundary } from "../shared/session-navigator";
 import { latestStoredSummary, type CompactSummaryPayload, type SessionSummaryGenerator } from "./session-summaries";
 import { createProviders } from "../shared/session-create";
@@ -167,6 +167,16 @@ function captureOf(entries: CapturedEntry[], page: { epoch: string; hasOlder: bo
   };
   return { captured, excerpt, historyBoundary };
 }
+type HelperRead = Awaited<ReturnType<PaseoAgentHandle["refresh"]>>;
+type HelperHistory = Awaited<ReturnType<PaseoAgentHandle["timeline"]["refetch"]>>;
+/**
+ * Whether an attempt's helper is terminal: it reads back by its exact id, archived, settled and with no turn. The host
+ * closes a helper's runtime when it archives it, so it reads back `closed`, or `idle` while only its history is loaded;
+ * `archivedAt` beside a `running` or `initializing` status or an active turn means its runtime has not settled.
+ */
+function settledArchive(read: HelperRead, workerId: string): boolean {
+  return !!read && read.agent.id === workerId && !!read.agent.archivedAt && read.agent.status !== "running" && read.agent.status !== "initializing" && !read.agent.activeTurn;
+}
 function sameSession(left: PaseoAgent, right: PaseoAgent) {
   return left.id === right.id && left.provider === right.provider && left.model === right.model && left.cwd === right.cwd && left.currentModeId === right.currentModeId &&
     (left.persistence?.sessionId ?? null) === (right.persistence?.sessionId ?? null);
@@ -236,33 +246,66 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     const prompt = [SUMMARY_INSTRUCTIONS, ...context].join("\n\n");
     const legacyPromptHash = digest([LEGACY_SUMMARY_INSTRUCTIONS, ...context].join("\n\n"));
     // Every unfinished row under a former key is an attempt at this boundary, also beside a current row; a finished one is
-    // history. Each must be qualified before anything is dispatched: its helper reads back archived by its exact id, or it
-    // records a recovery and its helper does not read back. Any other holds the boundary, so no second helper can start.
+    // history. It is qualified when its helper is terminal (`settledArchive`), or when it records a recovery and its helper
+    // does not read back. An unqualified one is never folded, rewritten or marked: it holds every path that could start a
+    // helper (`dispatchable`), but not the return of a complete current summary or the reading of a current helper's result.
     const formers: Array<{ name: string; job: Job; raw: Buffer }> = [];
+    const unqualified: string[] = [];
     for (const key of formerKeys) {
       const name = `${key}.json`, former = await readJobFile(join(jobs, name));
       if (!former || (former.job.state !== "creating" && former.job.state !== "waiting")) continue;
       const helper = await paseo.agents.ref(former.job.workerId).refresh();
-      if (helper && !(helper.agent.id === former.job.workerId && helper.agent.archivedAt))
-        throw new Error(`Summary helper ${former.job.workerId} of the earlier job ${name} does not read back archived by its exact id and may still be running. That job is held: nothing is resent and no new helper is started until its helper is archived. Capture retained.`);
-      if (!helper && !former.job.recovery)
-        throw new Error(`Summary helper ${former.job.workerId} was requested by an earlier version and may exist on the host although it does not read back. Its job ${name} is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
-      formers.push({ name, ...former });
+      if (helper && !settledArchive(helper, former.job.workerId))
+        unqualified.push(`Summary helper ${former.job.workerId} of the earlier job ${name} does not read back archived by its exact id with its runtime settled, and may still be running. That job is held: nothing is resent and no new helper is started until its helper is archived. Capture retained.`);
+      else if (!helper && !former.job.recovery)
+        unqualified.push(`Summary helper ${former.job.workerId} was requested by an earlier version and may exist on the host although it does not read back. Its job ${name} is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
+      else formers.push({ name, ...former });
     }
+    const dispatchable = () => { if (unqualified.length) throw new Error(unqualified[0]); };
     const found = await readJobFile(file);
     let job = found?.job ?? null;
     // A creating job without placement was written by an earlier version, which may already have sent its create with a
     // per-job cwd under this helper's key; an absent helper does not prove that create had no effect. A placed creating job
     // whose create outcome the host could not confirm is the same case once a recovery is recorded for it. Such a job is
-    // never rewritten or re-sent under its key, and it is held. Only native evidence that its create is terminal (the
-    // helper reads back archived by its exact id) or a recovery disposition recorded in the job retires it, its bytes
+    // never rewritten or re-sent under its key, and it is held. Only native evidence that its create is terminal (its
+    // helper is terminal, `settledArchive`) or a recovery disposition recorded in the job retires it, its bytes
     // kept, for a fresh helper and key. A legacy helper that reads back live keeps the legacy per-job cwd check below.
-    // A waiting job with a recorded recovery whose helper does not read back is retired the same way.
+    // A waiting job with a recorded recovery whose helper does not read back is retired the same way, and so is a waiting
+    // job whose own attempt ended unanswered (`unanswered`).
     let retired = false;
     if ((job?.state === "creating" && (!job.placement || job.recovery)) || (job?.state === "waiting" && job.recovery)) {
       const legacy = await paseo.agents.ref(job.workerId).refresh();
       if (!legacy && !job.recovery) throw new Error(`Summary helper ${job.workerId} was requested by an earlier version and may exist on the host although it does not read back. The job is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
-      retired = legacy ? legacy.agent.id === job.workerId && !!legacy.agent.archivedAt : true;
+      retired = legacy ? settledArchive(legacy, job.workerId) : true;
+    } else if (job?.state === "waiting") retired = await unanswered(job);
+    /** The attempt's canonical history bound to its job: identity, route, placement, labels, session and its one issued prompt; null when any differs. */
+    function correlated(attempt: Job, route: SummaryRoute, history: HelperHistory, current: HelperRead) {
+      const effective = history.agent, sessionId = effective?.persistence?.sessionId;
+      const users = history.entries.filter(entry => entry.item.type === "user_message");
+      const issued = users[0], last = history.entries.filter(entry => entry.item.type === "assistant_message").at(-1);
+      if (history.error || history.agentId !== attempt.workerId || history.gap || history.staleCursor || history.hasNewer || history.hasOlder || !history.epoch ||
+        !effective || !current || !sameSession(effective, current.agent) || effective.id !== attempt.workerId ||
+        effective.provider !== route.provider || effective.providerUnavailable || effective.currentModeId !== route.modeId ||
+        (attempt.placement ? effective.workspaceId !== attempt.placement.workspaceId || effective.cwd !== attempt.placement.cwd || current.project?.projectKey !== attempt.placement.projectId : effective.cwd !== join(jobs, attempt.workerId)) ||
+        (effective.model !== route.model) || effective.labels["kontor.summary.job"] !== jobKey || effective.labels["kontor.summary.source"] !== agentId ||
+        !sessionId || (attempt.workerSessionId && attempt.workerSessionId !== sessionId) || current.agent.activeTurn ||
+        users.length !== 1 || issued?.item.type !== "user_message" || issued.item.clientMessageId !== attempt.clientMessageId || digest(issued.item.text) !== attempt.promptHash) return null;
+      return { effective, current, issued, last, sessionId };
+    }
+    /**
+     * A current-key waiting attempt that ended with no answer: its helper is terminal, and its canonical history holds this
+     * capture's correlated prompt and no reply. The host's finish for that helper reports `idle` with no last message,
+     * which never correlates, so this is its terminal exit. A helper that is not terminal or reads back as another agent,
+     * any reply, or a history that does not correlate is not this case: the attempt keeps its existing path.
+     */
+    async function unanswered(attempt: Job): Promise<boolean> {
+      if (!attempt.route || !attempt.clientMessageId || attempt.promptHash !== digest(prompt)) return false;
+      const helper = paseo.agents.ref(attempt.workerId);
+      if (!settledArchive(await helper.refresh(), attempt.workerId)) return false;
+      const history = await helper.timeline.refetch({ direction: "tail", projection: "canonical", limit: SUMMARY_SOURCE_ITEMS });
+      const after = await helper.refresh();
+      const read = correlated(attempt, attempt.route, history, after);
+      return !!read && settledArchive(after, attempt.workerId) && !read.last;
     }
     const migrateLegacyFailure = job?.state === "failed" && job.cleaned === true && !job.promptVersion && !!job.clientMessageId && job.promptHash === legacyPromptHash && !job.sections;
     if (job && !retired && (!job.clientMessageId || (job.promptHash !== digest(prompt) && !migrateLegacyFailure))) throw new Error("The recorded summary job has no matching prompt correlation. It remains held; nothing was resent.");
@@ -289,6 +332,7 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     if (job?.state === "complete" && job.sections) { await cleanup(); return { sections: job.sections, cutoff, historyBoundary }; }
     let designated: Awaited<ReturnType<typeof designatedWorkspace>> | null = null;
     if (!job || job.state === "failed" || retired) {
+      dispatchable();
       if (job?.state === "failed") await cleanup();
       if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
       designated = await designatedWorkspaceFor(undefined);
@@ -306,6 +350,7 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     if (existing && existing.agent.id !== job.workerId) throw new Error("The summary worker identity did not match. Nothing was sent.");
     if (!existing) {
       if (job.state !== "creating") throw new Error(`Summary generation is unconfirmed. Inspect summary session ${job.workerId}; retry never sends another prompt.`);
+      dispatchable();
       const { placement, workspace } = designated ?? await designatedWorkspaceFor(job.placement);
       const workerId = job.workerId;
       // Workspace-scoped creation: the host places the helper in the designated workspace and creates no project or workspace.
@@ -338,25 +383,12 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     // waitForFinish is session-scoped, not turn-scoped. A complete canonical history
     // must still contain only our exact initial prompt before its final response.
     const history = await worker.timeline.refetch({ direction: "tail", projection: "canonical", limit: SUMMARY_SOURCE_ITEMS });
-    const current = await worker.refresh();
-    const effective = history.agent;
-    const users = history.entries.filter(entry => entry.item.type === "user_message");
-    const replies = history.entries.filter(entry => entry.item.type === "assistant_message");
-    const issued = users[0];
-    const last = replies.at(-1);
-    const sessionId = effective?.persistence?.sessionId;
-    if (history.error || history.agentId !== job.workerId || history.gap || history.staleCursor || history.hasNewer || history.hasOlder || !history.epoch ||
-      !effective || !current || !sameSession(effective, current.agent) || effective.id !== job.workerId ||
-      effective.provider !== route.provider || effective.providerUnavailable || effective.currentModeId !== route.modeId ||
-      (job.placement ? effective.workspaceId !== job.placement.workspaceId || effective.cwd !== job.placement.cwd || current.project?.projectKey !== job.placement.projectId : effective.cwd !== join(jobs, job.workerId)) ||
-      (effective.model !== route.model) || effective.labels["kontor.summary.job"] !== jobKey || effective.labels["kontor.summary.source"] !== agentId ||
-      !sessionId || (job.workerSessionId && job.workerSessionId !== sessionId) || current.agent.activeTurn || current.agent.status !== result.status ||
-      (result.final && !sameSession(effective, result.final)) ||
-      users.length !== 1 || issued?.item.type !== "user_message" || issued.item.clientMessageId !== job.clientMessageId || digest(issued.item.text) !== job.promptHash ||
-      (result.status === "idle" && (!result.lastMessage || last?.item.type !== "assistant_message" || last.seqStart <= issued.seqEnd || last.item.text !== result.lastMessage))) {
+    const read = correlated(job, route, history, await worker.refresh());
+    if (!read || read.current.agent.status !== result.status || (result.final && !sameSession(read.effective, result.final)) ||
+      (result.status === "idle" && (!result.lastMessage || read.last?.item.type !== "assistant_message" || read.last.seqStart <= read.issued.seqEnd || read.last.item.text !== result.lastMessage))) {
       throw new Error(`Summary output correlation is unconfirmed for worker ${job.workerId}. No revision was saved; nothing was resent.`);
     }
-    job.workerSessionId = sessionId;
+    job.workerSessionId = read.sessionId;
     if (result.status === "error") { job.state = "failed"; await writeJob(file, job); await cleanup(); throw new Error("The summary provider failed. No revision was saved; try again to start a new summary worker."); }
     let sections: z.infer<typeof sectionsSchema>;
     try {
