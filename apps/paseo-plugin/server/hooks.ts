@@ -220,9 +220,11 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  * other workflow claim is refused because it names no caller to scope it.
  *
  * Unsupported, and left unguarded: a request with no caller and no workflow
- * claim, and a caller outside any desk or epic project that carries no workflow
- * label. The host gives no provenance that tells such a request from an
- * operator's, so it is unclassified, not operator work.
+ * claim, and a request from a caller outside any desk or epic project when
+ * neither the caller nor the requested initial agent keeps a workflow claim
+ * and no other independently known scope applies. The host gives no
+ * provenance that tells such a request from an operator's, so it is
+ * unclassified, not operator work.
  */
 export async function guardWorkspaceCreate(
   request: WorkspaceCreateRequest,
