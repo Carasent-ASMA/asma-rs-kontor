@@ -1837,10 +1837,17 @@ progress, not confirmed archive membership. Classifying a session solely from
 its parent requires a supported exact-workspace archive observation; the plugin
 cannot supply that from list omission or recover rows the host omits.
 
-Placement routes on Paseo 0.16.2 (installed `app.asar` read, and the
-qualification above). The guard runs only where the host runs
-`workspace.create.before`. Every provisioning route emits `workspace.created`,
-so the detector sees them all, but it reports only the two kinds below.
+Placement routes on installed Paseo 0.17.4 (`app.asar` 74294de5…, read, and
+the qualification above, which ran on it). Rows first classified on 0.16.2 were
+traced again on 0.17.4; rows marked "0.17.4 trace" are new, and their 0.16.2
+behaviour is not verified. Citations are to the server's `dist/server/server`
+files, with the first eight characters of each file's SHA-256.
+
+The guard runs only where the host runs `workspace.create.before`.
+`workspace.created` is emitted only when a new workspace record is made
+(`workspace-provisioning-service.js:134-213`, 0d343734), so the detector sees
+new records only, and reports only the two kinds below. A workspace that comes
+back from archive, by path or by id, emits no event and is not seen.
 
 | Route | Class | Evidence |
 | --- | --- | --- |
@@ -1855,13 +1862,18 @@ so the detector sees them all, but it reports only the two kinds below.
 | Summary helper | open gap (`ASMA-8580-summary-placement-pending`): unguarded and not detected | It creates each job by `cwd` under the plugin state root, an import with no before hook, and neither detected kind covers that directory. Each job can add one project and one workspace while placement is enforced; qualification cases. A separate summary-placement fix is needed. |
 | Procedural takeover | no workspace creation | Workspace-scoped agent create in the admission's workspace. |
 | MCP `create_workspace` (agent tool) | detect | Calls the provisioning service directly, so `workspace.create.before` never runs. Not driven here: the agent MCP route needs an injected capability token. Upstream request: getpaseo/paseo#10302 (open). |
-| MCP `create_agent`, SDK `agents.create` or `paseo run` with only a `cwd` | detect | Imports a workspace for the directory with no before hook; the published hook contract excludes import and lookup. A separate gap from #10302; the missing target and caller fields are discussed in getpaseo/paseo Discussions #8017 and #9979. Qualification case (a linked worktree is detected). |
+| MCP `create_agent`, SDK `agents.create` or `paseo run` with only a `cwd` | detect | Creates a new workspace for the directory, in a project found or created for it, with no before hook (`workspace-provisioning-service.js:263-273`, 0d343734; `session.js:3741-3750`, 7c0988e2; `bootstrap.js:816-826`, e1f58a39). The published hook contract excludes import and lookup. A separate gap from #10302; the missing target and caller fields are discussed in getpaseo/paseo Discussions #8017 and #9979. Qualification case (a linked worktree is detected). |
+| Import of a provider session (`import_agent_request`) with only a `cwd`; desktop "open project" | 0.17.4 trace: find-or-create by path. An active workspace at the path is reused (no creation); otherwise a new one is created (detect); but an archived workspace at that path, in a project that is not archived, is unarchived together with its archived agents: unguarded and not detected | `agent/import-sessions.js:94` (8af211c3) → `workspace-provisioning-service.js:35-75` (a new workspace is removed again if the import fails); `session.js:5731-5748` (7c0988e2); find-or-create `workspace-provisioning-service.js:244-262`, unarchive `:287-343` (0d343734). Source-traced, not dynamically qualified. |
+| Restore of an archived workspace by id (workspace recovery restore, archive undo) | 0.17.4 trace: unguarded and not detected. The workspace returns to the project it already had, which is unarchived too if needed; a missing Paseo worktree checkout can be recreated at its path | `session.js:2521`, `:4952-4956`, `:6290-6292`, `:6319-6331`, `:401-403` (7c0988e2); `workspace-recovery-service.js:66-92` (75014ef2); `workspace-provisioning-service.js:287-343` (0d343734). Source-traced, not dynamically qualified. |
+| Schedule runs with a new-agent target | 0.17.4 trace: detect. Each run creates a new workspace with no before hook and no caller (local: a new directory workspace; worktree: a Paseo worktree), then the agent inside it. A schedule that targets an existing agent creates nothing | `schedule/service.js:760-830`, `:885-894` (699f2e8d) → `bootstrap.js:1037-1054` (e1f58a39). Source-traced, not dynamically qualified. |
+| Hub executions | 0.17.4 trace: detect, as the `cwd`-only route above: a new workspace for the `cwd`, or a Paseo worktree when the execution names one | `hub/daemon-executions.js:97-125` (01e80faa) → `bootstrap.js:947-949`, `:1027-1035` (e1f58a39). Needs a hub connection; source-traced, not dynamically qualified. |
 | Consultation, committee and advisor agents | as the route they use | They create agents through MCP `create_agent`: inside an existing workspace there is no creation, and with only a `cwd` it is the import route. |
 | `kontord` launches | prevent | A launch's initial agent carries `kontor.*` labels, so its binding is enforced even with no caller (unit tests); not run live, the floor is off. |
-| Desktop app: new workspace, open project | unclassified, unguarded; detect | No caller on the request. |
+| Desktop app: new workspace | unclassified, unguarded; detect | No caller on the request. "Open project" is the find-or-create row above. |
 
-Detection covers exactly two kinds: a git project rooted at a linked worktree
-and a directory under Paseo's own worktree root. Any other misplacement on a
+Detection covers exactly two kinds of new workspace record: a git project
+rooted at a linked worktree and a directory under Paseo's own worktree root.
+A workspace restored from archive is never seen. Any other misplacement on a
 detect-only or unguarded route is unsupported, so these residuals bound what
 this guard delivers; they do not close the placement problem. A caller id is
 never a label, and an unlabelled caller in a desk or epic project is still
@@ -1881,7 +1893,7 @@ on every mutating provisioning route, before any project, workspace, worktree
 or agent side effect; a refusal that prevents the container as well as the
 agent (a notification after creation is detection, not prevention); an import
 that registers a new container kept distinct from lookup or reuse of an
-existing workspace; and genuine operator creation preserved, with unknown
+existing workspace; an event when an archived workspace is restored; and genuine operator creation preserved, with unknown
 provenance kept explicit.
 
 
