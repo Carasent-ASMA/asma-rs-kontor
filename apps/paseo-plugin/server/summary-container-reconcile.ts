@@ -47,7 +47,7 @@ async function savedFor(root: string, jobsDir: string, jobFile: string, job: Job
 }
 
 /** The runner's only accepted endpoint: a decimal port in 1..65535 on loopback, normalised for the URL and `--host`. */
-export const RECONCILE_USAGE = "Usage: bun scripts/summary-container-reconcile.ts <daemon-port> [summary-state-root], or <daemon-port> <summary-state-root> record-recovery <job-file> retire-legacy-create <evidence> [--apply <before-sha256 from the dry run>]; the port is a decimal integer from 1 to 65535. For a job with a placement, the evidence must show that its keyed create is terminal (the installer's receipt triage). A job whose helper reads back takes no recovery: the generator reads its result, or retires a waiting job itself once its helper reads back archived and settled with no reply.";
+export const RECONCILE_USAGE = "Usage: bun scripts/summary-container-reconcile.ts <daemon-port> [summary-state-root], or <daemon-port> <summary-state-root> record-recovery <job-file> retire-legacy-create <evidence> [--apply <before-sha256 from the dry run>]; the port is a decimal integer from 1 to 65535. For a job with a placement, the evidence must show that its keyed create is terminal (the installer's receipt triage). A job whose helper reads back takes no recovery: the generator reads its result, or retires a placed waiting or creating job itself once its helper reads back closed with that job's prompt and no reply.";
 export function reconcileEndpoint(port: string | undefined): { url: string; host: string } {
   const value = /^[1-9][0-9]{0,4}$/.test(port ?? "") ? Number(port) : 0;
   if (value < 1 || value > 65535) throw new Error(RECONCILE_USAGE);
@@ -138,8 +138,8 @@ export function recoveryOperands(input: { job?: string; disposition?: string; ev
  * Record an operator's recovery disposition on one held summary job, the installer's supported route instead of a hand
  * edit. It is a dry run unless `applySha256` names the bytes its dry run reviewed; other bytes stop the job unchanged.
  * Only a `creating` or `waiting` job whose helper does not read back by its exact id is accepted: the job the generator
- * holds (legacy, former-key, or a create the host could not confirm); a waiting job whose helper reads back archived and
- * settled with no reply is retired by the generator itself. For a job with a placement the evidence must show
+ * holds (legacy, former-key, or a create the host could not confirm); a placed waiting or creating job whose helper
+ * reads back closed with that job's prompt and no reply is retired by the generator itself. For a job with a placement the evidence must show
  * that its keyed create is terminal; the host receipt behind it is the installer's own triage, which this does not read.
  * An apply holds `<job>.lock`, created exclusively, from its final read to its replace, so concurrent applies to one job
  * are serialised: inside the lock the job must still be exactly the reviewed bytes, which carry no recovery. The exact
@@ -160,7 +160,7 @@ export async function recordSummaryRecovery(paseo: Pick<PaseoApi, "agents">, roo
     if (job.recovery.disposition === input.disposition && job.recovery.evidence === evidence) return { ...plan, recovery: job.recovery, applied: false, unchanged: true };
     throw new Error(`Job ${input.job} already records another recovery. It is kept unchanged.`);
   }
-  if (await paseo.agents.ref(job.workerId).refresh()) throw new Error(`Summary helper ${job.workerId} reads back on this host, so a recovery does not apply: the generator reads its result, or retires the job itself once that helper reads back archived and settled with no reply. Nothing was changed.`);
+  if (await paseo.agents.ref(job.workerId).refresh()) throw new Error(`Summary helper ${job.workerId} reads back on this host, so a recovery does not apply: the generator reads its result, or retires the job itself once that helper reads back closed with this job's prompt and no reply. Nothing was changed.`);
   const recovery = { disposition: input.disposition, evidence, recordedAt: (input.now ?? (() => new Date().toISOString()))() };
   const next = JSON.stringify({ ...record, recovery });
   if (input.applySha256 === undefined) return { ...plan, recovery, applied: false, unchanged: false };

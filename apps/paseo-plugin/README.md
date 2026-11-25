@@ -65,9 +65,13 @@ for the same source and history, also when a row under the current key exists.
 Each `creating` or `waiting` row found there is an earlier attempt at this
 history. It is qualified when its helper is terminal, or when a recovery is
 recorded in it and its helper does not read back. A helper is terminal when it
-reads back by its exact id, archived, with a settled status (not `running` or
-`initializing`) and no active turn; `archivedAt` beside a running status or an
-active turn means its runtime has not settled, so its row is not qualified. An
+reads back by its exact id, archived, with no active turn, and `closed`. Paseo
+0.16.2 reports `closed` only after that helper's runtime close returned and the
+host dropped the runtime. A close that fails leaves the helper live and `idle`
+beside `archivedAt`, and so does a read of an archived helper's history; that
+readback is unknown, not terminal. `archivedAt` beside a running status or an
+active turn is not terminal either. The one exception is the generator's own
+history read below. An
 unqualified row is never folded, rewritten or marked: it holds every path that
 could start a helper for this history (a fresh helper, or a keyed create sent
 again), naming that row's file. It does not withhold a summary that is already
@@ -82,8 +86,9 @@ summary of that source may start another helper. Such a row is never treated as
 settled: its `creating` state keeps its container held in the dry run below.
 
 A fresh helper with a new key replaces a held job only on one of three grounds:
-its helper is terminal as above (the old create is terminal); a `waiting` job's
-own attempt ended unanswered; or an operator records a recovery disposition in
+its helper is terminal as above (the old create is terminal); a placed `waiting`
+job's own attempt, or a placed `creating` job's whose create answer was lost,
+ended unanswered; or an operator records a recovery disposition in
 the job,
 `"recovery": {"disposition": "retire-legacy-create", "evidence": "…", "recordedAt": "…"}`,
 naming the reconciled evidence. The same applies to a job whose create the host
@@ -94,16 +99,39 @@ the helper does not read back. On retirement the job's exact bytes are kept at
 with the same bytes is a replay, and one with other bytes holds the job and is
 never replaced. A `waiting` job with a recorded recovery whose helper does not
 read back is retired the same way.
-A `waiting` job's attempt ended unanswered when its helper is terminal and its
-canonical history holds exactly the job's correlated prompt (its client message
-id and prompt hash, for this capture) and no reply: an archived helper that
-never replied, for example one archived after the generator timed out. The host
-then reports the helper `idle` with no last message, which no retry can
+A `waiting` job's attempt, or a placed `creating` job's whose create took
+effect but whose answer was lost, ended unanswered when its helper is terminal
+and its canonical history holds exactly the job's correlated prompt (its client
+message id and prompt hash, for this capture) and no reply: an archived helper
+that never replied, for example one archived after the generator timed out. The
+host then reports the helper `idle` with no last message, which no retry can
 correlate, so the generator retires that job itself, keeping its bytes and
-capture as above; it needs no recovery. A helper that is not terminal or reads
-back as another agent, a history with any reply, or one that does not correlate
-keeps the job on its existing path: a reply is read and validated, and anything
-else holds.
+capture as above; it needs no recovery. Reading that history leaves the helper
+`idle`, so before its first read the generator records the helper's `closed`
+readback in the job as `terminal` (version 1, the helper id, its `archivedAt`
+and provider session), keeping the job's earlier bytes once at
+`generation-jobs/superseded/<worker id>.before-terminal.json`. It writes that
+field only from an exact-id `closed` readback, under `<job-file>.lock`, and
+only over the bytes it read. Afterwards an `idle` readback is terminal only
+when it matches that record: the same helper, `archivedAt` and session, with
+the same correlated history. A helper archived again since, a changed session,
+or a record for another helper is unknown. A helper whose history was read
+before any `closed` readback was recorded is unknown too. Unknown holds: no
+new helper is started. A helper that is not archived and settled, or reads back
+as another agent, a history with any reply, or one that does not correlate,
+keeps the job on its existing path: a reply is read and validated, and
+anything else holds.
+
+Paseo gives no public signal that tells a failed close from a loaded history:
+both read back `idle` beside `archivedAt`. So an unanswered attempt whose
+helper reads back that way, with no recorded `closed` readback, is held with a
+plain message. Archive that helper again in Paseo; once it reads back `closed`,
+a retry retires the job. In 0.16.2, ACP, OMP and Pi sessions return at once
+from a repeated close after a failed one, so for those providers archiving
+again can show `closed` without finishing the earlier teardown. A successful
+Claude close also does not prove that the OS process exited: it logs a kill
+timeout and goes on. Both limits belong to the host, and the generator does
+not hide them.
 A legacy helper that reads back live keeps its per-job directory check. The
 host refuses a key it holds for a different request; the generator holds that
 job with a plain message, never shows the host's text, and never escapes the
@@ -121,8 +149,9 @@ bun scripts/summary-container-reconcile.ts <daemon-port> <summary-state-root> \
 
 It accepts only a `creating` or `waiting` job whose helper does not read back
 by its exact id. A job whose helper reads back takes no recovery: the generator
-reads its result, or retires an unanswered `waiting` job itself once its helper
-is terminal, so archive that helper rather than record a recovery. The job
+reads its result, or retires an unanswered placed `waiting` or `creating` job
+itself once its helper reads back `closed`, so archive that helper rather than
+record a recovery. The job
 name, disposition and evidence are checked before the
 runner opens any connection. The dry run prints the job's `beforeSha256`;
 `--apply` must name it, and a job whose bytes have changed since is refused

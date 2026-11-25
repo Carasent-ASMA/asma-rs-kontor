@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { PaseoApi, PaseoAgent, PaseoAgentHandle } from "@getpaseo/client";
 import { summaryRevisionSchema, type SummaryHistoryBoundary } from "../shared/session-navigator";
@@ -74,8 +74,10 @@ const placementMismatch = (placement: SummaryHelperPlacement, recorded: boolean)
 // that the job never owns or closes it. A job without `placement` is legacy: its helper made a per-job project and
 // workspace, left to the gated dry-run reconcile, and placement is never written into it. `recovery` is an operator's
 // recorded disposition for a held legacy `creating` job, naming the evidence that its earlier create was reconciled.
-// `cleaned` means the job's own effect, its helper, is archived and read back.
-export const summaryJobSchema = z.object({ workerId: z.string().uuid(), state: z.enum(["creating", "waiting", "failed", "complete"]), previousWorkers: z.array(z.string()), clientMessageId: z.string().uuid().optional(), promptHash: z.string().optional(), workerSessionId: z.string().optional(), sections: sectionsSchema.optional(), route: routeSchema.optional(), placement: placementSchema.extend({ owned: z.literal(false) }).strict().optional(), recovery: z.object({ disposition: z.literal("retire-legacy-create"), evidence: z.string().trim().min(1), recordedAt: z.string().trim().min(1) }).strict().optional(), cleaned: z.boolean().optional(), promptVersion: z.literal(SUMMARY_PROMPT_VERSION).optional() }).strict();
+// `terminal` is the attempt's own observation of its helper reading back `closed` (see `terminal`), written only by
+// `observeClosed`. `cleaned` means the job's own effect, its helper, is archived and read back.
+const terminalSchema = z.object({ version: z.literal(1), workerId: z.string().uuid(), archivedAt: z.string().min(1), sessionId: z.string().min(1) }).strict();
+export const summaryJobSchema = z.object({ workerId: z.string().uuid(), state: z.enum(["creating", "waiting", "failed", "complete"]), previousWorkers: z.array(z.string()), clientMessageId: z.string().uuid().optional(), promptHash: z.string().optional(), workerSessionId: z.string().optional(), sections: sectionsSchema.optional(), route: routeSchema.optional(), placement: placementSchema.extend({ owned: z.literal(false) }).strict().optional(), recovery: z.object({ disposition: z.literal("retire-legacy-create"), evidence: z.string().trim().min(1), recordedAt: z.string().trim().min(1) }).strict().optional(), terminal: terminalSchema.optional(), cleaned: z.boolean().optional(), promptVersion: z.literal(SUMMARY_PROMPT_VERSION).optional() }).strict();
 type Job = z.infer<typeof summaryJobSchema>;
 const tails = new Map<string, Promise<unknown>>();
 
@@ -169,13 +171,22 @@ function captureOf(entries: CapturedEntry[], page: { epoch: string; hasOlder: bo
 }
 type HelperRead = Awaited<ReturnType<PaseoAgentHandle["refresh"]>>;
 type HelperHistory = Awaited<ReturnType<PaseoAgentHandle["timeline"]["refetch"]>>;
-/**
- * Whether an attempt's helper is terminal: it reads back by its exact id, archived, settled and with no turn. The host
- * closes a helper's runtime when it archives it, so it reads back `closed`, or `idle` while only its history is loaded;
- * `archivedAt` beside a `running` or `initializing` status or an active turn means its runtime has not settled.
- */
+/** An archived helper with a settled status and no turn: a precondition only, never proof that its runtime closed. */
 function settledArchive(read: HelperRead, workerId: string): boolean {
   return !!read && read.agent.id === workerId && !!read.agent.archivedAt && read.agent.status !== "running" && read.agent.status !== "initializing" && !read.agent.activeTurn;
+}
+/**
+ * Whether an attempt's helper is terminal: it reads back by its exact id, archived, with no turn, and `closed`. The host
+ * reports `closed` only after that helper's runtime close returned and the host dropped the runtime. A close that failed
+ * leaves the helper live and `idle` beside `archivedAt`. Loading an archived helper's history also leaves it `idle`, so
+ * `idle` is terminal only with the attempt's own `closed` observation of the same helper, archive time and provider
+ * session (`proof`), recorded before the generator first read that history. Every other readback is unknown.
+ */
+function terminal(read: HelperRead, workerId: string, proof?: Job["terminal"]): boolean {
+  if (!read || read.agent.id !== workerId || !read.agent.archivedAt || read.agent.activeTurn) return false;
+  if (read.agent.status === "closed") return true;
+  return read.agent.status === "idle" && !!proof && proof.workerId === workerId && proof.archivedAt === read.agent.archivedAt &&
+    proof.sessionId === read.agent.persistence?.sessionId;
 }
 function sameSession(left: PaseoAgent, right: PaseoAgent) {
   return left.id === right.id && left.provider === right.provider && left.model === right.model && left.cwd === right.cwd && left.currentModeId === right.currentModeId &&
@@ -245,39 +256,48 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     const context = [JSON.stringify({ sourceAgentId: agentId, sourceTitle: agent.title, cutoff, historyBoundary, priorSummary }), excerpt];
     const prompt = [SUMMARY_INSTRUCTIONS, ...context].join("\n\n");
     const legacyPromptHash = digest([LEGACY_SUMMARY_INSTRUCTIONS, ...context].join("\n\n"));
+    // Every attempt this call retires, as it read it: its file's exact bytes, its helper, and the readback it was retired on.
+    const retiring: Array<{ file: string; raw: Buffer; workerId: string; proof?: Job["terminal"]; absent: boolean }> = [];
     // Every unfinished row under a former key is an attempt at this boundary, also beside a current row; a finished one is
-    // history. It is qualified when its helper is terminal (`settledArchive`), or when it records a recovery and its helper
-    // does not read back. An unqualified one is never folded, rewritten or marked: it holds every path that could start a
-    // helper (`dispatchable`), but not the return of a complete current summary or the reading of a current helper's result.
+    // history. It is qualified when its helper is terminal (`terminal`, `closed`: a former row is never rewritten, so it
+    // records no readback), or when it records a recovery and its helper does not read back. An unqualified one is never
+    // folded, rewritten or marked: it holds every path that could start a helper (`dispatchable`), but not the return of a
+    // complete current summary or the reading of a current helper's result.
     const formers: Array<{ name: string; job: Job; raw: Buffer }> = [];
     const unqualified: string[] = [];
     for (const key of formerKeys) {
       const name = `${key}.json`, former = await readJobFile(join(jobs, name));
       if (!former || (former.job.state !== "creating" && former.job.state !== "waiting")) continue;
       const helper = await paseo.agents.ref(former.job.workerId).refresh();
-      if (helper && !settledArchive(helper, former.job.workerId))
-        unqualified.push(`Summary helper ${former.job.workerId} of the earlier job ${name} does not read back archived by its exact id with its runtime settled, and may still be running. That job is held: nothing is resent and no new helper is started until its helper is archived. Capture retained.`);
+      if (helper && !terminal(helper, former.job.workerId))
+        unqualified.push(`Summary helper ${former.job.workerId} of the earlier job ${name} does not read back closed by its exact id: it may still be running, or its close may have failed. That job is held: nothing is resent and no new helper is started until its helper reads back closed. Capture retained.`);
       else if (!helper && !former.job.recovery)
         unqualified.push(`Summary helper ${former.job.workerId} was requested by an earlier version and may exist on the host although it does not read back. Its job ${name} is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
-      else formers.push({ name, ...former });
+      else { formers.push({ name, ...former }); retiring.push({ file: join(jobs, name), raw: former.raw, workerId: former.job.workerId, absent: !helper }); }
     }
     const dispatchable = () => { if (unqualified.length) throw new Error(unqualified[0]); };
     const found = await readJobFile(file);
     let job = found?.job ?? null;
+    // The current job's bytes as this call last read or wrote them.
+    let jobRaw = found?.raw ?? null;
     // A creating job without placement was written by an earlier version, which may already have sent its create with a
     // per-job cwd under this helper's key; an absent helper does not prove that create had no effect. A placed creating job
     // whose create outcome the host could not confirm is the same case once a recovery is recorded for it. Such a job is
     // never rewritten or re-sent under its key, and it is held. Only native evidence that its create is terminal (its
-    // helper is terminal, `settledArchive`) or a recovery disposition recorded in the job retires it, its bytes
+    // helper is terminal, `terminal`) or a recovery disposition recorded in the job retires it, its bytes
     // kept, for a fresh helper and key. A legacy helper that reads back live keeps the legacy per-job cwd check below.
-    // A waiting job with a recorded recovery whose helper does not read back is retired the same way, and so is a waiting
-    // job whose own attempt ended unanswered (`unanswered`).
+    // A waiting job with a recorded recovery whose helper does not read back is retired the same way, and so is a placed
+    // waiting or creating job whose own attempt ended unanswered (`unanswered`).
     let retired = false;
     if ((job?.state === "creating" && (!job.placement || job.recovery)) || (job?.state === "waiting" && job.recovery)) {
       const legacy = await paseo.agents.ref(job.workerId).refresh();
       if (!legacy && !job.recovery) throw new Error(`Summary helper ${job.workerId} was requested by an earlier version and may exist on the host although it does not read back. The job is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
-      retired = legacy ? settledArchive(legacy, job.workerId) : true;
-    } else if (job?.state === "waiting") retired = await unanswered(job);
+      retired = legacy ? terminal(legacy, job.workerId) : true;
+      if (retired) retiring.push({ file, raw: jobRaw!, workerId: job.workerId, absent: !legacy });
+    } else if (job?.state === "waiting" || (job?.state === "creating" && job.placement)) {
+      retired = await unanswered(job);
+      if (retired) retiring.push({ file, raw: jobRaw!, workerId: job.workerId, proof: job.terminal, absent: false });
+    }
     /** The attempt's canonical history bound to its job: identity, route, placement, labels, session and its one issued prompt; null when any differs. */
     function correlated(attempt: Job, route: SummaryRoute, history: HelperHistory, current: HelperRead) {
       const effective = history.agent, sessionId = effective?.persistence?.sessionId;
@@ -293,19 +313,60 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       return { effective, current, issued, last, sessionId };
     }
     /**
-     * A current-key waiting attempt that ended with no answer: its helper is terminal, and its canonical history holds this
-     * capture's correlated prompt and no reply. The host's finish for that helper reports `idle` with no last message,
-     * which never correlates, so this is its terminal exit. A helper that is not terminal or reads back as another agent,
-     * any reply, or a history that does not correlate is not this case: the attempt keeps its existing path.
+     * A current-key placed attempt, waiting or still creating after a lost create answer, that ended with no answer: its
+     * helper is terminal, and its canonical history holds this capture's correlated prompt and no reply. The host's finish
+     * for that helper reports `idle` with no last message, which never correlates, so this is its terminal exit. Reading
+     * that history leaves the helper `idle`, so a `closed` readback is recorded in the job first (`observeClosed`). A helper
+     * that is not archived and settled or reads back as another agent, any reply, or a history that does not correlate is
+     * not this case: the attempt keeps its existing path. The same unanswered history beside an archived helper that is
+     * not terminal is unknown, and holds.
      */
     async function unanswered(attempt: Job): Promise<boolean> {
       if (!attempt.route || !attempt.clientMessageId || attempt.promptHash !== digest(prompt)) return false;
       const helper = paseo.agents.ref(attempt.workerId);
-      if (!settledArchive(await helper.refresh(), attempt.workerId)) return false;
+      const before = await helper.refresh();
+      if (!settledArchive(before, attempt.workerId)) return false;
+      await observeClosed(attempt, before!.agent);
       const history = await helper.timeline.refetch({ direction: "tail", projection: "canonical", limit: SUMMARY_SOURCE_ITEMS });
       const after = await helper.refresh();
       const read = correlated(attempt, attempt.route, history, after);
-      return !!read && settledArchive(after, attempt.workerId) && !read.last;
+      if (!read || read.last || !settledArchive(after, attempt.workerId)) return false;
+      if (terminal(after, attempt.workerId, attempt.terminal)) return true;
+      throw new Error(`Summary helper ${attempt.workerId} reads back archived with this job's prompt and no reply, but not closed, and the job holds no earlier closed readback of it. Paseo reports a failed close and a loaded history alike, so its runtime may still be live. The job is held: nothing is resent and no new helper is started. Archive that helper again; once it reads back closed, a retry retires the job. Capture retained.`);
+    }
+    /**
+     * Record the attempt's own `closed` readback of its helper (`terminal`) before the generator first reads that helper's
+     * history. Only this path writes it, from the exact-id, archived, settled readback `unanswered` just took, when it is
+     * `closed` with the attempt's provider session. The write holds `<job>.lock`, the recorder's lock, replaces only the
+     * bytes this call read, and keeps the job's bytes from before its first observation once at
+     * `superseded/<worker id>.before-terminal.json`. A readback already recorded is not written again.
+     */
+    async function observeClosed(attempt: Job, agent: PaseoAgent) {
+      const sessionId = agent.persistence?.sessionId;
+      if (agent.status !== "closed" || !sessionId || (attempt.workerSessionId && attempt.workerSessionId !== sessionId)) return;
+      const proof = { version: 1 as const, workerId: attempt.workerId, archivedAt: agent.archivedAt!, sessionId };
+      if (JSON.stringify(attempt.terminal) === JSON.stringify(proof)) return;
+      const lockFile = `${file}.lock`;
+      const lock = await open(lockFile, "wx", 0o600).catch((error: unknown) => {
+        if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new Error(`Another write holds the summary job ${basename(file)} (${basename(lockFile)}). Nothing was changed or sent; retry once it is released. Capture retained.`);
+        throw error;
+      });
+      try {
+        if (!(await readFile(file)).equals(jobRaw!)) throw new Error(`The summary job ${basename(file)} changed while it was read. It is kept unchanged and held; a retry reads it again. Capture retained.`);
+        if (!attempt.terminal) await archiveExactBytes(join(jobs, "superseded"), `${attempt.workerId}.before-terminal.json`, jobRaw!);
+        await writeJob(file, { ...attempt, terminal: proof });
+        attempt.terminal = proof;
+        jobRaw = await readFile(file);
+      } finally { await lock.close(); await unlink(lockFile); }
+    }
+    /** Just before any attempt's evidence is retired: each still has the bytes it was read with, and its helper still reads back as it did. */
+    async function stillRetirable() {
+      for (const attempt of retiring) {
+        const raw = await readFile(attempt.file).catch(() => null);
+        const helper = await paseo.agents.ref(attempt.workerId).refresh();
+        if (!raw?.equals(attempt.raw) || (attempt.absent ? !!helper : !terminal(helper, attempt.workerId, attempt.proof)))
+          throw new Error(`The summary attempt ${basename(attempt.file)} changed while this summary was prepared. Nothing was retired, resent or started; a retry reads it again. Capture retained.`);
+      }
     }
     const migrateLegacyFailure = job?.state === "failed" && job.cleaned === true && !job.promptVersion && !!job.clientMessageId && job.promptHash === legacyPromptHash && !job.sections;
     if (job && !retired && (!job.clientMessageId || (job.promptHash !== digest(prompt) && !migrateLegacyFailure))) throw new Error("The recorded summary job has no matching prompt correlation. It remains held; nothing was resent.");
@@ -318,7 +379,7 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       await writeJob(file, into);
       for (const former of formers) await unlink(join(jobs, former.name));
     }
-    if (job && job.state !== "failed" && !retired && formers.length) await settle(job);
+    if (job && job.state !== "failed" && !retired && formers.length) { await stillRetirable(); await settle(job); }
     // Closes only the job's own effect, its helper, after the caller wrote a terminal state. The designated workspace is
     // never closed, and a legacy per-job container (no `placement`, even with cleaned=true) is left to the gated reconcile.
     async function cleanup() {
@@ -337,7 +398,8 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
       designated = await designatedWorkspaceFor(undefined);
       const route = await selectSummaryRoute(paseo, agent.cwd, host);
-      if (job && (migrateLegacyFailure || retired)) await archiveExactBytes(join(jobs, "superseded"), `${job.workerId}.json`, found!.raw);
+      await stillRetirable();
+      if (job && (migrateLegacyFailure || retired)) await archiveExactBytes(join(jobs, "superseded"), `${job.workerId}.json`, jobRaw!);
       job = { workerId: randomUUID(), state: "creating", previousWorkers: job ? [...job.previousWorkers, job.workerId] : [], clientMessageId: randomUUID(), promptHash: digest(prompt), route, promptVersion: SUMMARY_PROMPT_VERSION,
         placement: { ...designated.placement, owned: false } };
       // Exactly one replacement: every earlier attempt is kept byte for byte under superseded/ and named in it.
