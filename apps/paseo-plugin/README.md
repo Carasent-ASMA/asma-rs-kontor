@@ -213,7 +213,8 @@ is absent. The plugin is not reloaded or disabled, so the placement guard and
 `placement.json` keep running unchanged. From then on every summary call holds
 before it writes or starts anything: no capture or job is written, no helper is
 created, archived or waited on, and nothing is sent. A complete summary whose
-prompt correlation matches is still returned, and saved summaries stay readable.
+prompt correlation matches is still returned, and saved as a revision as before
+if it was not saved yet; that is the only write. Saved summaries stay readable.
 Summarize & copy and idle-source takeover that need a new summary are refused,
 and a running source is not stopped. A call already running when the file moved
 stops at its last check before its create. One already waiting on its helper
@@ -228,8 +229,8 @@ build back. Then move the same bytes back and compare their sha256 with the
 saved file. Each held row resumes on its own path: a `waiting` row reads its
 helper's result, a placed `creating` row repeats only its own keyed create, and
 a row that holds every source stays held until its own recovery is recorded.
-Nothing is re-keyed or resent, and the workspace and saved summaries are never
-touched.
+Nothing is re-keyed or resent, and the workspace and existing saved summaries
+are never changed.
 
 Helpers created before this change made one project and workspace per job
 under `generation-jobs/<helper id>`. Nothing closes those automatically.
