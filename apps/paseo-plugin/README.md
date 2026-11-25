@@ -41,9 +41,10 @@ id, project and directory, not archiving, as a `directory` workspace in a
 `non_git` or `directory` project, before the job is recorded. A repository or
 worktree workspace is refused, and so is a directory with another active
 workspace beneath it (by path segment: `..checkout` is a name beneath it, and
-only a `..` segment leaves it), so a helper never runs above a checkout. A missing or invalid file, or a workspace that
-does not read back that way, records no job, creates no helper and keeps the
-capture; the message names the workspace id. The job records the placement
+only a `..` segment leaves it), so a helper never runs above a checkout. A missing or invalid file holds the summary path
+(containment, below): nothing is written or started. A workspace that does not
+read back that way records no job, creates no helper and keeps the capture; the
+message names the workspace id. The job records the placement
 with `owned: false` before anything is sent, and a retry uses the recorded
 placement, not a changed file. If the recorded workspace no longer reads back,
 the retry is refused with that recorded id, so it can be restored. The helper is
@@ -191,17 +192,44 @@ order, before the plugin with this change is reloaded:
    collision or a foreign occupant stops activation; nothing existing is
    renamed, moved or archived.
 2. Write `summary.json` with that `workspaceId`, `projectId` and `cwd`, keeping
-   the previous file for rollback, and read it back.
+   the previous file (or recording that there was none), and read it back.
 3. Only then install or reload the plugin with this change. A failure in step 1
    or 2 stops the install, so takeover never runs without a bound workspace.
 
 A row that holds every source (above) keeps every new summary, and so every
 idle-source takeover, held after the install until its own recovery is recorded.
 
-Rollback reinstalls the previous plugin build first. Removing or changing
-`summary.json` while this change is installed blocks new summaries and
-idle-source takeover, as above. It never touches the workspace or saved
-summaries.
+**Containment and forward recovery, not rollback.** Reinstalling an earlier
+plugin build is not a recovery of the summary path. The build installed before
+this change does not see an unfinished row under a key it does not derive and
+starts a helper beside it, and an older whole plugin would also remove any
+placement prevention installed since. The SR-03 runs recorded what such a
+downgrade does; they are evidence, not a procedure.
+
+To contain the summary path on this build, move `summary.json` aside with its
+bytes kept, `mv <paseo-home>/plugin-config/kontor/summary.json
+<paseo-home>/plugin-config/kontor/summary.json.contained`, and read back that it
+is absent. The plugin is not reloaded or disabled, so the placement guard and
+`placement.json` keep running unchanged. From then on every summary call holds
+before it writes or starts anything: no capture or job is written, no helper is
+created, archived or waited on, and nothing is sent. A complete summary whose
+prompt correlation matches is still returned, and saved summaries stay readable.
+Summarize & copy and idle-source takeover that need a new summary are refused,
+and a running source is not stopped. A call already running when the file moved
+stops at its last check before its create. One already waiting on its helper
+finishes reading that one helper, at most the generator's 120-second wait, and
+records that attempt's own result; it starts no other. Containment does not stop
+a helper's own work on the host, and nothing here shows that it stopped: an
+unfinished attempt stays in its row, and is read or held after recovery.
+
+To recover, install a gated forward fix, or reinstall a retained, qualified
+build of this change, with `summary.json` still aside, and read the installed
+build back. Then move the same bytes back and compare their sha256 with the
+saved file. Each held row resumes on its own path: a `waiting` row reads its
+helper's result, a placed `creating` row repeats only its own keyed create, and
+a row that holds every source stays held until its own recovery is recorded.
+Nothing is re-keyed or resent, and the workspace and saved summaries are never
+touched.
 
 Helpers created before this change made one project and workspace per job
 under `generation-jobs/<helper id>`. Nothing closes those automatically.

@@ -635,7 +635,7 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("need one designated workspace");
     expect(h.created).toEqual([]);
     expect(h.workspaceReads).toEqual([]);
-    expect(await jobFiles(h)).toEqual([]);
+    expect(await readdir(join(h.root, "generation-jobs"))).toEqual([]);
   });
 
   it.each([
@@ -698,10 +698,14 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect(h.workspaceReads).toEqual([PLACEMENT.workspaceId, PLACEMENT.workspaceId]);
   });
 
-  it("recovers a lost creation answer from the existing helper without a second helper or workspace read", async () => {
+  it("holds a lost creation answer while summary.json is moved aside, then recovers it from the existing helper without a second helper or workspace read", async () => {
     const h = await harness(); h.loseCreateAnswer();
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation answer lost");
+    const binding = await readFile(h.placementFile, "utf8");
     await rm(h.placementFile);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("need one designated workspace");
+    expect(h.counts().waits).toBe(0);
+    await writeFile(h.placementFile, binding);
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(1);
     expect(h.workspaceReads).toEqual([PLACEMENT.workspaceId]);
@@ -2016,6 +2020,143 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(2);
     expect(h.counts().sends).toBe(0);
+  });
+
+  // Containment (RELEASE-INSTALL-RECOVERY-DISPOSITION-r1 D3): moving summary.json aside holds the summary path on this build,
+  // and restoring the same bytes resumes each held attempt on its own path.
+  type H = Awaited<ReturnType<typeof harness>>;
+  /** Every file under generation-jobs with its sha256. */
+  async function tree(h: H) {
+    const out: Record<string, string> = {};
+    const walk = async (dir: string, prefix: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+        if (entry.isDirectory()) await walk(join(dir, entry.name), `${prefix}${entry.name}/`);
+        else out[`${prefix}${entry.name}`] = sha(await readFile(join(dir, entry.name)));
+      }
+    };
+    await walk(join(h.root, "generation-jobs"), "");
+    return out;
+  }
+  /** One call with summary.json moved aside: it writes, archives, creates, waits on and sends nothing; the binding is then restored. */
+  async function contained(h: H, returns = false) {
+    const binding = await readFile(h.placementFile, "utf8");
+    await rm(h.placementFile);
+    const before = await tree(h), created = h.created.length, { waits } = h.counts();
+    h.archived.clear();
+    const result = returns ? await h.generator().generate(SOURCE) : await expect(h.generator().generate(SOURCE)).rejects.toThrow("need one designated workspace");
+    expect(await tree(h)).toEqual(before);
+    expect(h.created).toHaveLength(created);
+    expect(h.counts()).toEqual({ waits, sends: 0 });
+    expect([...h.archived]).toEqual([]);
+    await writeFile(h.placementFile, binding);
+    return result;
+  }
+
+  it.each<[string, (h: H) => Promise<any>, (h: H, seeded: any) => Promise<void>]>([
+    ["a new history", async () => null, async h => {
+      expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+      expect(h.created).toHaveLength(1);
+    }],
+    ["a placed creating row whose create never reached the host", async h => {
+      h.loseCreateRequest(); await h.generator().generate(SOURCE).catch(() => undefined);
+      return (await jobOf(h)).job;
+    }, async (h, job) => {
+      expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+      expect(h.created.map(item => item.agentId)).toEqual([job.workerId]);
+    }],
+    ["a waiting row whose helper is still working", async h => {
+      h.setResult({ status: "timeout" }); await h.generator().generate(SOURCE).catch(() => undefined);
+      return null;
+    }, async h => {
+      h.setResult({ status: "idle" });
+      expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+      expect(h.created).toHaveLength(1);
+    }],
+    ["a failed row whose helper archive is unconfirmed", async h => {
+      h.setResult({ status: "error", lastMessage: null as never }); h.workerOverrides.archivedAt = null;
+      await h.generator().generate(SOURCE).catch(() => undefined);
+      return (await jobOf(h)).job;
+    }, async (h, job) => {
+      delete h.workerOverrides.archivedAt; h.setResult({ status: "idle", lastMessage: JSON.stringify(SECTIONS) });
+      expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+      expect(h.created).toHaveLength(2);
+      expect(h.archived.has(job.workerId)).toBe(true);
+    }],
+    ["a legacy creating row with a recorded recovery", async h => {
+      h.loseCreateRequest(); await h.generator().generate(SOURCE).catch(() => undefined);
+      const { file, job } = await jobOf(h);
+      delete job.placement; await writeFile(file, JSON.stringify({ ...job, recovery: RECOVERY }));
+      return job;
+    }, async (h, job) => {
+      expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+      expect(h.created).toHaveLength(1);
+      expect(h.created[0]!.agentId).not.toBe(job.workerId);
+      expect(await readdir(join(h.root, "generation-jobs", "superseded"))).toEqual([`${job.workerId}.json`]);
+    }],
+    ["a capture-less row from another build, which the installed build does not see", async h => {
+      omittedEvent(h); return unmappedRow(h, null);
+    }, async (h, row) => {
+      await expect(h.generator().generate(SOURCE)).rejects.toThrow(UNMAPPED);
+      expect(h.created).toHaveLength(0);
+      await recordSummaryRecovery(h.api as never, h.root, { job: row.name, disposition: "retire-legacy-create", evidence: RECOVERY.evidence, applySha256: sha(row.text) });
+      expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+      expect(h.created).toHaveLength(1);
+    }],
+    ["a 2d5afed8 row keyed on the source's earlier model", async h => {
+      omittedEvent(h); return formerRow(h, "2d5afed8", "creating", "an-earlier-model");
+    }, async (h, row) => {
+      await expect(h.generator().generate(SOURCE)).rejects.toThrow(UNMAPPED);
+      expect(h.created).toHaveLength(0);
+      expect(sha(await readFile(row.file))).toBe(sha(row.text));
+    }],
+  ])("contains %s: with summary.json moved aside nothing is written, archived, created, waited on or sent; restoring it resumes that row's own path", async (_name, seed, resume) => {
+    const h = await harness();
+    const seeded = await seed(h);
+    await contained(h);
+    await resume(h, seeded);
+  });
+
+  it("returns a complete summary while contained without archiving its helper or writing its row; the restored binding cleans it up", async () => {
+    const h = await harness(); h.workerOverrides.archivedAt = null;
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("cleanup is unconfirmed");
+    expect((await jobOf(h)).job).not.toHaveProperty("cleaned");
+    expect(await contained(h, true)).toMatchObject({ sections: SECTIONS });
+    delete h.workerOverrides.archivedAt;
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect((await jobOf(h)).job).toMatchObject({ state: "complete", cleaned: true });
+  });
+
+  it("folds no qualified earlier attempt into a complete row while contained; the restored binding folds it with its bytes", async () => {
+    const h = await harness();
+    await h.generator().generate(SOURCE);
+    const former = await formerRow(h, "2d5afed8", "creating", h.source.model, RECOVERY);
+    expect(await contained(h, true)).toMatchObject({ sections: SECTIONS });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(await jobFiles(h)).not.toContain(former.name);
+    expect(await readFile(join(former.jobs, "superseded", `${former.job.workerId}.json`), "utf8")).toBe(former.text);
+  });
+
+  it("holds a complete row with no matching prompt correlation while contained too", async () => {
+    const h = await harness();
+    await h.generator().generate(SOURCE);
+    const { file, job } = await jobOf(h);
+    await writeFile(file, JSON.stringify({ ...job, promptHash: sha("another prompt") }));
+    await rm(h.placementFile);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("no matching prompt correlation");
+  });
+
+  it("stops a call already past its binding check before its create when summary.json is moved aside meanwhile; the restored binding sends that row's own create", async () => {
+    const h = await harness();
+    const binding = await readFile(h.placementFile, "utf8"), snapshot = h.api.providers.snapshot;
+    h.api.providers.snapshot = async (options?: unknown) => { await rm(h.placementFile, { force: true }); return snapshot(options); };
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("need one designated workspace");
+    expect(h.created).toHaveLength(0);
+    const pending = (await jobOf(h)).job;
+    expect(pending).toMatchObject({ state: "creating", placement: { ...PLACEMENT, owned: false } });
+    h.api.providers.snapshot = snapshot;
+    await writeFile(h.placementFile, binding);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created.map(item => item.agentId)).toEqual([pending.workerId]);
   });
 });
 

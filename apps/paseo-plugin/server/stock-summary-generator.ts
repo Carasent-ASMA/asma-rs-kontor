@@ -66,7 +66,9 @@ export type SummaryHelperPlacement = z.infer<typeof placementSchema>;
 export function summaryPlacementFile(): string {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "summary.json");
 }
-const PLACEMENT_UNSET = "Summary helpers need one designated workspace (plugin-config/kontor/summary.json: workspaceId, projectId, cwd). Capture retained; no helper was created.";
+const PLACEMENT_UNSET = "Summary helpers need one designated workspace (plugin-config/kontor/summary.json: workspaceId, projectId, cwd). Until it is in place, summaries are held: every job and capture is kept as it is, nothing is written, resent or started, and a complete summary is still returned.";
+/** Whether summary.json names a designated workspace. Moving it aside contains the summary path; restoring it resumes it. */
+const bound = (placementFile: string) => readFile(placementFile, "utf8").then(text => placementSchema.safeParse(JSON.parse(text)).success).catch(() => false);
 const placementMismatch = (placement: SummaryHelperPlacement, recorded: boolean) =>
   `The summary workspace ${placement.workspaceId} ${recorded ? "recorded by this job" : "named in summary.json"} does not read back as a directory workspace with no repository, in project ${placement.projectId} at ${placement.cwd}.${recorded ? " Restore that workspace to retry this job." : ""} Capture retained; no helper was created.`;
 
@@ -230,14 +232,23 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     const latest = await latestStoredSummary(root, agentId);
     let priorSummary = latest && JSON.stringify(latest.historyBoundary) !== JSON.stringify(historyBoundary) ? latest : null;
     const capture = { sourceAgentId: agentId, sourceTitle: agent.title, cutoff, historyBoundary, priorSummary, entries: captured };
-    try {
+    // Containment: with no designated workspace in summary.json, this call writes no capture or job, archives and creates no
+    // helper and sends nothing. It only reads, returns a complete current summary, and holds everything else as it is.
+    const contained = !(await bound(placementFile));
+    const adopt = (text: string) => {
+      const stored = JSON.parse(text);
+      if (stored.sourceAgentId !== agentId || JSON.stringify(stored.historyBoundary) !== JSON.stringify(historyBoundary) || JSON.stringify(stored.entries) !== excerpt) throw new Error("The retained summary capture does not match this history. Nothing was sent.");
+      priorSummary = stored.priorSummary === null ? null : summaryRevisionSchema.parse(stored.priorSummary);
+    };
+    if (contained) {
+      const text = await readFile(captureFile, "utf8").catch((error: unknown) => { if (error instanceof Error && "code" in error && error.code === "ENOENT") return null; throw error; });
+      if (text !== null) adopt(text);
+    } else try {
       const captureHandle = await open(captureFile, "wx", 0o600);
       try { await captureHandle.writeFile(JSON.stringify(capture)); await captureHandle.sync(); } finally { await captureHandle.close(); }
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-      const stored = JSON.parse(await readFile(captureFile, "utf8"));
-      if (stored.sourceAgentId !== agentId || JSON.stringify(stored.historyBoundary) !== JSON.stringify(historyBoundary) || JSON.stringify(stored.entries) !== excerpt) throw new Error("The retained summary capture does not match this history. Nothing was sent.");
-      priorSummary = stored.priorSummary === null ? null : summaryRevisionSchema.parse(stored.priorSummary);
+      adopt(await readFile(captureFile, "utf8"));
     }
     const context = [JSON.stringify({ sourceAgentId: agentId, sourceTitle: agent.title, cutoff, historyBoundary, priorSummary }), excerpt];
     const prompt = [SUMMARY_INSTRUCTIONS, ...context].join("\n\n");
@@ -329,6 +340,10 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     }
     const migrateLegacyFailure = job?.state === "failed" && job.cleaned === true && !job.promptVersion && !!job.clientMessageId && job.promptHash === legacyPromptHash && !job.sections;
     if (job && !retired && (!job.clientMessageId || (job.promptHash !== digest(prompt) && !migrateLegacyFailure))) throw new Error("The recorded summary job has no matching prompt correlation. It remains held; nothing was resent.");
+    if (contained) {
+      if (job?.state === "complete" && job.sections) return { sections: job.sections, cutoff, historyBoundary };
+      throw new Error(PLACEMENT_UNSET);
+    }
     /** Writes `into`, the one job this boundary keeps, naming every qualified earlier attempt, whose exact bytes go first to superseded/. */
     async function settle(into: Job) {
       for (const former of formers) {
@@ -375,6 +390,8 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       dispatchable();
       const { placement, workspace } = designated ?? await designatedWorkspaceFor(job.placement);
       const workerId = job.workerId;
+      // A call already past the check above when summary.json was moved aside stops here, before its create.
+      if (!(await bound(placementFile))) throw new Error(PLACEMENT_UNSET);
       // Workspace-scoped creation: the host places the helper in the designated workspace and creates no project or workspace.
       // The host refuses a key it holds for another request; that refusal is held, never escaped with a new key.
       worker = await workspace.agents.create({
