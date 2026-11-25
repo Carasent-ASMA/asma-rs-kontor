@@ -65,6 +65,10 @@ describe("current runtime and retained error history", () => {
     const running = sessionEntry("running", { status: "running" });
     const unread = sessionEntry("unread", { requiresAttention: true, attentionReason: "finished" });
     expect(sortDirectoryEntries([earlier, unread, running, current]).map((entry) => entry.id)).toEqual(["current", "running", "unread", "history"]);
+    // Running background work sorts with Running, above an unread result; a waiting heartbeat does not.
+    const background = sessionEntry("background", { backgroundWork: { count: 1 }, updatedAt: "2026-10-01T00:00:00Z" });
+    const heartbeat = sessionEntry("heartbeat", { backgroundWork: { count: 1, runningCount: 0 }, updatedAt: "2026-10-01T00:00:00Z" });
+    expect(sortDirectoryEntries([heartbeat, unread, background]).map((entry) => entry.id)).toEqual(["background", "unread", "heartbeat"]);
   });
 
   it("shows reported background work as Running without displacing questions or errors", () => {

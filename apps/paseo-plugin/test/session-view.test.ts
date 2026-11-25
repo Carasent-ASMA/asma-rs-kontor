@@ -87,6 +87,10 @@ describe("session search and filters", () => {
     expect(matchesStatus(none, "running")).toBe(false);
     expect(matchesStatus(running, "background")).toBe(true);
     expect(matchesStatus(none, "background")).toBe(false);
+    // A heartbeat waiting for its next run is reported work, not running work.
+    const heartbeat = sessionEntry("bg-heartbeat", { status: "idle", backgroundWork: { count: 1, runningCount: 0 } });
+    expect(matchesStatus(heartbeat, "background")).toBe(true);
+    expect(matchesStatus(heartbeat, "running")).toBe(false);
     // Higher states keep their precedence; Background still reaches the session.
     expect(matchesStatus(errored, "error")).toBe(true);
     expect(matchesStatus(errored, "background")).toBe(true);
@@ -102,7 +106,7 @@ describe("session search and filters", () => {
     expect(backgroundWorkLabel(sessionEntry("unreported"))).toBeNull();
 
     expect(backgroundWorkDetail(sessionEntry("split", { backgroundWork: { count: 2, runningCount: 1 } }))).toBe("2 reported, 1 running");
-    expect(backgroundWorkDetail(sessionEntry("one", { backgroundWork: { count: 1 } }))).toBe("1 reported; this host does not say how many are running");
+    expect(backgroundWorkDetail(sessionEntry("one", { backgroundWork: { count: 1 } }))).toBe("1 reported; Paseo counts all as running");
     expect(backgroundWorkDetail(sessionEntry("reported-none", { backgroundWork: { count: 0 } }))).toBe("None reported");
     expect(backgroundWorkDetail(sessionEntry("unreported"))).toBe("Not reported by this host");
   });

@@ -51,6 +51,18 @@ describe("same-state counts", () => {
     expect(sessionStateCounts({ ...input, blocked: "Assigned to me", candidates: [] }).all.label).toContain("not evaluated");
   });
 
+  it("counts background work only from the live direct read, never a catalog zero", () => {
+    const working = [...entries, sessionEntry("bg", { backgroundWork: { count: 1, runningCount: 0 } })];
+    const read = { ...input, universe: working, candidates: working };
+    expect(sessionStateCounts(read).background.text).toBe("1");
+    expect(sessionStateCounts({ ...read, state: { ...state, source: "direct" } }).background.text).toBe("1");
+    for (const source of ["catalog", "catalog-snapshot"] as const) {
+      const count = sessionStateCounts({ ...read, state: { ...state, source } }).background;
+      expect(count.text).toBe("—");
+      expect(count.label).toContain("Count unavailable");
+    }
+  });
+
   it("does not assert a provider-blocked zero under a label-unknown scope", () => {
     const count = sessionStateCounts({ ...input, restrictedUnknown: true }).provider_blocked;
     expect(count.text).toBe("—");

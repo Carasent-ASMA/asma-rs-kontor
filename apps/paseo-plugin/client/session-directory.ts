@@ -56,9 +56,11 @@ const AGENT_SORT: NonNullable<PaseoAgentListOptions["sort"]> = [
  * The background work one Paseo host reports for a session: background shells,
  * monitors and other tasks that keep running behind a finished turn. It is live
  * runtime state, not history: the host reports only what is still there.
- * `runningCount` is the host's running split; hosts before Paseo 0.17 omit it and
- * then the total is the only number they report. An absent summary means the host
- * did not report background work at all, which is not the same as zero.
+ * `runningCount` is the host's running split. Paseo omits it when every task counts
+ * as running, and hosts before the split never send it; either way Paseo's own rule
+ * counts the total as running. A heartbeat waiting for its next run is reported but
+ * not running. An absent summary means the host did not report background work at
+ * all, which is not the same as zero.
  */
 export type BackgroundWork = {
   readonly count: number;

@@ -145,9 +145,10 @@ pill is the in-session return control where the composer supports it.
   omits both public fields cannot be distinguished from a resolved permission.
   No question subtype is inferred.
 - **Background work.** Paseo 0.16 and later report a session's live background
-  work: background shells, monitors and other tasks still running behind a
-  finished turn. The plugin carries that summary into the row note and its
-  Details. A session with background work still **running** shows as
+  work: background shells, monitors, heartbeats and other tasks that outlive a
+  turn. The plugin carries that summary into the row note and its Details. When
+  every task counts as running, Paseo sends only the total; the row then shows
+  the total and Details says Paseo counts all as running. A session with background work still **running** shows as
   **Running**, exactly as Paseo's own state bucket does; reported work with
   nothing running (a heartbeat, for example) keeps its native state and says
   **waiting**. **More → Background tasks** lists every session with reported

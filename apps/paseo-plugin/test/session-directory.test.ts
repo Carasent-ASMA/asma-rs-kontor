@@ -565,6 +565,8 @@ describe("SessionDirectory", () => {
     const absent = toDirectoryEntry(seed);
     expect(absent.backgroundWork).toBeUndefined();
     expect("backgroundWork" in absent).toBe(false);
+    // An update that stops reporting the summary clears it: the previous row never lends its count.
+    expect(toDirectoryEntry(seed, withReport({ count: 3, runningCount: 2 })).backgroundWork).toBeUndefined();
   });
 
   it("retains closed unarchived history across pages, subscriptions, stale cache and archive toggles", async () => {

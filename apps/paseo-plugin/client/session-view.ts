@@ -218,8 +218,9 @@ export function earlierErrorLabel(entry: DirectoryEntry): string | null {
 }
 
 /**
- * Reported background work in words, or null when there is none to show. A host
- * that reports no running split says only the total; the plugin never invents it.
+ * Reported background work in words, or null when there is none to show. Without a
+ * running split the cue says only the total, as Paseo's own pill does; the plugin
+ * never invents a split.
  * Reported work with no running task (a heartbeat, for example) says "waiting",
  * so it cannot read as work in progress.
  */
@@ -236,7 +237,11 @@ export function backgroundWorkLabel(entry: DirectoryEntry): string | null {
   return `${total} · ${running === 0 ? "waiting" : `${running} running`}`;
 }
 
-/** Details keeps the exact numbers and names a host that reports no field, never a fabricated zero. */
+/**
+ * Details keeps the exact numbers and names a host that reports no field, never a
+ * fabricated zero. Paseo omits the running split when every task counts as running
+ * (and hosts before the split never send it); its own rule then counts the total.
+ */
 export function backgroundWorkDetail(entry: DirectoryEntry): string {
   const work = entry.backgroundWork;
   if (work === undefined) {
@@ -246,7 +251,7 @@ export function backgroundWorkDetail(entry: DirectoryEntry): string {
     return "None reported";
   }
   return work.runningCount === undefined
-    ? `${work.count} reported; this host does not say how many are running`
+    ? `${work.count} reported; Paseo counts all as running`
     : `${work.count} reported, ${work.runningCount} running`;
 }
 
