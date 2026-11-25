@@ -29,10 +29,12 @@ export interface BindingPaseoLike {
  *
  * `kontor.worktree` is the canonical directory and `kontor.workspace_id` names
  * the workspace the seat runs in; a Paseo read of that workspace supplies the
- * native project and proves the directory still matches the label. Every
- * failure returns `null`, and a labelled seat with an unresolved binding is
- * refused rather than failed open. The plugin holds no Kontor credential and
- * performs no write.
+ * native project and its checkout directory, which must equal the label. A
+ * workspace that reads back without a checkout directory proves nothing about
+ * the label, so it resolves no binding: the label never stands in for the
+ * native readback. Every failure returns `null`, and a labelled seat with an
+ * unresolved binding is refused rather than failed open. The plugin holds no
+ * Kontor credential and performs no write.
  */
 export async function readPlacementBinding(
   paseo: BindingPaseoLike,
@@ -56,7 +58,7 @@ export async function readPlacementBinding(
       return null;
     }
     const workspaceDirectory = workspace.workspaceDirectory?.trim();
-    if (workspaceDirectory && resolve(workspaceDirectory) !== resolve(directory)) {
+    if (!workspaceDirectory || resolve(workspaceDirectory) !== resolve(directory)) {
       return null;
     }
     return { projectId, directory };

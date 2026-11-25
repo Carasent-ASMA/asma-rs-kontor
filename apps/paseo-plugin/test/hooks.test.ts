@@ -412,6 +412,41 @@ describe("workspace.create hook", () => {
     ).rejects.toThrow("placement binding could not be resolved");
   });
 
+  describe("a Kontor binding holds only with a native checkout readback that matches its worktree label (AUD-B-01)", () => {
+    const readsBack = (workspaceDirectory?: string | null): Record<string, WorkspaceResult> => ({
+      wks_seat: {
+        projectId: PROJECT,
+        projectDisplayName: "ESW • ASMA-8507",
+        ...(workspaceDirectory === undefined ? {} : { workspaceDirectory }),
+      } as WorkspaceSnapshot,
+    });
+    const routes = [
+      ["a bound caller", (workspaces: Record<string, WorkspaceResult>) => guardWorkspaceCreate(workspaceRequest(), seatContext(seatLabels(), workspaces), config())],
+      [
+        "a bound initial agent with no caller",
+        (workspaces: Record<string, WorkspaceResult>) =>
+          guardWorkspaceCreate(
+            workspaceRequest({ callerAgentId: undefined, agent: { config: { provider: "claude", cwd: CANONICAL }, labels: seatLabels() } }),
+            context({}, workspaces),
+            config(),
+          ),
+      ],
+    ] as const;
+    for (const [route, create] of routes) {
+      it(`${route}: a workspace that reads back with no checkout directory resolves no binding`, async () => {
+        for (const missing of [undefined, null, "", "  "]) {
+          await expect(create(readsBack(missing))).rejects.toThrow("placement binding could not be resolved");
+        }
+      });
+
+      it(`${route}: a matching checkout is allowed and a different one refused`, async () => {
+        await expect(create(readsBack(CANONICAL))).resolves.toBeUndefined();
+        await expect(create(readsBack(`${CANONICAL}/`))).resolves.toBeUndefined();
+        await expect(create(readsBack("/Users/test/elsewhere"))).rejects.toThrow("placement binding could not be resolved");
+      });
+    }
+  });
+
   it("refuses a request whose initial agent carries Kontor labels", async () => {
     await expect(
       guardWorkspaceCreate(

@@ -207,8 +207,11 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  * Scope comes from the authoritative caller the daemon attached
  * (`callerAgentId`), read back natively: a caller in a desk or epic project,
  * or one whose labels or whose initial agent's labels claim workflow work, is
- * held to its own project (see `callerScope`). Removing labels does not remove
- * that scope, and labels alone never widen it. An unreadable caller is refused.
+ * held to its own project (see `callerScope`). For a caller in a desk or epic
+ * project the scope comes from that native placement, so removing its labels
+ * does not remove it. A caller anywhere else is in scope only through a
+ * workflow claim, so removing its labels removes its scope (the residual
+ * below). Labels alone never widen a scope. An unreadable caller is refused.
  *
  * With no caller, a Kontor binding on the initial agent is enforced and any
  * other workflow claim is refused because it names no caller to scope it.
