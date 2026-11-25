@@ -37,6 +37,11 @@ export function floorFile(): string {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "floor.json");
 }
 
+/** The operator-owned placement switch beside it: `plugin-config/kontor/placement.json`, read on every workspace creation. */
+export function placementFile(): string {
+  return join(dirname(floorFile()), "placement.json");
+}
+
 function excerpt(value: unknown): string {
   const text = JSON.stringify(value);
   return text.length > MAX_EXCERPT ? `${text.slice(0, MAX_EXCERPT)}…` : text;

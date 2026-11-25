@@ -28,6 +28,12 @@ export interface PlacementBinding {
   readonly directory: string;
 }
 
+/** Where one workflow creation may land: one of these native projects and, when set, exactly this directory. */
+export interface PlacementScope {
+  readonly projects: readonly string[];
+  readonly directory?: string;
+}
+
 export function within(child: string, parent: string): boolean {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -47,16 +53,15 @@ function refuse(reason: string): PlacementDecision {
  * Paseo's own `~/.paseo/worktrees` root (the fallback project from the
  * QNR-P1-06 misplacement).
  *
- * A `binding` of `null` marks a Paseo-direct seat, which Kontor never binds:
- * only the binding-free checks apply. A resolved binding adds the native
- * project and canonical worktree checks. The binding is resolved read-only
- * before this check. The exact native readback and every write stay with
+ * The scope is resolved read-only before this check, from the caller's own
+ * native placement or a Kontor binding. There is no unscoped pass: an empty
+ * scope refuses. The exact native readback and every write stay with
  * `kontord`; the plugin holds no Kontor credential.
  */
 export function evaluatePlacement(
   request: WorkspaceCreateLike,
   rules: PlacementRules,
-  binding: PlacementBinding | null,
+  scope: PlacementScope,
 ): PlacementDecision {
   const source = request.source;
   if (!source || typeof source !== "object") {
@@ -85,18 +90,15 @@ export function evaluatePlacement(
   ) {
     return refuse("the path is outside the configured Kontor placement roots");
   }
-  if (binding === null) {
-    return { allowed: true };
+  const projects = scope.projects.map((project) => project.trim()).filter(Boolean);
+  const directory = scope.directory?.trim();
+  if (directory !== undefined && !isAbsolute(directory)) {
+    return refuse("the seat's binding names no absolute canonical directory");
   }
-  const permittedProject = binding.projectId.trim();
-  const permittedDirectory = binding.directory.trim();
-  if (!permittedProject || !permittedDirectory || !isAbsolute(permittedDirectory)) {
-    return refuse("the seat's binding names no native project and canonical directory");
-  }
-  if (projectId !== permittedProject) {
+  if (!projects.includes(projectId)) {
     return refuse("the request targets a project outside the seat's binding");
   }
-  if (resolved !== resolve(permittedDirectory)) {
+  if (directory !== undefined && resolved !== resolve(directory)) {
     return refuse("the request targets a directory outside the seat's canonical worktree");
   }
   return { allowed: true };

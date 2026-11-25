@@ -52,6 +52,27 @@ export function isKontorSeat(labels: AgentLabels): boolean {
   return labels["orchestration"] === PASEO_DIRECT_ORCHESTRATION;
 }
 
+/** Orchestration values that mark workflow work: the plan's current `paseo|kontor` and the retained spellings. */
+const WORKFLOW_ORCHESTRATIONS = new Set(["paseo", PASEO_DIRECT_ORCHESTRATION, "kontor", "kontor-governed"]);
+
+/**
+ * Whether the labels claim Kontor workflow work, for the workspace guard.
+ *
+ * A claim only adds enforcement; it never grants placement. `kontor.summary.*`
+ * marks a stock summary helper, which is not a workflow seat. `workflow=free`
+ * claims nothing on its own.
+ */
+export function claimsWorkflow(labels: AgentLabels): boolean {
+  if (!labels) {
+    return false;
+  }
+  return (
+    Object.keys(labels).some((key) => key.startsWith(KONTOR_LABEL_PREFIX) && !key.startsWith("kontor.summary.")) ||
+    WORKFLOW_ORCHESTRATIONS.has(labels["orchestration"] ?? "") ||
+    labels["workflow"] === "kontor"
+  );
+}
+
 /**
  * The seat identity carried by the labels.
  *

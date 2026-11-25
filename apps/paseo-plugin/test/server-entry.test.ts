@@ -5,11 +5,15 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../index.server";
 import { FLOOR_INVALID_EVENT, FLOOR_MODE_EVENT } from "../server/floor";
+import { PLACEMENT_MODE_EVENT } from "../server/hooks";
 
 const HOOKS = ["agent.create", "agent.session_open", "workspace.create"];
+/** Placement is registered whatever the floor; floor off leaves only it. */
+const PLACEMENT_ONLY = ["workspace.create"];
 
 type Started = {
   hooks: string[];
+  events: string[];
   settings: string[];
   handlers: string[];
   info: Record<string, unknown>[];
@@ -19,10 +23,14 @@ type Started = {
 
 /** One plugin server start, as a new worker runs it, against a recording host. */
 function start(): Started {
-  const started: Omit<Started, "cleanup"> = { hooks: [], settings: [], handlers: [], info: [], errors: [] };
+  const started: Omit<Started, "cleanup"> = { hooks: [], events: [], settings: [], handlers: [], info: [], errors: [] };
   const server = {
     before: (name: string) => {
       started.hooks.push(name);
+      return () => {};
+    },
+    on: (name: string) => {
+      started.events.push(name);
       return () => {};
     },
     handle: (contract: { readonly name: string }) => {
@@ -53,6 +61,7 @@ function start(): Started {
 describe("server entry floor mode", () => {
   let home: string;
   let file: string;
+  const placement = (mode: "enforced" | "off") => ({ event: PLACEMENT_MODE_EVENT, placement: mode, reason: "not-configured", file: join(home, "plugin-config", "kontor", "placement.json") });
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "kontor-floor-home-"));
@@ -92,7 +101,8 @@ describe("server entry floor mode", () => {
   it("registers the three hooks when floor.json is absent, with the mode line only", () => {
     const started = start();
     expect(started.hooks).toEqual(HOOKS);
-    expect(started.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "enabled", reason: "not-configured", file }]);
+    expect(started.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "enabled", reason: "not-configured", file }, placement("enforced")]);
+    expect(started.events).toEqual(["workspace.created"]);
     expect(started.errors).toEqual([]);
     expect(existsSync(join(home, "plugin-config"))).toBe(false);
   });
@@ -101,16 +111,17 @@ describe("server entry floor mode", () => {
     writeFloor('{"floor":"on"}');
     const started = start();
     expect(started.hooks).toEqual(HOOKS);
-    expect(started.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "enabled", reason: "explicit-on", file }]);
+    expect(started.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "enabled", reason: "explicit-on", file }, placement("enforced")]);
     expect(started.errors).toEqual([]);
   });
 
-  it("registers none of the three hooks for an explicit off and keeps the navigator", () => {
+  it("registers only the placement hook for an explicit off, inert, and keeps the navigator", () => {
     const on = start();
     writeFloor('{\n  "floor": "off"\n}\n');
     const off = start();
-    expect(off.hooks).toEqual([]);
-    expect(off.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "disabled", reason: "explicit-off", file }]);
+    expect(off.hooks).toEqual(PLACEMENT_ONLY);
+    expect(off.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "disabled", reason: "explicit-off", file }, placement("off")]);
+    expect(off.events).toEqual(["workspace.created"]);
     expect(off.errors).toEqual([]);
     expect(off.settings).toEqual(["organization", "keyboard"]);
     expect(off.settings).toEqual(on.settings);
@@ -123,7 +134,7 @@ describe("server entry floor mode", () => {
     writeFloor('{"floor":"on","floor":"off"}');
     const started = start();
     expect(started.hooks).toEqual(HOOKS);
-    expect(started.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "enabled", reason: "invalid", file }]);
+    expect(started.info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "enabled", reason: "invalid", file }, placement("enforced")]);
     expect(started.errors).toEqual([
       { event: FLOOR_INVALID_EVENT, floor: "enabled", file, error: 'expected exactly one "floor" member, found it repeated' },
     ]);
@@ -134,27 +145,27 @@ describe("server entry floor mode", () => {
     expect(start().hooks).toEqual(HOOKS);
     writeFloor('{"floor":"off"}');
     vi.stubEnv("KONTOR_PLUGIN_FLOOR", "on");
-    expect(start().hooks).toEqual([]);
+    expect(start().hooks).toEqual(PLACEMENT_ONLY);
   });
 
   it("keeps the three hooks with KONTOR_PLUGIN_MCP=off alone, and floor-off wins over it", () => {
     vi.stubEnv("KONTOR_PLUGIN_MCP", "off");
     expect(start().hooks).toEqual(HOOKS);
     writeFloor('{"floor":"off"}');
-    expect(start().hooks).toEqual([]);
+    expect(start().hooks).toEqual(PLACEMENT_ONLY);
   });
 
   it("reads the file once per start, so only a new worker sees a change", () => {
     writeFloor('{"floor":"off"}');
     const off = start();
     writeFloor('{"floor":"on"}');
-    expect(off.hooks).toEqual([]);
+    expect(off.hooks).toEqual(PLACEMENT_ONLY);
     const reEnabled = start();
     expect(reEnabled.hooks).toEqual(HOOKS);
     rmSync(file);
     expect(start().hooks).toEqual(HOOKS);
     writeFloor('{"floor":"off"}');
-    expect(start().hooks).toEqual([]);
+    expect(start().hooks).toEqual(PLACEMENT_ONLY);
   });
 
   it("never writes, moves or removes floor.json", () => {

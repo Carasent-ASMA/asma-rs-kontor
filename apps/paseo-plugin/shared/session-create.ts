@@ -62,6 +62,14 @@ export function deskName(projectName: string | null | undefined): string | null 
   return name || null;
 }
 
+/** The epic a native project's name makes it an epic project of, `ESW • ASMA-1` → `ASMA-1`; null for any other project. */
+export function epicProjectKey(projectName: string | null | undefined): string | null {
+  const parts = (projectName ?? "").split("•");
+  if (parts.length !== 2 || parts[0]!.trim().toUpperCase() !== "ESW") return null;
+  const key = parts[1]!.trim();
+  return JIRA_KEY_PATTERN.test(key) ? key : null;
+}
+
 export type DeskKind = "adam" | "tickets" | "pr-review" | "other";
 /** How a desk's start list is constrained: epics on ADAM, non-epic issues on TICKETS, ad hoc elsewhere. */
 export function deskKind(desk: string): DeskKind {

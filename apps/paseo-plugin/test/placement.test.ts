@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { evaluatePlacement, type WorkspaceCreateLike } from "../server/placement";
 
@@ -10,6 +11,9 @@ const binding = {
   projectId: "prj_7409d2c6aff8e21c",
   directory: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
 };
+const bound = { projects: [binding.projectId], directory: binding.directory };
+/** A caller's own project with no canonical directory: a Paseo-direct seat. */
+const direct = { projects: ["prj_paseo_direct"] };
 
 function create(source: WorkspaceCreateLike["source"]): WorkspaceCreateLike {
   return { source, callerAgentId: "agent-1" };
@@ -25,7 +29,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_7409d2c6aff8e21c",
         }),
         rules,
-        binding,
+        bound,
       ),
     ).toEqual({ allowed: true });
   });
@@ -39,7 +43,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_7409d2c6aff8e21c",
         }),
         rules,
-        binding,
+        bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("worktree") });
   });
@@ -52,7 +56,7 @@ describe("evaluatePlacement", () => {
           path: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
         }),
         rules,
-        binding,
+        bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("projectId") });
   });
@@ -62,7 +66,7 @@ describe("evaluatePlacement", () => {
       evaluatePlacement(
         create({ kind: "directory", path: ".worktrees/asma-8507", projectId: "prj_1" }),
         rules,
-        binding,
+        bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("absolute") });
   });
@@ -76,7 +80,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_1",
         }),
         rules,
-        binding,
+        bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("Paseo") });
   });
@@ -90,7 +94,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_epic_b",
         }),
         rules,
-        binding,
+        bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("project") });
   });
@@ -104,7 +108,7 @@ describe("evaluatePlacement", () => {
           projectId: binding.projectId,
         }),
         rules,
-        binding,
+        bound,
       ),
     ).toMatchObject({
       allowed: false,
@@ -121,12 +125,12 @@ describe("evaluatePlacement", () => {
           projectId: binding.projectId,
         }),
         rules,
-        { projectId: "", directory: "" },
+        { projects: [""], directory: "" },
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
   });
 
-  it("accepts an explicit directory outside Paseo's worktree root without a binding", () => {
+  it("accepts an explicit directory in the caller's own project without a canonical directory", () => {
     expect(
       evaluatePlacement(
         create({
@@ -135,12 +139,12 @@ describe("evaluatePlacement", () => {
           projectId: "prj_paseo_direct",
         }),
         rules,
-        null,
+        direct,
       ),
     ).toEqual({ allowed: true });
   });
 
-  it("keeps the binding-free checks without a binding", () => {
+  it("keeps the source checks without a canonical directory", () => {
     expect(
       evaluatePlacement(
         create({
@@ -148,16 +152,29 @@ describe("evaluatePlacement", () => {
           path: "/Users/test/carasent/asma-modules/workspaces/asma-8507",
         }),
         rules,
-        null,
+        direct,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("projectId") });
     expect(
       evaluatePlacement(
         create({ kind: "worktree", cwd: "/Users/test/carasent/asma-modules", projectId: "prj_1" }),
         rules,
-        null,
+        direct,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("worktree") });
+  });
+
+  it("refuses an empty scope and a valid id outside the caller's project (no unscoped pass)", () => {
+    const request = create({ kind: "directory", path: "/Users/test/carasent/asma-modules/workspaces/asma-8507", projectId: "prj_other" });
+    expect(evaluatePlacement(request, rules, { projects: [] })).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
+    expect(evaluatePlacement(request, rules, direct)).toMatchObject({ allowed: false, reason: expect.stringContaining("project outside") });
+    expect(evaluatePlacement(request, rules, { projects: ["prj_paseo_direct", "prj_other"] })).toEqual({ allowed: true });
+    expect(evaluatePlacement(request, rules, { projects: ["prj_other"], directory: "relative/dir" })).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
+  });
+
+  it("refuses a relative canonical directory instead of resolving it against the daemon's working directory", () => {
+    const here = create({ kind: "directory", path: resolve("relative/dir"), projectId: "prj_other" });
+    expect(evaluatePlacement(here, rules, { projects: ["prj_other"], directory: "relative/dir" })).toMatchObject({ allowed: false, reason: expect.stringContaining("absolute canonical directory") });
   });
 
   it("applies configured placement roots as extra containment", () => {
@@ -173,7 +190,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_7409d2c6aff8e21c",
         }),
         contained,
-        binding,
+        bound,
       ),
     ).toEqual({ allowed: true });
     expect(
@@ -184,7 +201,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_7409d2c6aff8e21c",
         }),
         contained,
-        binding,
+        bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("canonical worktree") });
     expect(
@@ -195,7 +212,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_1",
         }),
         contained,
-        binding,
+        bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
   });

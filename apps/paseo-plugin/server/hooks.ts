@@ -3,15 +3,19 @@ import type {
   PluginHookContext,
   PluginServerContext,
 } from "@getpaseo/plugin/server";
-import { readAgentLabels } from "./agent-labels";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { deskName, epicProjectKey, JIRA_KEY_PATTERN } from "../shared/session-create";
+import { bounded, readAgentLabels, type LabelReadOptions } from "./agent-labels";
 import {
   DEFAULT_CREDENTIAL_TIER,
   readConfig,
   type KontorPluginConfig,
 } from "./config";
-import { hasKontorLabels, isKontorSeat, seatBinding, type AgentLabels } from "./labels";
-import { evaluatePlacement } from "./placement";
-import { readPlacementBinding } from "./placement-binding";
+import { placementFile, readFloor } from "./floor";
+import { claimsWorkflow, hasKontorLabels, isKontorSeat, seatBinding, type AgentLabels } from "./labels";
+import { evaluatePlacement, within, type PlacementScope } from "./placement";
+import { KONTOR_WORKSPACE_ID_LABEL, readPlacementBinding } from "./placement-binding";
 
 type AgentCreateRequest = PluginBeforeRequests["agent.create"];
 type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
@@ -112,10 +116,12 @@ export async function seatEnvironment(
 /**
  * The caller the daemon attached to this creation, when the release carries it.
  *
- * Paseo 0.11.2 carries the caller as `agent.callerAgentId` on the
- * `workspace.create` request and passes it through to the hook. A top-level
- * `callerAgentId` is read as well, so a release that moves the field needs no
- * code change. The guard also reads the initial agent's labels below.
+ * Paseo 0.16.2 carries it as a top-level `callerAgentId` on the
+ * `workspace.create` request; its initial agent (`agent`, an agent-create
+ * request) may carry one too, which 0.11.2 used. Both are read.
+ * `firstAgentContext` holds only a prompt and attachments for name generation,
+ * so it names no caller and carries no labels. The guard also reads the
+ * initial agent's labels below.
  */
 function callerAgentIdOf(request: WorkspaceCreateRequest): string | undefined {
   const direct = (request as { callerAgentId?: unknown }).callerAgentId;
@@ -135,58 +141,202 @@ function initialAgentLabelsOf(request: WorkspaceCreateRequest): Record<string, s
   return labels as Record<string, string>;
 }
 
+/** A workflow seat whose `kontor.*` labels must resolve to a binding; a summary helper's labels are not one. */
+function kontorSeat(labels: AgentLabels): labels is Record<string, string> {
+  return claimsWorkflow(labels) && hasKontorLabels(labels);
+}
+
+interface CallerPlacement {
+  readonly labels: AgentLabels;
+  readonly workspaceId: string;
+  readonly projectId: string;
+  readonly projectName: string;
+}
+
+type HookPaseo = PluginHookContext["paseo"];
+
+/** The calling agent as the host reads it now: its own workspace and project, bounded. Null when either is not read back. */
+async function readCaller(paseo: HookPaseo, agentId: string, options: LabelReadOptions): Promise<CallerPlacement | null> {
+  try {
+    const found = await bounded(paseo.agents.ref(agentId).refresh(), options.timeoutMs, options.signal);
+    const agent = found?.agent;
+    if (!agent || agent.id !== agentId || !agent.workspaceId) return null;
+    const workspace = await bounded(paseo.workspaces.ref(agent.workspaceId).refresh(), options.timeoutMs, options.signal);
+    if (!workspace || workspace.id !== agent.workspaceId || workspace.archivingAt || !workspace.projectId) return null;
+    return {
+      labels: agent.labels ?? null,
+      workspaceId: workspace.id,
+      projectId: workspace.projectId,
+      projectName: workspace.projectCustomName ?? workspace.projectDisplayName ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the caller's own native project is a workflow project: a desk or an epic project. */
+function workflowProject(caller: CallerPlacement): boolean {
+  return deskName(caller.projectName) !== null || epicProjectKey(caller.projectName) !== null;
+}
+
 /**
- * Refuse a labelled Kontor seat's workspace creation outside its own placement.
+ * Where a workflow caller may place a workspace, from its own native placement.
  *
- * A human's request carries no labelled initial agent, an unlabelled caller is
- * interactive, and an unreadable caller lookup with no seat labels on the
- * request fails open; in those cases the request is unchanged. Both label sets
- * are checked: the request's initial agent and, when the release passes it, the
- * caller.
+ * A caller with a Kontor binding is held to that binding, and the binding must
+ * name the workspace the caller runs in. Otherwise the caller stays in its own
+ * project; a desk lead with a confirmed `epic` key may also place into the one
+ * `ESW • <key>` project. The key only selects among epic projects; it never
+ * names another project.
+ */
+async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: LabelReadOptions): Promise<PlacementScope | string> {
+  const labels = caller.labels;
+  if (kontorSeat(labels)) {
+    if (labels[KONTOR_WORKSPACE_ID_LABEL]?.trim() !== caller.workspaceId) {
+      return "the caller's Kontor binding names a workspace the caller does not run in";
+    }
+    const binding = await readPlacementBinding(paseo, labels, options);
+    return binding ? { projects: [binding.projectId], directory: binding.directory } : "the seat's placement binding could not be resolved";
+  }
+  const projects = [caller.projectId];
+  const epic = caller.labels?.["epic"]?.trim();
+  if (deskName(caller.projectName) !== null && epic && JIRA_KEY_PATTERN.test(epic)) {
+    const listed = await bounded(paseo.projects.list(), options.timeoutMs, options.signal).catch(() => null);
+    const matches = (listed?.projects ?? []).filter(
+      (project) => epicProjectKey(project.projectCustomName ?? project.projectDisplayName) === epic,
+    );
+    if (matches.length === 1) projects.push(matches[0]!.projectId);
+  }
+  return { projects };
+}
+
+/**
+ * Refuse a workflow creation outside its own placement.
  *
- * A seat with any `kontor.*` label must match its binding — the native project
- * its own workspace belongs to and the canonical worktree its labels name. A
- * Paseo-direct-only seat (`orchestration=paseo-direct` without `kontor.*`) has
- * no binding to resolve, so only the binding-free checks apply. A seat that
- * carries both label sets gets the full binding enforcement.
+ * Scope comes from the authoritative caller the daemon attached
+ * (`callerAgentId`), read back natively: a caller in a desk or epic project,
+ * or one whose labels or whose initial agent's labels claim workflow work, is
+ * held to its own project (see `callerScope`). Removing labels does not remove
+ * that scope, and labels alone never widen it. An unreadable caller is refused.
+ *
+ * With no caller, the request is an operator's unless its initial agent claims
+ * workflow work: a Kontor binding on that agent is enforced, and any other
+ * claim is refused because it names no caller to scope it. A caller that is
+ * neither in a workflow project nor marked is left alone.
  */
 export async function guardWorkspaceCreate(
   request: WorkspaceCreateRequest,
   context: Pick<PluginHookContext, "paseo" | "signal">,
   config: KontorPluginConfig,
 ): Promise<void> {
+  const options = { timeoutMs: config.labelReadTimeoutMs, signal: context.signal };
+  const refuse = (reason: string): never => {
+    throw new Error(`Kontor workspace guard refused: ${reason}`);
+  };
   const initialLabels = initialAgentLabelsOf(request);
   const callerAgentId = callerAgentIdOf(request);
-  const callerLabels = callerAgentId
-    ? await readAgentLabels(context.paseo, callerAgentId, {
-        timeoutMs: config.labelReadTimeoutMs,
-        signal: context.signal,
-      })
+  const scopes: (PlacementScope | string)[] = [];
+  if (callerAgentId) {
+    const caller = await readCaller(context.paseo, callerAgentId, options);
+    if (!caller) return refuse("the calling agent's own workspace and project could not be read");
+    if (workflowProject(caller) || claimsWorkflow(caller.labels) || claimsWorkflow(initialLabels)) {
+      scopes.push(await callerScope(context.paseo, caller, options));
+    }
+  } else if (claimsWorkflow(initialLabels) && !kontorSeat(initialLabels)) {
+    return refuse("a workflow creation must name its calling agent");
+  }
+  if (kontorSeat(initialLabels)) {
+    const binding = await readPlacementBinding(context.paseo, initialLabels, options);
+    scopes.push(binding ? { projects: [binding.projectId], directory: binding.directory } : "the seat's placement binding could not be resolved");
+  }
+  for (const scope of scopes) {
+    if (typeof scope === "string") refuse(scope);
+    const decision = evaluatePlacement(request, config, scope as PlacementScope);
+    if (!decision.allowed) refuse(decision.reason);
+  }
+}
+
+export const PLACEMENT_MODE_EVENT = "kontor.placement.mode";
+export const PLACEMENT_DETECTED_EVENT = "kontor.placement.detected";
+
+/**
+ * Whether placement is enforced, read on every request from `placement.json`
+ * (`{"placement":"on"|"off"}`). Absent follows the floor read at start, so
+ * installing this build with the floor off changes nothing. A present file that
+ * does not conform enforces, like the floor.
+ */
+export function placementEnforced(floorEnabled: boolean, file = placementFile()): { enforced: boolean; line: string } {
+  const mode = readFloor(file, "placement");
+  const enforced = mode.reason === "not-configured" ? floorEnabled : mode.enabled;
+  return {
+    enforced,
+    line: JSON.stringify({ event: PLACEMENT_MODE_EVENT, placement: enforced ? "enforced" : "off", reason: mode.reason, file, ...(mode.error ? { error: mode.error } : {}) }),
+  };
+}
+
+/** Whether a directory is a linked git worktree: its `.git` is a file pointing into a `worktrees` directory. */
+function linkedWorktree(directory: string): boolean {
+  try {
+    return /^gitdir:.*\/worktrees\/[^/]+\s*$/.test(readFileSync(join(directory, ".git"), "utf8").trim());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Report a created workspace whose native placement is a known misplacement:
+ * a git project rooted at a linked worktree, or a directory under Paseo's own
+ * worktree root. Detection only: it reads the workspace and writes one log
+ * line; it never archives, renames or moves anything.
+ */
+export async function detectPlacement(
+  workspaceId: string,
+  context: Pick<PluginHookContext, "paseo" | "signal">,
+  config: KontorPluginConfig,
+): Promise<Record<string, string> | null> {
+  const workspace = await bounded(context.paseo.workspaces.ref(workspaceId).refresh(), config.labelReadTimeoutMs, context.signal).catch(() => null);
+  if (!workspace) return null;
+  const kind =
+    workspace.projectKind === "git" && workspace.projectRootPath && linkedWorktree(workspace.projectRootPath)
+      ? "project-at-linked-worktree"
+      : workspace.workspaceDirectory && within(resolve(workspace.workspaceDirectory), resolve(config.paseoWorktreesRoot))
+        ? "paseo-worktree-root"
+        : null;
+  return kind
+    ? { event: PLACEMENT_DETECTED_EVENT, kind, workspaceId: workspace.id, projectId: workspace.projectId, projectRootPath: workspace.projectRootPath ?? "", workspaceDirectory: workspace.workspaceDirectory ?? "" }
     : null;
-  const seatLabels: AgentLabels[] = [initialLabels, callerLabels].filter((labels) =>
-    isKontorSeat(labels),
-  );
-  if (seatLabels.length === 0) {
-    return;
-  }
-  for (const labels of seatLabels) {
-    const bound = hasKontorLabels(labels);
-    const binding = bound
-      ? await readPlacementBinding(context.paseo, labels, {
-          timeoutMs: config.labelReadTimeoutMs,
-          signal: context.signal,
-        })
-      : null;
-    if (bound && binding === null) {
-      throw new Error(
-        "Kontor workspace guard refused: the seat's placement binding could not be resolved",
-      );
-    }
-    const decision = evaluatePlacement(request, config, binding);
-    if (!decision.allowed) {
-      throw new Error(`Kontor workspace guard refused: ${decision.reason}`);
-    }
-  }
+}
+
+/**
+ * Placement prevention and detection, registered whatever the floor and
+ * independent of the observer MCP. Each request reads `placement.json`; off
+ * leaves every creation untouched. The mode line is logged when it changes.
+ */
+export function contributePlacement(
+  server: PluginServerContext,
+  floorEnabled: boolean,
+  config: KontorPluginConfig = readConfig(),
+  file = placementFile(),
+): () => void {
+  let last = "";
+  const enforced = (): boolean => {
+    const mode = placementEnforced(floorEnabled, file);
+    if (mode.line !== last) console.log((last = mode.line));
+    return mode.enforced;
+  };
+  enforced();
+  const stopGuard = server.before("workspace.create", async ({ request }, context) => {
+    if (enforced()) await guardWorkspaceCreate(request, context, config);
+    return request;
+  });
+  const stopDetect = server.on("workspace.created", async ({ workspace }, context) => {
+    if (!enforced()) return;
+    const found = await detectPlacement(workspace.id, context, config);
+    if (found) console.error(JSON.stringify(found));
+  });
+  return () => {
+    stopGuard();
+    stopDetect();
+  };
 }
 
 export function contribute(
@@ -202,11 +352,6 @@ export function contribute(
       ...(await seatEnvironment(request, context, config)),
     },
   }));
-
-  server.before("workspace.create", async ({ request }, context) => {
-    await guardWorkspaceCreate(request, context, config);
-    return request;
-  });
 
   return () => {};
 }

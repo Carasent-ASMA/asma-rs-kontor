@@ -78,10 +78,13 @@ try {
     registerSettings(value) { if (value.id === "organization") definition = value; const registration = store.register(value); settings.set(value.id, registration); return registration.settings; },
     handle(contract, handler) { handlers.set(contract.name, handler); },
     before(name) { hooks.push(name); return () => {}; },
+    on() { return () => {}; },
   }));
   cleanup = absent.stop;
+  // Placement is registered whatever the floor; with placement.json absent it follows the floor.
+  const placementLine = (placement) => ({ event: "kontor.placement.mode", placement, reason: "not-configured", file: join(dirname(floorPath), "placement.json") });
   assert.deepEqual(hooks, ["agent.create", "agent.session_open", "workspace.create"]);
-  assert.deepEqual(absent.info, [{ event: "kontor.floor.mode", floor: "enabled", reason: "not-configured", file: floorPath }]);
+  assert.deepEqual(absent.info, [{ event: "kontor.floor.mode", floor: "enabled", reason: "not-configured", file: floorPath }, placementLine("enforced")]);
   assert.deepEqual(absent.errors, []);
   // The same server bundle in a new start with the operator's file off, then non-conforming.
   const floorStart = async (label, content) => {
@@ -93,14 +96,15 @@ try {
       registerSettings: (value) => floorStore.register(value).settings,
       handle(contract) { started.handlers.push(contract.name); },
       before(name) { started.hooks.push(name); return () => {}; },
+      on() { return () => {}; },
     }));
     lines.stop();
     return { ...started, info: lines.info, errors: lines.errors };
   };
   const floorOff = await floorStart("off", '{\n  "floor": "off"\n}\n');
-  assert.deepEqual(floorOff.hooks, []);
+  assert.deepEqual(floorOff.hooks, ["workspace.create"]);
   assert.deepEqual(floorOff.handlers, [...handlers.keys()]);
-  assert.deepEqual(floorOff.info, [{ event: "kontor.floor.mode", floor: "disabled", reason: "explicit-off", file: floorPath }]);
+  assert.deepEqual(floorOff.info, [{ event: "kontor.floor.mode", floor: "disabled", reason: "explicit-off", file: floorPath }, placementLine("off")]);
   assert.deepEqual(floorOff.errors, []);
   const floorInvalid = await floorStart("invalid", '{"floor":"OFF"}');
   assert.deepEqual(floorInvalid.hooks, ["agent.create", "agent.session_open", "workspace.create"]);

@@ -1,0 +1,170 @@
+// Placement qualification on a disposable Paseo daemon. Never uses ~/.paseo or port 6767.
+// It starts a daemon in a temporary home, installs this plugin there with floor.json off, creates synthetic
+// desk and epic projects and agents (no prompt, so no turn), and runs each creation route with placement.json
+// absent (before), on (after) and off (rollback). Every agent and workspace it made is archived and read back,
+// then the daemon is stopped and the home and fixtures are removed.
+//   node scripts/placement-qualification.mjs <report.json>
+import { createPaseoClient } from "@getpaseo/client";
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const out = process.argv[2];
+assert.ok(out, "Usage: node scripts/placement-qualification.mjs <report.json>");
+const pluginDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const home = mkdtempSync(join(tmpdir(), "kontor-placement-home-"));
+const root = mkdtempSync(join(tmpdir(), "kontor-placement-fixtures-"));
+const port = await new Promise((done) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => done(p)); }); });
+assert.notEqual(port, 6767);
+const switches = join(home, "plugin-config", "kontor");
+// Only PATH and HOME reach the CLI, so no live caller identity leaks into a case; a case adds its own.
+const baseEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
+const paseo = (args, env = {}) => {
+  const run = spawnSync("paseo", [...args, "--home", home], { env: { ...baseEnv, ...env }, encoding: "utf8" });
+  return { status: run.status, stdout: run.stdout.trim(), stderr: run.stderr.trim() };
+};
+const report = { paseo: null, port, checks: [], detections: [], modes: [], cleanup: null };
+const made = { workspaces: new Set(), agents: new Set() };
+let client;
+
+const placement = (value) => value === null ? rmSync(join(switches, "placement.json"), { force: true }) : writeFileSync(join(switches, "placement.json"), JSON.stringify({ placement: value }));
+const pluginLines = () => {
+  const logs = paseo(["plugin", "logs", "kontor", "--json"]);
+  const text = `${logs.stdout}\n${logs.stderr}`;
+  return [...`${text}\n${text.replace(/\\"/g, '"')}`.matchAll(/\{[^{}]*"event":"kontor\.(?:floor|placement)\.[a-z]+"[^{}]*\}/g)].map((m) => JSON.parse(m[0]));
+};
+function check(name, route, expected, outcome, detail) {
+  report.checks.push({ name, route, expected, outcome, ...detail });
+  assert.equal(outcome, expected, `${name}: ${JSON.stringify(detail)}`);
+}
+/** `paseo workspace create` from a caller's seat environment, or with no caller. */
+function cliCreate(name, expected, caller, args, isolation = "local") {
+  const env = caller ? { PASEO_AGENT_ID: caller.id, PASEO_WORKSPACE_ID: caller.workspaceId, PASEO_AGENT_CWD: caller.cwd } : {};
+  const run = paseo(["workspace", "create", "--isolation", isolation, "--json", ...args], env);
+  const id = run.status === 0 ? JSON.parse(run.stdout).workspaceId : null;
+  if (id) made.workspaces.add(id);
+  const refused = /Kontor workspace guard refused[^"\n]*/.exec(run.stderr)?.[0] ?? null;
+  check(name, `cli workspace create --isolation ${isolation}${caller ? " (caller env)" : " (no caller)"}`, expected, id ? "created" : refused ? "refused" : "error", { workspaceId: id, message: refused ?? (id ? undefined : run.stderr.slice(0, 300)) });
+}
+const dir = (name) => { const path = join(root, name); mkdirSync(path, { recursive: true }); return path; };
+
+try {
+  report.paseo = paseo(["--version"]).stdout;
+  paseo(["daemon", "config", "set", "daemon.listen", `127.0.0.1:${port}`, "--string"]);
+  paseo(["daemon", "config", "set", "pluginsEnabled", "true"]);
+  report.relayOff = paseo(["daemon", "config", "set", "daemon.relay.enabled", "false"]).status;
+  mkdirSync(switches, { recursive: true });
+  writeFileSync(join(switches, "floor.json"), '{"floor":"off"}');
+  const started = spawnSync("paseo", ["daemon", "start", "--home", home], { env: { ...baseEnv, PASEO_HOME: home, KONTOR_PLUGIN_MCP: "off" }, encoding: "utf8" });
+  assert.equal(started.status, 0, started.stderr);
+  const installed = paseo(["plugin", "install", pluginDir, "--json"]);
+  assert.equal(installed.status, 0, installed.stderr.slice(0, 500));
+  const plugins = JSON.parse(paseo(["plugin", "ls", "--json"]).stdout);
+  assert.equal(plugins.find((p) => p.id === "kontor")?.status, "running");
+  // The worker must read the isolated home's switches before any case relies on them.
+  const startLines = pluginLines();
+  assert.ok(startLines.some((l) => l.event === "kontor.floor.mode" && l.file === join(switches, "floor.json") && l.floor === "disabled"), JSON.stringify(startLines));
+  assert.ok(startLines.some((l) => l.event === "kontor.placement.mode" && l.file === join(switches, "placement.json") && l.placement === "off"), JSON.stringify(startLines));
+
+  client = createPaseoClient({ url: `ws://127.0.0.1:${port}/ws`, clientId: "kontor-placement-qualification", reconnect: { enabled: false } });
+  await client.connect();
+  const project = async (path, name) => {
+    const ws = await client.workspaces.create({ source: { kind: "directory", path } });
+    made.workspaces.add(ws.id);
+    if (name) assert.equal(paseo(["project", "rename", ws.projectId, name, "--json"]).status, 0);
+    return { workspaceId: ws.id, projectId: ws.projectId, path };
+  };
+  const desk = await project(dir("desk-projects/ADAM"), "DESK • ADAM");
+  const esw1 = await project(dir("epic-projects/ASMA-1"), "ESW • ASMA-1");
+  const esw2 = await project(dir("epic-projects/ASMA-2"), "ESW • ASMA-2");
+  const repo = dir("repo");
+  execFileSync("git", ["init", "-q", repo]);
+  execFileSync("git", ["-C", repo, "-c", "user.name=q", "-c", "user.email=q@example.invalid", "commit", "-q", "--allow-empty", "-m", "init"]);
+  const linked = join(root, "repo-task");
+  execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", "task", linked]);
+  const plain = await project(repo, null);
+
+  let snapshot = await client.providers.snapshot({ cwd: repo });
+  if (!snapshot.entries.length || snapshot.entries.some((e) => e.status === "loading")) snapshot = await client.providers.waitForReady({ cwd: repo, timeoutMs: 90_000 });
+  const ready = snapshot.entries.filter((e) => e.status === "ready" && e.models?.length && e.enabled !== false);
+  const provider = ready.find((e) => e.provider === "claude") ?? ready[0];
+  assert.ok(provider, "no ready provider in the isolated home");
+  const config = { provider: `${provider.provider}/${provider.models[0].id}`, ...(provider.defaultModeId ? { modeId: provider.defaultModeId } : {}) };
+  const agent = async (where, title, labels) => {
+    const handle = client.workspaces.ref(where.workspaceId);
+    await handle.refresh();
+    const created = await handle.agents.create({ agentId: randomUUID(), title, config, labels });
+    made.agents.add(created.id);
+    return { id: created.id, workspaceId: where.workspaceId, cwd: where.path };
+  };
+  const swe = await agent(esw1, "SWE", { orchestration: "paseo-direct", epic: "ASMA-1", task: "ASMA-3", role: "SWE" });
+  const bare = await agent(esw1, "unlabelled", {});
+  const tpm = await agent(desk, "TPM", { role: "TPM", epic: "ASMA-1" });
+  const mislabelled = await agent(esw1, "mislabelled", { "kontor.seat_binding_id": "seat-q", "kontor.workspace_id": esw2.workspaceId, "kontor.worktree": esw2.path });
+  const operator = await agent(plain, "operator", {});
+  const target = (eswProject, name) => ["--path", dir(`targets/${name}`), "--project", eswProject.projectId];
+
+  // Before: placement.json absent follows floor off, so a workflow caller can still misplace.
+  cliCreate("before: SWE into another epic project", "created", swe, target(esw2, "before"));
+
+  placement("on");
+  cliCreate("wrong project with a valid id", "refused", swe, target(esw2, "a1"));
+  cliCreate("own epic project", "created", swe, target(esw1, "a2"));
+  cliCreate("(a) unlabelled caller in an epic project, other project", "refused", bare, target(esw2, "a3"));
+  cliCreate("(b) workflow caller with no target project", "refused", bare, ["--path", dir("targets/a4")]);
+  cliCreate("worktree route from a workflow caller", "refused", swe, ["--path", repo, "--project", plain.projectId], "worktree");
+  cliCreate("desk lead into its confirmed epic project", "created", tpm, target(esw1, "a6"));
+  cliCreate("desk lead into another epic project", "refused", tpm, target(esw2, "a7"));
+  cliCreate("(d) Kontor binding naming another seat's workspace", "refused", mislabelled, target(esw2, "a8"));
+  cliCreate("operator-placed unlabelled agent (not a workflow caller)", "created", operator, target(esw2, "a9"));
+  cliCreate("(c) operator with no caller", "created", null, target(esw2, "a10"));
+  {
+    const name = "workflow-labelled initial agent with no caller (missing caller)";
+    const result = await client.workspaces.create({ agent: { config, cwd: esw2.path, labels: { orchestration: "paseo", workflow: "kontor" } }, source: { kind: "directory", path: dir("targets/a11"), projectId: esw2.projectId } })
+      .then((ws) => (made.workspaces.add(ws.id), { outcome: "created", workspaceId: ws.id }), (e) => ({ outcome: /Kontor workspace guard refused/.test(String(e?.message)) ? "refused" : "error", message: String(e?.message ?? e).slice(0, 300) }));
+    check(name, "sdk workspaces.create (initial agent, no caller)", "refused", result.outcome, result);
+  }
+  {
+    // Labelled as well, so a run that carried no caller is refused too and no agent or turn ever starts.
+    const run = paseo(["run", "--new-workspace", "local", "--cwd", dir("targets/a12"), "--provider", config.provider, "--label", "orchestration=paseo-direct", "--json", "qualification"], { PASEO_AGENT_ID: swe.id, PASEO_WORKSPACE_ID: swe.workspaceId, PASEO_AGENT_CWD: swe.cwd });
+    const id = run.status === 0 ? JSON.parse(run.stdout).agentId : null;
+    if (id) made.agents.add(id);
+    check("cli run --new-workspace from a workflow caller", "cli run --new-workspace (caller env)", "refused", id ? "created" : /Kontor workspace guard refused/.test(run.stderr) ? "refused" : "error", { message: /Kontor workspace guard refused[^"\n]*/.exec(run.stderr)?.[0] ?? run.stderr.slice(0, 300) });
+  }
+  // Routes the hook cannot see: the import on agent create and an operator's directory open. Detection only.
+  {
+    const imported = await client.agents.create({ agentId: randomUUID(), title: "import route", config, cwd: linked });
+    made.agents.add(imported.id);
+    const read = await client.agents.ref(imported.id).refresh();
+    if (read?.agent.workspaceId) made.workspaces.add(read.agent.workspaceId);
+    check("agent create with cwd only at a linked worktree (import, no hook)", "sdk agents.create cwd", "created", read?.agent.workspaceId ? "created" : "error", { workspaceId: read?.agent.workspaceId ?? null });
+  }
+  await new Promise((done) => setTimeout(done, 1500));
+  report.detections = pluginLines().filter((l) => l.event === "kontor.placement.detected");
+  assert.ok(report.detections.some((l) => l.kind === "project-at-linked-worktree" && resolve(l.projectRootPath) === resolve(linked)), JSON.stringify(report.detections));
+
+  placement("off");
+  cliCreate("rollback: placement off lets the misplacement through again", "created", swe, target(esw2, "rollback"));
+  placement(null);
+  report.modes = pluginLines().filter((l) => l.event === "kontor.placement.mode");
+} finally {
+  const cleanup = { agents: [], workspaces: [] };
+  if (client) {
+    for (const id of made.agents) cleanup.agents.push(await client.agents.ref(id).archive().then((a) => ({ id, archivedAt: a?.archivedAt ?? "archived" }), (e) => ({ id, error: String(e?.message ?? e) })));
+    for (const id of made.workspaces) cleanup.workspaces.push(await client.workspaces.archive(id).then(() => ({ id, archived: true }), (e) => ({ id, error: String(e?.message ?? e) })));
+    const left = (await client.workspaces.list({ includeBackground: true, page: { limit: 200 } })).entries.filter((w) => !w.archivingAt).map((w) => w.id);
+    cleanup.activeWorkspacesAfter = left;
+    await client.close().catch(() => {});
+  }
+  cleanup.daemonStop = paseo(["daemon", "stop"]).status;
+  rmSync(home, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
+  report.cleanup = cleanup;
+  writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+}
+console.log(JSON.stringify({ checks: report.checks.length, passed: report.checks.filter((c) => c.outcome === c.expected).length, detections: report.detections.length }));

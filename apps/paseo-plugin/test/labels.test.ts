@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hasKontorLabels, isKontorSeat, seatBinding } from "../server/labels";
+import { claimsWorkflow, hasKontorLabels, isKontorSeat, seatBinding } from "../server/labels";
+import { epicProjectKey } from "../shared/session-create";
 
 describe("hasKontorLabels", () => {
   it("recognizes any runtime-owned Kontor label", () => {
@@ -57,5 +58,32 @@ describe("seatBinding", () => {
     expect(seatBinding({ "kontor.hosted_seat": "true" })).toEqual({ seat: null });
     expect(seatBinding({ "kontor.seat": "unwritten" })).toEqual({ seat: null });
     expect(seatBinding(null)).toEqual({ seat: null });
+  });
+});
+
+describe("claimsWorkflow", () => {
+  it("reads current and retained markers, never a summary helper's or a free one's", () => {
+    const marked: Record<string, string>[] = [
+      { orchestration: "paseo" },
+      { orchestration: "kontor" },
+      { orchestration: "paseo-direct" },
+      { orchestration: "kontor-governed" },
+      { workflow: "kontor" },
+      { workflow: "free", orchestration: "paseo" },
+      { "kontor.seat_binding_id": "binding-1" },
+      { "kontor.summary.source": "a", "kontor.workspace_id": "wks_1" },
+    ];
+    for (const labels of marked) expect(claimsWorkflow(labels)).toBe(true);
+    const unmarked: (Record<string, string> | null | undefined)[] = [null, undefined, {}, { workflow: "free" }, { orchestration: "none" }, { "kontor.summary.source": "a", "kontor.summary.job": "j" }, { pr: "310", epic: "ASMA-1" }];
+    for (const labels of unmarked) expect(claimsWorkflow(labels)).toBe(false);
+  });
+});
+
+describe("epicProjectKey", () => {
+  it("names the epic of an ESW project only for a confirmed key", () => {
+    expect(epicProjectKey("ESW • ASMA-8539")).toBe("ASMA-8539");
+    expect(epicProjectKey(" esw  •  ASMA-1 ")).toBe("ASMA-1");
+    for (const name of [null, undefined, "", "DESK • ADAM", "ESW • asma-8539", "ESW • ASMA-0", "ESW • ASMA-8539-slug", "ESW • ASMA-1 • X", "asma-rs-kontor", "ESW"])
+      expect(epicProjectKey(name)).toBeNull();
   });
 });

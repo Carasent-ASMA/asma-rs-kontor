@@ -120,6 +120,7 @@ describe("server entry when floor.json fails to close", () => {
         hooks.push(name);
         return () => {};
       },
+      on: () => () => {},
       handle: () => {},
       registerSettings: () => ({
         read: async () => ({ status: "ready", revision: "r1", values: {} }),
@@ -140,7 +141,10 @@ describe("server entry when floor.json fails to close", () => {
       error.mockRestore();
     }
     expect(hooks).toEqual(["agent.create", "agent.session_open", "workspace.create"]);
-    expect(info).toEqual([{ event: FLOOR_MODE_EVENT, floor: "enabled", reason: "invalid", file }]);
+    expect(info).toEqual([
+      { event: FLOOR_MODE_EVENT, floor: "enabled", reason: "invalid", file },
+      { event: "kontor.placement.mode", placement: "enforced", reason: "not-configured", file: join(dirname(file), "placement.json") },
+    ]);
     expect(errors).toEqual([{ event: FLOOR_INVALID_EVENT, floor: "enabled", file, error: "cannot close: EIO: injected, close" }]);
     cleanup();
   });
