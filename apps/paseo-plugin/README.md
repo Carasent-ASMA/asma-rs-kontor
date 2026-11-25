@@ -144,21 +144,24 @@ pill is the in-session return control where the composer supports it.
   a stale badge. The badge is only as current as the host snapshot: a host that
   omits both public fields cannot be distinguished from a resolved permission.
   No question subtype is inferred.
-- **Background work.** Paseo 0.16 and later report a session's live background
-  work: background shells, monitors, heartbeats and other tasks that outlive a
-  turn. The plugin carries that summary into the row note and its Details. When
-  every task counts as running, Paseo sends only the total; the row then shows
-  the total and Details says Paseo counts all as running. A session with background work still **running** shows as
-  **Running**, exactly as Paseo's own state bucket does; reported work with
-  nothing running (a heartbeat, for example) keeps its native state and says
-  **waiting**. **More → Background tasks** lists every session with reported
-  work, and work still running also appears under **Running**. Native error and
-  Needs input keep their higher precedence, and the Background tasks filter
-  still reaches those sessions. Counts are live runtime state from the direct
-  directory only: a shared-catalog read shows the count as unavailable rather
-  than zero, and a summary the host stops reporting is never carried forward.
-  The declared Paseo floor is unchanged; a host that reports no summary simply
-  shows nothing.
+- **Background work.** Paseo 0.16 and later report how many background tasks
+  (background shells, monitors and other tasks that outlive a turn) a session
+  has. Paseo 0.17 adds a running split (and, from 0.17.1, heartbeats); it sends
+  only the total when every task counts as running. The plugin carries that summary into the
+  row note and its Details. It uses Paseo's own running test (`isAgentRunning`):
+  a session with background work still **running** counts as **Running**, while
+  reported work with nothing running (a heartbeat waiting for its next run, for
+  example) keeps the native state and says **waiting**. The plugin keeps its
+  own precedence: Needs input, then a native error, then Running, then
+  Attention. Paseo raises only an unread error above Running. **More →
+  Background tasks** lists every session with reported work, including ones
+  that show Needs input or Error, and work still running also matches
+  **Running**. Counts are live runtime state from the direct directory only. A
+  shared-catalog read shows the count as unavailable rather than zero, and so
+  does a read in which no session carries a summary. A summary is read as
+  strictly as Paseo validates it: a malformed one, or one the host stops
+  reporting, shows as not reported and is never carried forward. The declared
+  Paseo floor is unchanged.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last

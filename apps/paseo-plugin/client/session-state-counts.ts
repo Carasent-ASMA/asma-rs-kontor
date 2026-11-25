@@ -63,6 +63,10 @@ export function sessionStateCounts(input: CountRead & {
     if (status === "background" && input.state.source !== undefined && input.state.source !== "direct") {
       return [status, { text: "—", label: "Count unavailable: background work is reported only by the live direct read, not the shared catalog" }];
     }
+    // ponytail: no summary on any row may be a host that never reports one (before Paseo 0.16), so no zero is asserted.
+    if (status === "background" && universe.every((entry) => entry.backgroundWork === undefined)) {
+      return [status, { text: "—", label: "Count unavailable: no session in this read carries a background-work summary, so this host may not report it" }];
+    }
     const count = (entries: readonly DirectoryEntry[]) => new Set(entries.filter((entry) => matchesStatus(entry, status, favorites, recent)).map((entry) => entry.id)).size;
     const matched = count(candidates), total = count(universe);
     const numerator = compactSessionCount(matched), denominator = compactSessionCount(total);

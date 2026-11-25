@@ -108,7 +108,7 @@ describe("session search and filters", () => {
     expect(backgroundWorkDetail(sessionEntry("split", { backgroundWork: { count: 2, runningCount: 1 } }))).toBe("2 reported, 1 running");
     expect(backgroundWorkDetail(sessionEntry("one", { backgroundWork: { count: 1 } }))).toBe("1 reported; Paseo counts all as running");
     expect(backgroundWorkDetail(sessionEntry("reported-none", { backgroundWork: { count: 0 } }))).toBe("None reported");
-    expect(backgroundWorkDetail(sessionEntry("unreported"))).toBe("Not reported by this host");
+    expect(backgroundWorkDetail(sessionEntry("unreported"))).toBe("Not reported");
   });
 
   it("counts only advanced choices and exposes the clear state", () => {

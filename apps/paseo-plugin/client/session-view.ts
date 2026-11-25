@@ -238,14 +238,15 @@ export function backgroundWorkLabel(entry: DirectoryEntry): string | null {
 }
 
 /**
- * Details keeps the exact numbers and names a host that reports no field, never a
- * fabricated zero. Paseo omits the running split when every task counts as running
- * (and hosts before the split never send it); its own rule then counts the total.
+ * Details keeps the exact numbers and says "Not reported" for a missing summary,
+ * never a fabricated zero; the wording holds for a host and a catalog row alike.
+ * Paseo omits the running split when every task counts as running (and Paseo
+ * 0.16 never sends it); its own rule then counts the total.
  */
 export function backgroundWorkDetail(entry: DirectoryEntry): string {
   const work = entry.backgroundWork;
   if (work === undefined) {
-    return "Not reported by this host";
+    return "Not reported";
   }
   if (work.count === 0) {
     return "None reported";

@@ -557,10 +557,15 @@ describe("SessionDirectory", () => {
     expect(withReport({ count: 2 }).backgroundWork).toEqual({ count: 2 });
     // A reported zero is a fact, not an absent field.
     expect(withReport({ count: 0 }).backgroundWork).toEqual({ count: 0 });
-    // A host bug that claims more running than total is clamped, never shown as a contradiction.
-    expect(withReport({ count: 1, runningCount: 4 }).backgroundWork).toEqual({ count: 1, runningCount: 1 });
-    // An untrustworthy shape is "not reported", never zero work.
-    expect(withReport({ count: "2" }).backgroundWork).toBeUndefined();
+    expect(withReport({ count: 2, runningCount: 2 }).backgroundWork).toEqual({ count: 2, runningCount: 2 });
+    // Any untrustworthy part makes the whole summary "not reported": never a zero, never running, never clamped.
+    for (const malformed of [
+      { count: "2" }, { count: 0.5 }, { count: -1 }, { count: Number.NaN }, [], null, 3,
+      { count: 2, runningCount: "0" }, { count: 2, runningCount: null }, { count: 2, runningCount: -1 },
+      { count: 2, runningCount: 0.5 }, { count: 1, runningCount: 4 },
+    ]) {
+      expect(withReport(malformed).backgroundWork).toBeUndefined();
+    }
 
     const absent = toDirectoryEntry(seed);
     expect(absent.backgroundWork).toBeUndefined();

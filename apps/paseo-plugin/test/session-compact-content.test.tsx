@@ -39,7 +39,7 @@ describe("compact session row content", () => {
     expect(sessionRowDetails(value)).toContainEqual({ label: "Availability", value: "Availability unknown" });
     expect(sessionRowDetails(value)).toContainEqual({ label: "Earlier error", value: "Earlier error · now idle" });
     expect(sessionRowDetails(value)).toContainEqual({ label: "Archive membership", value: "Not archived" });
-    expect(sessionRowDetails(value)).toContainEqual({ label: "Background work", value: "Not reported by this host" });
+    expect(sessionRowDetails(value)).toContainEqual({ label: "Background work", value: "Not reported" });
     expect(sessionRowDetails({ ...value, backgroundWork: { count: 2, runningCount: 1 } })).toContainEqual({ label: "Background work", value: "2 reported, 1 running" });
     expect(sessionRowDetails({ ...value, archivedAt: "2026-10-25T10:00:00Z" })).toContainEqual({ label: "Archive membership", value: "Archived · 2026-10-25T10:00:00Z" });
   });

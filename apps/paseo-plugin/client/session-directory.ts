@@ -57,7 +57,7 @@ const AGENT_SORT: NonNullable<PaseoAgentListOptions["sort"]> = [
  * monitors and other tasks that keep running behind a finished turn. It is live
  * runtime state, not history: the host reports only what is still there.
  * `runningCount` is the host's running split. Paseo omits it when every task counts
- * as running, and hosts before the split never send it; either way Paseo's own rule
+ * as running, and Paseo 0.16 never sends it; either way Paseo's own rule
  * counts the total as running. A heartbeat waiting for its next run is reported but
  * not running. An absent summary means the host did not report background work at
  * all, which is not the same as zero.
@@ -271,7 +271,7 @@ export function runningBackgroundWork(
   if (work === undefined) {
     return 0;
   }
-  return Math.min(work.runningCount ?? work.count, work.count);
+  return work.runningCount ?? work.count;
 }
 
 /** Reported background work of any kind: what the Background filter lists. */
@@ -299,32 +299,30 @@ export function isSessionRunning(
   return entry.status === "running" || hasRunningBackgroundWork(entry);
 }
 
+/** A whole, non-negative task count, as Paseo's own wire schema requires. */
+function isTaskCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
 /**
- * Reads the wire summary defensively. A host that does not send it, or sends a
- * shape this plugin cannot trust, is "not reported": the row must not claim zero
- * background work out of a field it never read.
+ * Reads the wire summary as strictly as Paseo's own client validates it. A host
+ * that does not send it, or sends any part this plugin cannot trust (a fraction,
+ * a non-number split, a split larger than the total), is "not reported": the row
+ * must not claim zero, or running, background work out of a field it never read.
  */
 function readBackgroundWork(agent: unknown): BackgroundWork | undefined {
   const reported = (agent as { backgroundWork?: unknown }).backgroundWork;
   if (reported === null || typeof reported !== "object") {
     return undefined;
   }
-  const record = reported as { count?: unknown; runningCount?: unknown };
-  if (
-    typeof record.count !== "number" ||
-    !Number.isFinite(record.count) ||
-    record.count < 0
-  ) {
+  const { count, runningCount } = reported as { count?: unknown; runningCount?: unknown };
+  if (!isTaskCount(count)) {
     return undefined;
   }
-  const count = Math.floor(record.count);
-  const running =
-    typeof record.runningCount === "number" &&
-    Number.isFinite(record.runningCount) &&
-    record.runningCount >= 0
-      ? Math.min(Math.floor(record.runningCount), count)
-      : undefined;
-  return running === undefined ? { count } : { count, runningCount: running };
+  if (runningCount === undefined) {
+    return { count };
+  }
+  return isTaskCount(runningCount) && runningCount <= count ? { count, runningCount } : undefined;
 }
 
 function text(value: string | null | undefined): string | null {

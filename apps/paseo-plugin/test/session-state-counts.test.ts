@@ -63,6 +63,16 @@ describe("same-state counts", () => {
     }
   });
 
+  it("asserts no background zero when no row in a complete read carries a summary", () => {
+    // A host before Paseo 0.16 sends no summary on any row: that is not zero background work.
+    const silent = sessionStateCounts(input).background;
+    expect(silent.text).toBe("—");
+    expect(silent.label).toContain("may not report it");
+    // One reported zero shows the host reports summaries, so its zero count is a fact.
+    const reported = [...entries, sessionEntry("bg-none", { backgroundWork: { count: 0 } })];
+    expect(sessionStateCounts({ ...input, universe: reported, candidates: reported }).background.text).toBe("0");
+  });
+
   it("does not assert a provider-blocked zero under a label-unknown scope", () => {
     const count = sessionStateCounts({ ...input, restrictedUnknown: true }).provider_blocked;
     expect(count.text).toBe("—");
