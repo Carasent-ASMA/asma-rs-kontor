@@ -738,6 +738,14 @@ describe("takeover review", () => {
     const stripped = await host();
     stripped.deps.config = { ...stripped.deps.config, placementRoots: ["/fixtures"] };
     expect((await stripped.service.review({ agentId: "agent-1", bindingKey: KEY })).message).toContain("Kontor placement");
+    // A `..<name>` directory under a placement root is inside it (AUD-R3-04): ready outside the roots, refused once a root contains it.
+    const dotted = "/fixtures/..governed/wks-1";
+    const outside = await host({ predecessor: agent("agent-1", { cwd: dotted }), workspace: { ...WORKSPACE, workspaceDirectory: dotted } });
+    expect((await outside.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("ready");
+    const inside = await host({ predecessor: agent("agent-1", { cwd: dotted }), workspace: { ...WORKSPACE, workspaceDirectory: dotted } });
+    inside.deps.config = { ...inside.deps.config, placementRoots: ["/fixtures"] };
+    expect(await inside.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", message: expect.stringContaining("Kontor placement"), digest: null });
+    expect(inside.effects.resolve).toHaveLength(0);
     const none = await host({ choices: [] });
     expect(await none.service.review({ agentId: "agent-1", bindingKey: null })).toMatchObject({ state: "refused", message: expect.stringContaining("No configured profile") });
   });
@@ -2252,10 +2260,10 @@ describe("persona issued again for a successor", () => {
 
 
 // Contract fixtures exercise real immutable files and checkout reads; no native-provider qualification is claimed.
-async function proceduralFixture(fault?: "archive" | "create" | "bootstrap" | "continuation" | "wrong-response" | "detach" | "session-replaced" | "source-revived" | "wrong-config" | "wrong-labels", workflow: "free" | "kontor" = "free") {
+async function proceduralFixture(fault?: "archive" | "create" | "bootstrap" | "continuation" | "wrong-response" | "detach" | "session-replaced" | "source-revived" | "wrong-config" | "wrong-labels", workflow: "free" | "kontor" = "free", checkoutName = "checkout") {
   const root = await mkdtemp(join(tmpdir(), "kontor-procedural-")); dirs.push(root);
   vi.stubEnv("PASEO_HOME", root);
-  const cwd = join(root, "checkout"); await makeDirectory(cwd);
+  const cwd = join(root, checkoutName); await makeDirectory(cwd);
   const git = nativePromisify(nativeExecFile);
   await git("git", ["-C", cwd, "init", "-b", "fixture"]);
   await git("git", ["-C", cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
@@ -2410,8 +2418,8 @@ function parentOfProcedural(value: Agent) { return value.labels?.["paseo.parent-
 
 
 describe("R11 source review regressions", () => {
-  it.each(["stateRoot", "placementRoots"] as const)("rejects configured %s governed placement before timeline hydration", async kind => {
-    const f = await proceduralFixture();
+  it.each([["stateRoot", "checkout"], ["placementRoots", "checkout"], ["stateRoot", "..checkout"], ["placementRoots", "..checkout"]] as const)("rejects configured %s governed placement of %s before timeline hydration", async (kind, checkoutName) => {
+    const f = await proceduralFixture(undefined, "free", checkoutName);
     vi.stubEnv(kind === "stateRoot" ? "KONTOR_PLUGIN_STATE_ROOT" : "KONTOR_PLUGIN_PLACEMENT_ROOTS", f.root);
     const previous = f.client.agents.ref, historyReads: string[] = [];
     f.client.agents.ref = (id) => { const handle = previous(id); return { ...handle, timeline: { ...handle.timeline, refetch: async (...args) => { historyReads.push(handle.id); return handle.timeline.refetch(...args); } } }; };

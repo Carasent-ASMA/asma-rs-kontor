@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { evaluatePlacement, type WorkspaceCreateLike } from "../server/placement";
+import { describe, expect, it, vi } from "vitest";
+import { evaluatePlacement, within, type WorkspaceCreateLike } from "../server/placement";
 
 const rules = {
   paseoWorktreesRoot: "/Users/test/.paseo/worktrees",
@@ -215,5 +215,47 @@ describe("evaluatePlacement", () => {
         bound,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
+  });
+
+  it("reads a `..<name>` directory under a placement root as inside it, and the root's parent as outside (AUD-R3-04)", () => {
+    const contained = { ...rules, placementRoots: ["/Users/test/carasent/asma-modules"] };
+    const at = (path: string) => evaluatePlacement(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), contained, direct);
+    expect(at("/Users/test/carasent/asma-modules/..scratch/task")).toEqual({ allowed: true });
+    expect(at("/Users/test/carasent")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
+    expect(at("/Users/test/carasent/asma-modules-other/task")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
+    expect(at("/Users/test/.paseo/worktrees/..evil")).toMatchObject({ allowed: false, reason: expect.stringContaining("Paseo") });
+  });
+
+  it("keeps the containment on Windows paths: another drive and a sibling are outside, a `..<name>` child is inside", async () => {
+    vi.resetModules();
+    vi.doMock("node:path", async () => {
+      const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
+      return { ...win32, default: win32 };
+    });
+    try {
+      const { evaluatePlacement: evaluate } = await import("../server/placement");
+      const windows = { paseoWorktreesRoot: "C:\\paseo\\worktrees", placementRoots: ["C:\\work"] };
+      const at = (path: string) => evaluate(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), windows, direct);
+      expect(at("C:\\work\\..scratch\\task")).toEqual({ allowed: true });
+      expect(at("D:\\work\\task")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
+      expect(at("C:\\work-sibling\\task")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
+      expect(at("C:\\paseo\\worktrees\\..evil")).toMatchObject({ allowed: false, reason: expect.stringContaining("Paseo") });
+    } finally {
+      vi.doUnmock("node:path");
+      vi.resetModules();
+    }
+  });
+});
+
+describe("within", () => {
+  it("treats only a .. segment as leaving the parent; ..checkout is a name inside it (AUD-R3-04)", () => {
+    expect(within("/x/..checkout", "/x")).toBe(true);
+    expect(within("/x/..checkout/repo", "/x")).toBe(true);
+    expect(within("/x", "/x")).toBe(true);
+    expect(within("/x/y", "/x")).toBe(true);
+    expect(within("/x/..", "/x")).toBe(false);
+    expect(within("/x/../y", "/x")).toBe(false);
+    expect(within("/xy", "/x")).toBe(false);
+    expect(within("/", "/x")).toBe(false);
   });
 });

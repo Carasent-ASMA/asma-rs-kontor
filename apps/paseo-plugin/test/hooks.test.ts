@@ -1017,6 +1017,18 @@ describe("placement switch and detector (ASMA-8580)", () => {
     await expect(register(true).before.get("workspace.create")!(misplaced(), context({}))).resolves.toBeDefined();
   });
 
+  it("refuses a `..<name>` directory under Paseo's worktree root on the enforced route, and passes it when off (AUD-R3-04)", async () => {
+    const dotted = (path: string) => ({ request: workspaceRequest({ source: { kind: "directory", path, projectId: PROJECT } }) });
+    writeFileSync(file, '{"placement":"on"}');
+    const guard = register(false).before.get("workspace.create")!;
+    for (const path of ["/Users/test/.paseo/worktrees/..evil", "/Users/test/.paseo/worktrees/..evil/repo"]) {
+      await expect(guard(dotted(path), context({}))).rejects.toThrow("Paseo's own worktree root");
+    }
+    await expect(guard(dotted("/Users/test/.paseo/..worktrees-sibling"), context({}))).resolves.toEqual(dotted("/Users/test/.paseo/..worktrees-sibling").request);
+    writeFileSync(file, '{"placement":"off"}');
+    await expect(guard(dotted("/Users/test/.paseo/worktrees/..evil"), context({}))).resolves.toEqual(dotted("/Users/test/.paseo/worktrees/..evil").request);
+  });
+
   it("enforces a present file that does not conform", async () => {
     writeFileSync(file, '{"placement":"of"}');
     await expect(register(false).before.get("workspace.create")!(misplaced(), context({}))).rejects.toThrow("project outside");
@@ -1066,6 +1078,7 @@ describe("placement switch and detector (ASMA-8580)", () => {
     await expect(detectPlacement("wks_new", ws("git", submodule), config())).resolves.toBeNull();
     await expect(detectPlacement("wks_new", ws("non_git", linked), config())).resolves.toBeNull();
     await expect(detectPlacement("wks_new", ws("git", main, "/Users/test/.paseo/worktrees/x/asma-1"), config())).resolves.toMatchObject({ kind: "paseo-worktree-root" });
+    await expect(detectPlacement("wks_new", ws("git", main, "/Users/test/.paseo/worktrees/..x"), config())).resolves.toMatchObject({ kind: "paseo-worktree-root" });
     await expect(detectPlacement("wks_new", context({}, { wks_new: "error" }), config())).resolves.toBeNull();
   });
 
