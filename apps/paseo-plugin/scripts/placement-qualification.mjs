@@ -106,7 +106,8 @@ try {
   const bare = await agent(esw1, "unlabelled", {});
   const tpm = await agent(desk, "TPM", { role: "TPM", epic: "ASMA-1" });
   const mislabelled = await agent(esw1, "mislabelled", { "kontor.seat_binding_id": "seat-q", "kontor.workspace_id": esw2.workspaceId, "kontor.worktree": esw2.path });
-  const operator = await agent(plain, "operator", {});
+  const unmarked = await agent(plain, "unmarked", {});
+  const legacy = await agent(plain, "legacy review seat", { orchestration: "paseo-direct", epic: "ASMA-1", role: "review-a" });
   const target = (eswProject, name) => ["--path", dir(`targets/${name}`), "--project", eswProject.projectId];
 
   // Before: placement.json absent follows floor off, so a workflow caller can still misplace.
@@ -118,11 +119,16 @@ try {
   cliCreate("(a) unlabelled caller in an epic project, other project", "refused", bare, target(esw2, "a3"));
   cliCreate("(b) workflow caller with no target project", "refused", bare, ["--path", dir("targets/a4")]);
   cliCreate("worktree route from a workflow caller", "refused", swe, ["--path", repo, "--project", plain.projectId], "worktree");
-  cliCreate("desk lead into its confirmed epic project", "created", tpm, target(esw1, "a6"));
-  cliCreate("desk lead into another epic project", "refused", tpm, target(esw2, "a7"));
+  // LSA-B-01: no source the hook can read proves a desk caller's epic assignment, so its epic label widens nothing.
+  cliCreate("desk caller with an epic label into that epic project (no assignment source)", "refused", tpm, target(esw1, "a6"));
+  cliCreate("desk caller into another epic project", "refused", tpm, target(esw2, "a7"));
   cliCreate("(d) Kontor binding naming another seat's workspace", "refused", mislabelled, target(esw2, "a8"));
-  cliCreate("operator-placed unlabelled agent (not a workflow caller)", "created", operator, target(esw2, "a9"));
-  cliCreate("(c) operator with no caller", "created", null, target(esw2, "a10"));
+  cliCreate("unlabelled agent outside desk and epic projects (unclassified, unguarded)", "created", unmarked, target(esw2, "a9"));
+  cliCreate("(c) no caller and no workflow claim (unclassified, unguarded)", "created", null, target(esw2, "a10"));
+  // LSA-B-02 residual: a workflow seat in a misplaced legacy project is held to that project only while its labels remain.
+  cliCreate("legacy-misplaced seat with its labels", "refused", legacy, target(esw2, "a13"));
+  assert.equal(paseo(["agent", "update", legacy.id, "--label", "orchestration=", "--label", "epic=", "--label", "role="]).status, 0);
+  cliCreate("legacy-misplaced seat with its labels removed (unsupported residual, unguarded)", "created", legacy, target(esw2, "a14"));
   {
     const name = "workflow-labelled initial agent with no caller (missing caller)";
     const result = await client.workspaces.create({ agent: { config, cwd: esw2.path, labels: { orchestration: "paseo", workflow: "kontor" } }, source: { kind: "directory", path: dir("targets/a11"), projectId: esw2.projectId } })

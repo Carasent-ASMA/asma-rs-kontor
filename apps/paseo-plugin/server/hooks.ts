@@ -5,7 +5,7 @@ import type {
 } from "@getpaseo/plugin/server";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { deskName, epicProjectKey, JIRA_KEY_PATTERN } from "../shared/session-create";
+import { deskName, epicProjectKey } from "../shared/session-create";
 import { bounded, readAgentLabels, type LabelReadOptions } from "./agent-labels";
 import {
   DEFAULT_CREDENTIAL_TIER,
@@ -184,9 +184,10 @@ function workflowProject(caller: CallerPlacement): boolean {
  *
  * A caller with a Kontor binding is held to that binding, and the binding must
  * name the workspace the caller runs in. Otherwise the caller stays in its own
- * project; a desk lead with a confirmed `epic` key may also place into the one
- * `ESW • <key>` project. The key only selects among epic projects; it never
- * names another project.
+ * project. Nothing widens that: no source the hook can read proves that a desk
+ * caller is assigned to an epic (an `epic` label, a key's syntax or a project's
+ * name is not an assignment), so a desk caller cannot place into an epic project
+ * through a guarded route.
  */
 async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: LabelReadOptions): Promise<PlacementScope | string> {
   const labels = caller.labels;
@@ -197,16 +198,7 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
     const binding = await readPlacementBinding(paseo, labels, options);
     return binding ? { projects: [binding.projectId], directory: binding.directory } : "the seat's placement binding could not be resolved";
   }
-  const projects = [caller.projectId];
-  const epic = caller.labels?.["epic"]?.trim();
-  if (deskName(caller.projectName) !== null && epic && JIRA_KEY_PATTERN.test(epic)) {
-    const listed = await bounded(paseo.projects.list(), options.timeoutMs, options.signal).catch(() => null);
-    const matches = (listed?.projects ?? []).filter(
-      (project) => epicProjectKey(project.projectCustomName ?? project.projectDisplayName) === epic,
-    );
-    if (matches.length === 1) projects.push(matches[0]!.projectId);
-  }
-  return { projects };
+  return { projects: [caller.projectId] };
 }
 
 /**
@@ -218,10 +210,13 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  * held to its own project (see `callerScope`). Removing labels does not remove
  * that scope, and labels alone never widen it. An unreadable caller is refused.
  *
- * With no caller, the request is an operator's unless its initial agent claims
- * workflow work: a Kontor binding on that agent is enforced, and any other
- * claim is refused because it names no caller to scope it. A caller that is
- * neither in a workflow project nor marked is left alone.
+ * With no caller, a Kontor binding on the initial agent is enforced and any
+ * other workflow claim is refused because it names no caller to scope it.
+ *
+ * Unsupported, and left unguarded: a request with no caller and no workflow
+ * claim, and a caller outside any desk or epic project that carries no workflow
+ * label. The host gives no provenance that tells such a request from an
+ * operator's, so it is unclassified, not operator work.
  */
 export async function guardWorkspaceCreate(
   request: WorkspaceCreateRequest,

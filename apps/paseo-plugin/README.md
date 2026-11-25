@@ -1362,7 +1362,7 @@ Evidence checklist:
 | --- | --- |
 | `before("agent.create")` | Adds one stable system-prompt line and the `kontor-observer` MCP server at **observer** authority. A server already named `kontor` is preserved, so Kontor-composed seats are untouched. |
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` from the keys Kontor actually writes (`kontor.seat_binding_id`, `kontor.role_slot_id`, or `kontor.agent-run`), or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`. The key is rewritten on every open, so an old seat never survives a resume. It never blocks the open. |
-| `before("workspace.create")` | Placement guard. Scope comes from the caller the daemon attached to the request (`callerAgentId`, top-level in 0.16.2 or on the initial agent), read back natively: its own workspace and project. A caller in a desk or epic project, or one whose labels or whose initial agent's labels claim workflow work, is held to its own project; a desk lead with a confirmed Jira `epic` key may also place into the one `ESW • <key>` project. A caller with a Kontor binding is held to that binding, which must name the workspace it runs in. Removing labels does not remove scope, and labels alone never widen it. An unreadable caller is refused. With no caller, the request is an operator's unless its initial agent claims workflow work: a Kontor binding on that agent is enforced, and any other claim is refused. Every scope also requires a directory source (no worktree creation) with an explicit `projectId` and an absolute path outside Paseo's own worktree root and, when placement roots are configured, inside one of them. |
+| `before("workspace.create")` | Placement guard. Scope comes from the caller the daemon attached to the request (`callerAgentId`, top-level in 0.16.2 or on the initial agent), read back natively: its own workspace and project. A caller in a desk or epic project, or one whose labels or whose initial agent's labels claim workflow work, is held to its own project. Nothing widens that: no source the hook can read proves a desk caller's assignment to an epic (an `epic` label, a key's syntax or a project's name is not one), so a desk caller cannot place into an epic project through a guarded route. A caller with a Kontor binding is held to that binding, which must name the workspace it runs in. Removing labels does not remove scope, and labels alone never widen it. An unreadable caller is refused. With no caller, a Kontor binding on the initial agent is enforced and any other workflow claim is refused. A request with no caller and no workflow claim, and a caller outside any desk or epic project with no workflow label, are unclassified: the host gives no provenance that tells them from an operator's request, so they are left unguarded, which is an unsupported case, not operator work. Every scope also requires a directory source (no worktree creation) with an explicit `projectId` and an absolute path outside Paseo's own worktree root and, when placement roots are configured, inside one of them. |
 | `on("workspace.created")` | Placement detection. Reads the created workspace and logs one `kontor.placement.detected` line when it is a git project rooted at a linked worktree or a directory under Paseo's own worktree root. It never archives, renames or moves anything. |
 
 The plugin registers the first two hooks unless the operator turns the floor
@@ -1649,10 +1649,12 @@ Before the floor, or `placement.json`, is turned on for the live host:
 - this build is installed and its placement mode line reads back from the
   expected file;
 - the qualification passes at the installed build and Paseo release;
-- every live workflow seat reads back with its own workspace and project, and
-  every seat with a Kontor binding runs in the workspace its
-  `kontor.workspace_id` names: a read-only census finds no exception, or each
-  is resolved first, because its creations are otherwise refused;
+- a read-only census compares every live seat's native placement with its
+  confirmed assignment: every workflow seat reads back with its own workspace
+  and project, every seat with a Kontor binding runs in the workspace its
+  `kontor.workspace_id` names, and legacy-misplaced and unclassified seats are
+  counted separately. A valid project id is not proof of the intended project,
+  and no readback mismatch is not no placement gap;
 - desk and epic projects keep their exact names (`DESK • <name>`,
   `ESW • <KEY>`), and each epic key names one project;
 - the summary helper places into its designated workspace (slice A,
@@ -1778,30 +1780,49 @@ cannot supply that from list omission or recover rows the host omits.
 Placement routes on Paseo 0.16.2 (installed `app.asar` read, and the
 qualification above). The guard runs only where the host runs
 `workspace.create.before`. Every provisioning route emits `workspace.created`,
-so the detector sees them all.
+so the detector sees them all, but it reports only the two kinds below.
 
 | Route | Class | Evidence |
 | --- | --- | --- |
 | `paseo workspace create` (local) from an agent | prevent | The CLI sends `callerAgentId` from `PASEO_AGENT_ID` when that agent is on the target daemon; qualification cases. |
 | `paseo workspace create --isolation worktree` from an agent | prevent | Worktree creation is refused for any workflow scope; qualification case. |
 | `paseo run --new-workspace` from an agent | prevent | Caller and labelled initial agent on one request; qualification case. |
-| `paseo workspace create` / `run --new-workspace` with no caller | operator, allowed; refused when the initial agent claims workflow work | Qualification cases (c) and the missing-caller case. |
+| `paseo workspace create` / `run --new-workspace` with no caller | unclassified, unguarded (unsupported); refused when the initial agent claims workflow work | No caller and no claim looks the same from an operator and from an automated client. Qualification case (c) and the missing-caller case. |
+| A desk caller placing into an epic project (CLI, `run --new-workspace` or SDK with a caller) | refused (blocked capability) | No source the hook can read proves the assignment; the supported paths are below. Qualification case. |
+| A workflow seat in a misplaced legacy project (neither desk nor epic) | held to that project while its labels remain; unguarded once they are removed (unsupported) | The host keeps no label-independent provenance for it. Qualification cases. |
 | SDK `workspaces.create` with a labelled initial agent and no caller | prevent | Refused as a workflow creation with no caller; qualification case. |
-| Plugin New LSA/TPM/ADHOC/RSW and takeover successors | allowed by construction | The session-create service resolves the configured desk or epic project and directory (ASMA-8530 selected config), creates any workspace with no caller (an operator request) and creates the agent inside it. |
+| Plugin New LSA/TPM/ADHOC/RSW and takeover successors | allowed by construction | The session-create service resolves the configured desk or epic project and directory (ASMA-8530 selected config), creates any workspace with no caller and creates the agent inside it. |
 | Summary helper | detect only on this branch; prevent by construction with slice A | Here it creates by `cwd` under the state root, an import with no hook. Slice A creates it inside one designated workspace, with no workspace creation. |
 | Procedural takeover | no workspace creation | Workspace-scoped agent create in the admission's workspace. |
-| MCP `create_workspace` (agent tool) | detect | Calls the provisioning service directly, so `workspace.create.before` never runs. Not driven here: the agent MCP route needs an injected capability token. |
-| MCP `create_agent`, SDK `agents.create` or `paseo run` with only a `cwd` | detect | Imports a workspace for the directory with no before hook; qualification case (a linked worktree is detected). |
+| MCP `create_workspace` (agent tool) | detect | Calls the provisioning service directly, so `workspace.create.before` never runs. Not driven here: the agent MCP route needs an injected capability token. Upstream request: getpaseo/paseo#10302 (open). |
+| MCP `create_agent`, SDK `agents.create` or `paseo run` with only a `cwd` | detect | Imports a workspace for the directory with no before hook; the published hook contract excludes import and lookup. A separate gap from #10302; the missing target and caller fields are discussed in getpaseo/paseo Discussions #8017 and #9979. Qualification case (a linked worktree is detected). |
 | Consultation, committee and advisor agents | as the route they use | They create agents through MCP `create_agent`: inside an existing workspace there is no creation, and with only a `cwd` it is the import route. |
 | `kontord` launches | prevent | A launch's initial agent carries `kontor.*` labels, so its binding is enforced even with no caller (unit tests); not run live, the floor is off. |
-| Desktop app: new workspace, open project | operator, allowed; detect | No caller on the request. |
+| Desktop app: new workspace, open project | unclassified, unguarded; detect | No caller on the request. |
 
-Detection covers two kinds only: a git project rooted at a linked worktree and
-a directory under Paseo's own worktree root. Any other misplacement on a
-detect-only route is unsupported. A caller id is never a label: a
-missing caller is an operator request only when the initial agent claims no
-workflow work, and an unlabelled caller in a desk or epic project is still
-enforced. Closing the detect-only routes needs Paseo to run the hook on them.
+Detection covers exactly two kinds: a git project rooted at a linked worktree
+and a directory under Paseo's own worktree root. Any other misplacement on a
+detect-only or unguarded route is unsupported, so these residuals bound what
+this guard delivers; they do not close the placement problem. A caller id is
+never a label, and an unlabelled caller in a desk or epic project is still
+enforced.
+
+A desk caller (an epic lead in `DESK • ADAM`, for example) cannot create a
+workspace in an epic project through a guarded route while placement is
+enforced. The paths that remain are the session-create service and the
+operator in the app, both of which send no caller, and MCP `create_workspace`,
+which the hook does not see. Guarded desk-to-epic delegation needs an
+authoritative assignment source the hook can read, such as an ASMA-8530 route
+identity that carries the lead's confirmed epic.
+
+What Paseo would need to provide before these routes could be prevented:
+authoritative caller provenance and the resolved target project and workspace
+on every mutating provisioning route, before any project, workspace, worktree
+or agent side effect; a refusal that prevents the container as well as the
+agent (a notification after creation is detection, not prevention); an import
+that registers a new container kept distinct from lookup or reuse of an
+existing workspace; and genuine operator creation preserved, with unknown
+provenance kept explicit.
 
 
 ### Procedural takeover backend on stock Paseo

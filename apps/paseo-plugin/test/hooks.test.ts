@@ -650,7 +650,7 @@ describe("workspace.create hook", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("leaves an unlabelled agent in a project that is neither a desk nor an epic alone", async () => {
+  it("leaves an unlabelled agent in a project that is neither a desk nor an epic unguarded (unclassified)", async () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest({
@@ -715,7 +715,9 @@ describe("workspace.create hook: caller identity and scope (ASMA-8580)", () => {
     );
   });
 
-  it("(c) preserves genuine operator creation: no caller and no workflow claim", async () => {
+  it("(c) keeps genuine operator creation working, and cannot tell a caller-less automated request from it (LSA-B-02 residual)", async () => {
+    // An operator in the app sends no caller and no initial agent; an SDK script with no caller sends the same,
+    // or an initial agent with no workflow claim. Both are unclassified (provenance unknown) and left unguarded.
     const free: Record<string, string>[] = [{}, { "kontor.summary.source": "a", "kontor.summary.job": "j", workflow: "free" }];
     for (const agent of [undefined, ...free.map((labels) => ({ config: { provider: "claude", cwd: "/tmp" }, labels }))]) {
       await expect(
@@ -748,22 +750,41 @@ describe("workspace.create hook: caller identity and scope (ASMA-8580)", () => {
     ).rejects.toThrow("project outside");
   });
 
-  it("lets a desk lead with a confirmed epic place into exactly that epic project", async () => {
-    const lead = (labels: Record<string, string>, projects: typeof ESW | "error" = ESW) => context(labels, { wks_caller: DESK }, { projects });
+  it("never widens a desk caller's scope from its labels: an epic label, its key or a project name is not an assignment (LSA-B-01)", async () => {
+    // The same authoritative desk caller and binding, whatever epic label it carries, gains no epic project.
+    const desk = (labels: Record<string, string>) => context(labels, { wks_caller: DESK }, { projects: ESW });
     const into = (projectId: string) => workspaceRequest({ source: { ...OTHER, projectId } });
-    await expect(guardWorkspaceCreate(into("prj_esw_8507"), lead({ role: "TPM", epic: "ASMA-8507" }), config())).resolves.toBeUndefined();
-    await expect(guardWorkspaceCreate(into("prj_esw_9000"), lead({ role: "TPM", epic: "ASMA-8507" }), config())).rejects.toThrow("project outside");
-    await expect(guardWorkspaceCreate(into("prj_esw_8507"), lead({ role: "TPM", epic: "asma-8507-slug" }), config())).rejects.toThrow("project outside");
-    // F4: a copied task or role slug is never read as placement; only a confirmed epic key selects an epic project.
-    await expect(guardWorkspaceCreate(into("prj_esw_8507"), lead({ role: "TPM", task: "R38_ASMA-8507_review", epicKey: "ASMA-8507" }), config())).rejects.toThrow("project outside");
-    await expect(guardWorkspaceCreate(into("prj_esw_8507"), lead({ role: "TPM", epic: "ASMA-8507" }, "error"), config())).rejects.toThrow("project outside");
-    const twice = [...ESW, { projectId: "prj_esw_8507b", projectDisplayName: "ESW • ASMA-8507" }];
-    await expect(guardWorkspaceCreate(into("prj_esw_8507"), lead({ role: "TPM", epic: "ASMA-8507" }, twice), config())).rejects.toThrow("project outside");
-    const renamed = [{ projectId: "prj_esw_8507", projectDisplayName: "asma-rs-kontor", projectCustomName: "ESW • ASMA-8507" }];
-    await expect(guardWorkspaceCreate(into("prj_esw_8507"), lead({ epic: "ASMA-8507" }, renamed), config())).resolves.toBeUndefined();
-    // Only an `ESW • <key>` project is an epic project; another project carrying the key in its name is not.
-    const lookalike = [{ projectId: "prj_tickets_8507", projectDisplayName: "TICKETS • ASMA-8507" }];
-    await expect(guardWorkspaceCreate(into("prj_tickets_8507"), lead({ role: "TPM", epic: "ASMA-8507" }, lookalike), config())).rejects.toThrow("project outside");
+    const variants: Record<string, string>[] = [
+      { role: "TPM", epic: "ASMA-8507" },
+      { role: "TPM", epic: "ASMA-9000" },
+      { role: "LSA", epic: "ASMA-8507", task: "ASMA-8507", orchestration: "paseo-direct" },
+      // A wrong-role caller in the desk that copies a lead's labels.
+      { role: "SWE", epic: "ASMA-8507", orchestration: "paseo-direct", workflow: "kontor" },
+      {},
+    ];
+    for (const labels of variants) {
+      for (const projectId of ["prj_esw_8507", "prj_esw_9000"]) {
+        await expect(guardWorkspaceCreate(into(projectId), desk(labels), config())).rejects.toThrow("project outside");
+      }
+      await expect(
+        guardWorkspaceCreate(workspaceRequest({ source: { kind: "directory", path: DESK.workspaceDirectory, projectId: "prj_desk" } }), desk(labels), config()),
+      ).resolves.toBeUndefined();
+    }
+  });
+
+  it("leaves a known workflow seat in a misplaced legacy project unguarded once its labels are removed (LSA-B-02 residual)", async () => {
+    // A review seat in a project rooted at its own review worktree: neither a desk nor an epic project.
+    const legacy = { projectId: "prj_legacy", workspaceDirectory: "/Users/test/.cache/asma-8507-review-a/asma-rs-kontor", projectDisplayName: "asma-rs-kontor" };
+    const elsewhere = workspaceRequest({ source: { ...OTHER, projectId: "prj_esw_9000" } });
+    const sameLegacyProject = workspaceRequest({ source: { kind: "directory", path: legacy.workspaceDirectory, projectId: "prj_legacy" } });
+    // While its labels remain it is held to its own (misplaced) project; the guard cannot move it to its intended epic project.
+    await expect(guardWorkspaceCreate(elsewhere, context(paseoDirectLabels({ epic: "ASMA-8507" }), { wks_caller: legacy }), config())).rejects.toThrow("project outside");
+    await expect(guardWorkspaceCreate(sameLegacyProject, context(paseoDirectLabels({ epic: "ASMA-8507" }), { wks_caller: legacy }), config())).resolves.toBeUndefined();
+    // With its labels removed nothing on the host distinguishes it from an unmarked agent: unsupported, not prevented.
+    await expect(guardWorkspaceCreate(elsewhere, context({}, { wks_caller: legacy }), config())).resolves.toBeUndefined();
+    await expect(
+      guardWorkspaceCreate(elsewhere, context({ epic: "", task: "", orchestration: "", workflow: "" }, { wks_caller: legacy }), config()),
+    ).resolves.toBeUndefined();
   });
 
   it("reads a renamed desk by its custom name", async () => {
