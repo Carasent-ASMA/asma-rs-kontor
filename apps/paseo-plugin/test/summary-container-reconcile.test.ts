@@ -279,16 +279,17 @@ describe("summary recovery recording (ASMA-8580 round 2, item 3)", () => {
     ["compact", (value: object) => JSON.stringify(value)],
     ["compact, in another field order", (value: object) => JSON.stringify({ promptHash: (value as { promptHash: string }).promptHash, ...value })],
     ["pretty-printed", (value: object) => JSON.stringify(value, null, 2) + "\n"],
+    ["with an escaped string literal", (value: object) => JSON.stringify(value).replace(`"workerId":"${WORKER[0]}`, `"workerId":"\\u00${WORKER.charCodeAt(0).toString(16)}`)],
   ] as const)(
-    "on --apply keeps the %s original bytes first, then adds only the recovery; an identical repeat changes nothing", async (_name, format) => {
+    "on --apply keeps the %s original bytes exactly in the archive; the record keeps every value and gains only the recovery", async (_name, format) => {
       const h = await held({}, format);
       const applied = await h.record({ applySha256: sha(h.text) });
       expect(applied).toMatchObject({ applied: true, beforeSha256: sha(h.text) });
       const kept = await readFile(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`));
       expect(sha(kept)).toBe(sha(h.text));
+      expect(kept.toString("utf8")).toBe(h.text);
       const after = await readFile(h.file, "utf8");
-      // The exact bytes: the original fields in their own order and values, then only the recovery.
-      expect(after).toBe(JSON.stringify({ ...JSON.parse(h.text), recovery: { disposition: "retire-legacy-create", evidence: EVIDENCE, recordedAt: "2026-11-25T08:00:00Z" } }));
+      // The active record is mutable: it is compared by value, never against a re-serialised copy of the original.
       expect(sha(after)).toBe((applied as { afterSha256: string }).afterSha256);
       const before = JSON.parse(h.text), now = JSON.parse(after);
       expect(Object.keys(now)).toEqual([...Object.keys(before), "recovery"]);
@@ -302,7 +303,8 @@ describe("summary recovery recording (ASMA-8580 round 2, item 3)", () => {
     });
 
   it.each([
-    ["a job that is not creating", { job: { state: "waiting" } }, {}, "only a held creating job"],
+    ["a complete job", { job: { state: "complete" } }, {}, "only a held creating or waiting job"],
+    ["a failed job", { job: { state: "failed" } }, {}, "only a held creating or waiting job"],
     ["a job whose helper reads back", { helper: { agent: { id: WORKER } } }, {}, "reads back on this host"],
     ["blank evidence", {}, { evidence: "  " }, "non-blank evidence"],
     ["another disposition", {}, { disposition: "retry" }, 'only recovery disposition is "retire-legacy-create"'],
@@ -318,6 +320,67 @@ describe("summary recovery recording (ASMA-8580 round 2, item 3)", () => {
     expect(await readFile(join(h.root, NAME), "utf8")).toBe(h.text);
     expect(await readdir(h.jobs)).toEqual([NAME]);
     expect(String(error)).toContain(message);
+  });
+
+  it("accepts a held waiting job whose helper does not read back (R3-1)", async () => {
+    const h = await held({ state: "waiting" });
+    expect(await h.record({ applySha256: sha(h.text) })).toMatchObject({ applied: true });
+    expect(JSON.parse(await readFile(h.file, "utf8"))).toEqual({ ...JSON.parse(h.text), recovery: { disposition: "retire-legacy-create", evidence: EVIDENCE, recordedAt: "2026-11-25T08:00:00Z" } });
+  });
+
+  it.each([
+    ["an unknown field", (value: object) => JSON.stringify({ ...value, note: "kept by nobody" })],
+    ["an unknown placement field", (value: object) => JSON.stringify({ ...value, placement: { workspaceId: "wks_1", projectId: "prj_1", cwd: "/fixture/s", owned: false, extra: 1 } })],
+    ["an array", (value: object) => JSON.stringify([value])],
+    ["text that is not JSON", (value: object) => JSON.stringify(value).slice(0, -1)],
+  ] as const)("refuses unsupported input (%s) rather than discarding any of it, the bytes unchanged", async (_name, format) => {
+    const h = await held({}, format);
+    const error = await h.record({ applySha256: sha(h.text) }).catch((cause: Error) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect(await readFile(h.file, "utf8")).toBe(h.text);
+    expect(await readdir(h.jobs)).toEqual([NAME]);
+  });
+
+  it("serialises concurrent applies to one job: one records its disposition, the other is refused, and the recorded bytes survive (A-05)", async () => {
+    const h = await held();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let reads = 0;
+    const paseo = { agents: { ref: () => ({ refresh: async () => { if (reads++ === 0) await gate; return null; } }) } };
+    const apply = (evidence: string) => recordSummaryRecovery(paseo as never, h.root, { job: NAME, disposition: "retire-legacy-create", evidence, applySha256: sha(h.text), now: () => "2026-11-25T08:00:00Z" });
+    const paused = apply("evidence A");
+    expect(await apply("evidence B")).toMatchObject({ applied: true });
+    const recorded = await readFile(h.file, "utf8");
+    release();
+    const late = await paused.catch((cause: Error) => cause);
+    // The raw effect first: the recorded disposition's bytes are not overwritten.
+    expect(await readFile(h.file, "utf8")).toBe(recorded);
+    expect(JSON.parse(recorded).recovery.evidence).toBe("evidence B");
+    expect(String(late)).toContain("changed while this apply ran");
+    expect(sha(await readFile(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`)))).toBe(sha(h.text));
+    expect((await readdir(h.jobs)).sort()).toEqual([NAME, "superseded"]);
+  });
+
+  it("refuses an apply while another holds the job's lock, and leaves both unchanged", async () => {
+    const h = await held();
+    await writeFile(join(h.jobs, `${NAME}.lock`), "4242\n");
+    const error = await h.record({ applySha256: sha(h.text) }).catch((cause: Error) => cause);
+    // The raw effect first: the job and the other apply's lock are as they were.
+    expect(await readFile(h.file, "utf8")).toBe(h.text);
+    expect(await readFile(join(h.jobs, `${NAME}.lock`), "utf8")).toBe("4242\n");
+    expect((await readdir(h.jobs)).sort()).toEqual([NAME, `${NAME}.lock`]);
+    expect(String(error)).toContain("Another recovery apply holds job");
+  });
+
+  it("releases the lock after an apply and after a refusal inside it", async () => {
+    const h = await held();
+    await mkdir(join(h.jobs, "superseded"));
+    await writeFile(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`), "earlier evidence");
+    await expect(h.record({ applySha256: sha(h.text) })).rejects.toThrow("already holds other evidence");
+    expect((await readdir(h.jobs)).sort()).toEqual([NAME, "superseded"]);
+    await rm(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`));
+    expect(await h.record({ applySha256: sha(h.text) })).toMatchObject({ applied: true });
+    expect((await readdir(h.jobs)).sort()).toEqual([NAME, "superseded"]);
   });
 
   it("holds, and never overwrites, an existing pre-recovery archive with other bytes", async () => {

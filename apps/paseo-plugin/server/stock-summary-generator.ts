@@ -235,13 +235,21 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     const context = [JSON.stringify({ sourceAgentId: agentId, sourceTitle: agent.title, cutoff, historyBoundary, priorSummary }), excerpt];
     const prompt = [SUMMARY_INSTRUCTIONS, ...context].join("\n\n");
     const legacyPromptHash = digest([LEGACY_SUMMARY_INSTRUCTIONS, ...context].join("\n\n"));
-    // An unfinished row under a former key is this boundary's job, never an absent one; a finished one is history. Its
-    // prompt is never this version's, so unless it is retired below, the correlation check holds it before any write.
-    let jobFile = file, found = await readJobFile(file);
-    for (const key of found ? [] : formerKeys) {
-      const former = await readJobFile(join(jobs, `${key}.json`));
-      if (former && (former.job.state === "creating" || former.job.state === "waiting")) { found = former; jobFile = join(jobs, `${key}.json`); break; }
+    // Every unfinished row under a former key is an attempt at this boundary, also beside a current row; a finished one is
+    // history. Each must be qualified before anything is dispatched: its helper reads back archived by its exact id, or it
+    // records a recovery and its helper does not read back. Any other holds the boundary, so no second helper can start.
+    const formers: Array<{ name: string; job: Job; raw: Buffer }> = [];
+    for (const key of formerKeys) {
+      const name = `${key}.json`, former = await readJobFile(join(jobs, name));
+      if (!former || (former.job.state !== "creating" && former.job.state !== "waiting")) continue;
+      const helper = await paseo.agents.ref(former.job.workerId).refresh();
+      if (helper && !(helper.agent.id === former.job.workerId && helper.agent.archivedAt))
+        throw new Error(`Summary helper ${former.job.workerId} of the earlier job ${name} does not read back archived by its exact id and may still be running. That job is held: nothing is resent and no new helper is started until its helper is archived. Capture retained.`);
+      if (!helper && !former.job.recovery)
+        throw new Error(`Summary helper ${former.job.workerId} was requested by an earlier version and may exist on the host although it does not read back. Its job ${name} is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
+      formers.push({ name, ...former });
     }
+    const found = await readJobFile(file);
     let job = found?.job ?? null;
     // A creating job without placement was written by an earlier version, which may already have sent its create with a
     // per-job cwd under this helper's key; an absent helper does not prove that create had no effect. A placed creating job
@@ -249,14 +257,25 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     // never rewritten or re-sent under its key, and it is held. Only native evidence that its create is terminal (the
     // helper reads back archived by its exact id) or a recovery disposition recorded in the job retires it, its bytes
     // kept, for a fresh helper and key. A legacy helper that reads back live keeps the legacy per-job cwd check below.
-    let legacyCreating = false;
-    if (job?.state === "creating" && (!job.placement || job.recovery)) {
+    // A waiting job with a recorded recovery whose helper does not read back is retired the same way.
+    let retired = false;
+    if ((job?.state === "creating" && (!job.placement || job.recovery)) || (job?.state === "waiting" && job.recovery)) {
       const legacy = await paseo.agents.ref(job.workerId).refresh();
       if (!legacy && !job.recovery) throw new Error(`Summary helper ${job.workerId} was requested by an earlier version and may exist on the host although it does not read back. The job is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
-      legacyCreating = legacy ? legacy.agent.id === job.workerId && !!legacy.agent.archivedAt : true;
+      retired = legacy ? legacy.agent.id === job.workerId && !!legacy.agent.archivedAt : true;
     }
     const migrateLegacyFailure = job?.state === "failed" && job.cleaned === true && !job.promptVersion && !!job.clientMessageId && job.promptHash === legacyPromptHash && !job.sections;
-    if (job && !legacyCreating && (!job.clientMessageId || (job.promptHash !== digest(prompt) && !migrateLegacyFailure))) throw new Error("The recorded summary job has no matching prompt correlation. It remains held; nothing was resent.");
+    if (job && !retired && (!job.clientMessageId || (job.promptHash !== digest(prompt) && !migrateLegacyFailure))) throw new Error("The recorded summary job has no matching prompt correlation. It remains held; nothing was resent.");
+    /** Writes `into`, the one job this boundary keeps, naming every qualified earlier attempt, whose exact bytes go first to superseded/. */
+    async function settle(into: Job) {
+      for (const former of formers) {
+        await archiveExactBytes(join(jobs, "superseded"), `${former.job.workerId}.json`, former.raw);
+        if (!into.previousWorkers.includes(former.job.workerId)) into.previousWorkers.push(former.job.workerId);
+      }
+      await writeJob(file, into);
+      for (const former of formers) await unlink(join(jobs, former.name));
+    }
+    if (job && job.state !== "failed" && !retired && formers.length) await settle(job);
     // Closes only the job's own effect, its helper, after the caller wrote a terminal state. The designated workspace is
     // never closed, and a legacy per-job container (no `placement`, even with cleaned=true) is left to the gated reconcile.
     async function cleanup() {
@@ -269,17 +288,16 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     }
     if (job?.state === "complete" && job.sections) { await cleanup(); return { sections: job.sections, cutoff, historyBoundary }; }
     let designated: Awaited<ReturnType<typeof designatedWorkspace>> | null = null;
-    if (!job || job.state === "failed" || legacyCreating) {
+    if (!job || job.state === "failed" || retired) {
       if (job?.state === "failed") await cleanup();
       if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
       designated = await designatedWorkspaceFor(undefined);
       const route = await selectSummaryRoute(paseo, agent.cwd, host);
-      if (job && (migrateLegacyFailure || legacyCreating)) await archiveExactBytes(join(jobs, "superseded"), `${job.workerId}.json`, found!.raw);
+      if (job && (migrateLegacyFailure || retired)) await archiveExactBytes(join(jobs, "superseded"), `${job.workerId}.json`, found!.raw);
       job = { workerId: randomUUID(), state: "creating", previousWorkers: job ? [...job.previousWorkers, job.workerId] : [], clientMessageId: randomUUID(), promptHash: digest(prompt), route, promptVersion: SUMMARY_PROMPT_VERSION,
         placement: { ...designated.placement, owned: false } };
-      await writeJob(file, job);
-      // The former-key row is kept byte for byte under superseded/, so this boundary has one live job.
-      if (jobFile !== file) await unlink(jobFile);
+      // Exactly one replacement: every earlier attempt is kept byte for byte under superseded/ and named in it.
+      await settle(job);
     }
     if (!job.route) throw new Error("The recorded worker has no validated summarizer route. It remains held.");
     const route = job.route;

@@ -30,6 +30,10 @@ async function harness() {
   let result = { status: "idle", lastMessage: JSON.stringify(SECTIONS), error: null, final: null };
   let waits = 0, sends = 0, refuseCreate = false, refuseBeforeEffect = false;
   const archived = new Set<string>();
+  // Helpers an earlier attempt started: they read back by id, running, or archived when also in `archived`.
+  const earlier = new Set<string>();
+  // An earlier helper the host answers for with another agent's record.
+  const earlierAs = new Map<string, string>();
   // The designated workspace; a helper is created only through its workspace-scoped create, never a cwd create.
   const workspace: Record<string, unknown> = { id: PLACEMENT.workspaceId, projectId: PLACEMENT.projectId, workspaceDirectory: PLACEMENT.cwd, archivingAt: null, projectKind: "non_git", workspaceKind: "directory" };
   // The host's creation receipts: one request fingerprint per idempotency key. The same key with another request is refused.
@@ -52,7 +56,8 @@ async function harness() {
     ref: (id: string) => id === SOURCE ? {
       refresh: async () => ({ agent: source }), timeline: { refetch: async (options: unknown) => { historyCalls.push(options); return page; } }, run: forbidden, send: forbidden,
     } : {
-      id, archive: async () => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; }, refresh: async () => workers.has(id) ? { agent: workerAgent(id), project: { projectKey: workerProject } } : null,
+      id, archive: async () => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; }, refresh: async () => workers.has(id) ? { agent: workerAgent(id), project: { projectKey: workerProject } }
+        : earlier.has(id) ? { agent: { id: earlierAs.get(id) ?? id, status: "running", activeTurn: null, labels: {}, archivedAt: archived.has(id) ? "2026-10-30T00:00:00Z" : null }, project: null } : null,
       timeline: { refetch: async () => {
         const options = created.find(item => item.agentId === id)!;
         return { agentId: id, agent: workerAgent(id), epoch: "worker-epoch", error: null, gap: workerGap, staleCursor: false, hasNewer: false, hasOlder: false,
@@ -91,7 +96,7 @@ async function harness() {
   const host = { env: {}, home: join(root, "home"), system: false, stopAt: root };
   const generator = () => stockSummaryGenerator(api as never, root, host, placementFile)!;
   const service = () => createSessionSummaryService(api as never, root, stockSummaryGenerator(api as never, root, host, placementFile));
-  return { root, api, source, workspace, workspaceReads, otherWorkspaces, wrapCreateErrors: (wrap: (error: Error) => Error) => { wrapCreateError = wrap; }, receipts, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
+  return { root, api, source, workspace, workspaceReads, otherWorkspaces, earlier, earlierAs, wrapCreateErrors: (wrap: (error: Error) => Error) => { wrapCreateError = wrap; }, receipts, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
 }
 
 describe("stock summary generator", () => {
@@ -898,14 +903,132 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     for (const error of errors) expect(String(error)).toContain(`Summary helper ${former.job.workerId} was requested by an earlier version`);
   });
 
-  it("holds a former-key waiting row: its helper may still be running", async () => {
+  it("holds a former-key waiting row whose helper does not read back until a recovery is recorded, naming its file (R3-2)", async () => {
     const h = await harness(); omittedEvent(h);
     const former = await formerRow(h, "2d5afed8", "waiting");
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
     expect(h.created).toEqual([]);
     expect(await jobFiles(h)).toEqual([former.name]);
     expect(sha(await readFile(former.file))).toBe(sha(former.text));
-    expect(String(error)).toContain("It remains held; nothing was resent.");
+    expect(String(error)).toContain(`Its job ${former.name} is held`);
+  });
+
+  it("holds every earlier attempt while one is unqualified: a recovered creating row beside a waiting row whose helper runs (A-04)", async () => {
+    const h = await harness(); omittedEvent(h);
+    const a = await formerRow(h, "2d5afed8", "creating", h.source.model, RECOVERY);
+    const b = await formerRow(h, "72b054e2", "waiting");
+    h.earlier.add(b.job.workerId);
+    const errors = [await h.generator().generate(SOURCE).catch((cause: Error) => cause), await h.generator().generate(SOURCE).catch((cause: Error) => cause)];
+    expect(h.created).toEqual([]);
+    expect((await jobFiles(h)).sort()).toEqual([a.name, b.name].sort());
+    expect(sha(await readFile(a.file))).toBe(sha(a.text));
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(await readdir(a.jobs)).not.toContain("superseded");
+    for (const error of errors) expect(String(error)).toContain(`Summary helper ${b.job.workerId} of the earlier job ${b.name} does not read back archived by its exact id`);
+  });
+
+  it("holds two producers' creating rows at one boundary when only one is recovered (AUD-R3-01)", async () => {
+    const h = await harness(); omittedEvent(h);
+    const a = await formerRow(h, "2d5afed8", "creating", h.source.model, RECOVERY);
+    const b = await formerRow(h, "72b054e2", "creating");
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h.created).toEqual([]);
+    expect((await jobFiles(h)).sort()).toEqual([a.name, b.name].sort());
+    expect(sha(await readFile(a.file))).toBe(sha(a.text));
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(String(error)).toContain(`Its job ${b.name} is held`);
+  });
+
+  it("still inspects a former row beside an existing current-key row: no create is resent while its helper runs", async () => {
+    const h = await harness(); omittedEvent(h); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const current = await jobOf(h);
+    const currentText = await readFile(current.file, "utf8");
+    const b = await formerRow(h, "72b054e2", "waiting");
+    h.earlier.add(b.job.workerId);
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h.created).toEqual([]);
+    expect(await readFile(current.file, "utf8")).toBe(currentText);
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(String(error)).toContain(`of the earlier job ${b.name} does not read back archived by its exact id`);
+  });
+
+  it("once every earlier attempt is qualified, makes exactly one replacement and keeps every original byte for byte", async () => {
+    const h = await harness(); omittedEvent(h);
+    const a = await formerRow(h, "2d5afed8", "creating", h.source.model, RECOVERY);
+    const b = await formerRow(h, "72b054e2", "waiting");
+    h.earlier.add(b.job.workerId); h.archived.add(b.job.workerId);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const names = await jobFiles(h);
+    expect(names).toHaveLength(1);
+    expect(names).not.toContain(a.name);
+    expect(names).not.toContain(b.name);
+    const fresh = JSON.parse(await readFile(join(a.jobs, names[0]!), "utf8"));
+    expect(h.created.map(item => item.idempotencyKey)).toEqual([`kontor-summary:${fresh.workerId}`]);
+    expect(fresh.previousWorkers).toEqual([a.job.workerId, b.job.workerId]);
+    expect(sha(await readFile(join(a.jobs, "superseded", `${a.job.workerId}.json`)))).toBe(sha(a.text));
+    expect(sha(await readFile(join(a.jobs, "superseded", `${b.job.workerId}.json`)))).toBe(sha(b.text));
+  });
+
+  it("retires qualified earlier attempts beside a current row into it, with no new helper", async () => {
+    const h = await harness(); omittedEvent(h);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const current = await jobOf(h);
+    const b = await formerRow(h, "72b054e2", "waiting");
+    h.earlier.add(b.job.workerId); h.archived.add(b.job.workerId);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(await jobFiles(h)).toEqual([basename(current.file)]);
+    expect(JSON.parse(await readFile(current.file, "utf8")).previousWorkers).toEqual([b.job.workerId]);
+    expect(sha(await readFile(join(b.jobs, "superseded", `${b.job.workerId}.json`)))).toBe(sha(b.text));
+    // A replay after a stop between writing the job and removing the row names the attempt once.
+    await writeFile(b.file, b.text);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(await jobFiles(h)).toEqual([basename(current.file)]);
+    expect(JSON.parse(await readFile(current.file, "utf8")).previousWorkers).toEqual([b.job.workerId]);
+  });
+
+  it("holds an earlier attempt whose helper reads back archived under another agent's id", async () => {
+    const h = await harness(); omittedEvent(h);
+    const b = await formerRow(h, "72b054e2", "waiting");
+    h.earlier.add(b.job.workerId); h.archived.add(b.job.workerId); h.earlierAs.set(b.job.workerId, randomUUID());
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h.created).toEqual([]);
+    expect(await jobFiles(h)).toEqual([b.name]);
+    expect(sha(await readFile(b.file))).toBe(sha(b.text));
+    expect(String(error)).toContain(`of the earlier job ${b.name}`);
+  });
+
+  it("gives a former-key waiting row an exit: its helper archived, or a recorded recovery when the helper is gone (R3-1)", async () => {
+    const h = await harness(); omittedEvent(h);
+    const b = await formerRow(h, "2d5afed8", "waiting");
+    h.earlier.add(b.job.workerId); h.archived.add(b.job.workerId);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(await jobFiles(h)).not.toContain(b.name);
+    expect(sha(await readFile(join(b.jobs, "superseded", `${b.job.workerId}.json`)))).toBe(sha(b.text));
+
+    const h2 = await harness(); omittedEvent(h2);
+    const gone = await formerRow(h2, "72b054e2", "waiting");
+    await expect(h2.generator().generate(SOURCE)).rejects.toThrow(`Its job ${gone.name} is held`);
+    await recordSummaryRecovery(h2.api as never, h2.root, { job: gone.name, disposition: "retire-legacy-create", evidence: RECOVERY.evidence, applySha256: sha(gone.text) });
+    expect((await h2.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h2.created).toHaveLength(1);
+    expect(await jobFiles(h2)).not.toContain(gone.name);
+    expect(sha(await readFile(join(gone.jobs, "superseded", `${gone.job.workerId}.before-recovery.json`)))).toBe(sha(gone.text));
+  });
+
+  it("retires a current-key waiting job whose helper is gone once a recovery is recorded, for one fresh helper", async () => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const { jobs, file, job } = await jobOf(h);
+    const waiting = JSON.stringify({ ...job, state: "waiting", recovery: RECOVERY });
+    await writeFile(file, waiting);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const fresh = (await jobOf(h)).job;
+    expect(h.created.map(item => item.idempotencyKey)).toEqual([`kontor-summary:${fresh.workerId}`]);
+    expect(fresh.previousWorkers).toEqual([job.workerId]);
+    expect(await readFile(join(jobs, "superseded", `${job.workerId}.json`), "utf8")).toBe(waiting);
   });
 
   it("retires a former-key creating row on its recorded recovery: one live row, its exact bytes kept, one fresh helper and key", async () => {
@@ -1045,6 +1168,15 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect(h2.created).toEqual([]);
     expect(await jobFiles(h2)).toEqual([]);
     expect(String(error)).toContain(`The summary workspace ${PLACEMENT.workspaceId} has another active workspace beneath ${PLACEMENT.cwd}`);
+  });
+
+  it("refuses a dot-prefixed checkout directory beneath the designated one: ..checkout is a name, not a parent (AUD-R3-04)", async () => {
+    const h = await harness();
+    h.otherWorkspaces.push({ id: "wks_dot", workspaceDirectory: `${PLACEMENT.cwd}/..checkout`, archivingAt: null });
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h.created).toEqual([]);
+    expect(await jobFiles(h)).toEqual([]);
+    expect(String(error)).toContain(`has another active workspace beneath ${PLACEMENT.cwd}`);
   });
 });
 

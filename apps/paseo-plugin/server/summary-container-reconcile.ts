@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, readdir, readFile, rename } from "node:fs/promises";
+import { open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { z } from "zod";
 import type { PaseoApi } from "@getpaseo/client";
@@ -47,7 +47,7 @@ async function savedFor(root: string, jobsDir: string, jobFile: string, job: Job
 }
 
 /** The runner's only accepted endpoint: a decimal port in 1..65535 on loopback, normalised for the URL and `--host`. */
-export const RECONCILE_USAGE = "Usage: bun scripts/summary-container-reconcile.ts <daemon-port> [summary-state-root], or <daemon-port> <summary-state-root> record-recovery <job-file> retire-legacy-create <evidence> [--apply <before-sha256 from the dry run>]; the port is a decimal integer from 1 to 65535.";
+export const RECONCILE_USAGE = "Usage: bun scripts/summary-container-reconcile.ts <daemon-port> [summary-state-root], or <daemon-port> <summary-state-root> record-recovery <job-file> retire-legacy-create <evidence> [--apply <before-sha256 from the dry run>]; the port is a decimal integer from 1 to 65535. For a job with a placement, the evidence must show that its keyed create is terminal (the installer's receipt triage).";
 export function reconcileEndpoint(port: string | undefined): { url: string; host: string } {
   const value = /^[1-9][0-9]{0,4}$/.test(port ?? "") ? Number(port) : 0;
   if (value < 1 || value > 65535) throw new Error(RECONCILE_USAGE);
@@ -125,28 +125,36 @@ export async function reconcileSummaryContainers(paseo: PaseoApi, root: string, 
 
 const sha256 = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
+/** The recovery operands that need no host or file: checked by the runner before any client exists, and again here. */
+export function recoveryOperands(input: { job?: string; disposition?: string; evidence?: string }) {
+  const job = input.job ?? "", evidence = (input.evidence ?? "").trim();
+  if (!/^[a-f0-9]{64}\.json$/.test(job)) throw new Error("Name one job file in generation-jobs: 64 hexadecimal characters and .json. Nothing was changed.");
+  if (input.disposition !== "retire-legacy-create") throw new Error('The only recovery disposition is "retire-legacy-create". Nothing was changed.');
+  if (!evidence) throw new Error("A recovery needs a non-blank evidence reference. Nothing was changed.");
+  return { job, disposition: input.disposition, evidence };
+}
+
 /**
  * Record an operator's recovery disposition on one held summary job, the installer's supported route instead of a hand
  * edit. It is a dry run unless `applySha256` names the bytes its dry run reviewed; other bytes stop the job unchanged.
- * Only a `creating` job whose helper does not read back by its exact id is
- * accepted: the job the generator holds (legacy, former-key, or a create the host could not confirm). Before anything
- * changes, the job's exact bytes are kept once at `superseded/<worker id>.before-recovery.json`; then only
- * `recovery: { disposition, evidence, recordedAt }` is added, every other field as it was, by an atomic replace. The
- * same disposition and evidence again is a no-op. It never deletes a job, resends, or touches the host; the host
- * receipt behind the evidence is the installer's own triage, which this does not read.
+ * Only a `creating` or `waiting` job whose helper does not read back by its exact id is accepted: the job the generator
+ * holds (legacy, former-key, or a create the host could not confirm). For a job with a placement the evidence must show
+ * that its keyed create is terminal; the host receipt behind it is the installer's own triage, which this does not read.
+ * An apply holds `<job>.lock`, created exclusively, from its final read to its replace, so concurrent applies to one job
+ * are serialised: inside the lock the job must still be exactly the reviewed bytes, which carry no recovery. The exact
+ * bytes are kept once at `superseded/<worker id>.before-recovery.json`; then the record, with every value it had and only
+ * `recovery: { disposition, evidence, recordedAt }` added, replaces it atomically. The same disposition and evidence again
+ * is a no-op. It never deletes a job, resends, or touches the host beyond reading the helper.
  */
 export async function recordSummaryRecovery(paseo: Pick<PaseoApi, "agents">, root: string,
   input: { job: string; disposition: string; evidence: string; applySha256?: string; now?: () => string }) {
-  if (!/^[a-f0-9]{64}\.json$/.test(input.job)) throw new Error("Name one job file in generation-jobs: 64 hexadecimal characters and .json. Nothing was changed.");
-  if (input.disposition !== "retire-legacy-create") throw new Error('The only recovery disposition is "retire-legacy-create". Nothing was changed.');
-  const evidence = input.evidence.trim();
-  if (!evidence) throw new Error("A recovery needs a non-blank evidence reference. Nothing was changed.");
+  const { evidence } = recoveryOperands(input);
   const jobsDir = join(root, "generation-jobs"), file = join(jobsDir, input.job);
   const raw = await readFile(file);
   const record = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
   const job = summaryJobSchema.parse(record);
   const plan = { job: input.job, workerId: job.workerId, beforeSha256: sha256(raw), archive: `superseded/${job.workerId}.before-recovery.json` };
-  if (job.state !== "creating") throw new Error(`Job ${input.job} is ${job.state}; only a held creating job takes a recovery. Nothing was changed.`);
+  if (job.state !== "creating" && job.state !== "waiting") throw new Error(`Job ${input.job} is ${job.state}; only a held creating or waiting job takes a recovery. Nothing was changed.`);
   if (job.recovery) {
     if (job.recovery.disposition === input.disposition && job.recovery.evidence === evidence) return { ...plan, recovery: job.recovery, applied: false, unchanged: true };
     throw new Error(`Job ${input.job} already records another recovery. It is kept unchanged.`);
@@ -156,10 +164,20 @@ export async function recordSummaryRecovery(paseo: Pick<PaseoApi, "agents">, roo
   const next = JSON.stringify({ ...record, recovery });
   if (input.applySha256 === undefined) return { ...plan, recovery, applied: false, unchanged: false };
   if (input.applySha256 !== plan.beforeSha256) throw new Error(`Job ${input.job} is not the bytes its dry run reviewed (now ${plan.beforeSha256}). Nothing was changed; dry-run it again.`);
-  await archiveExactBytes(join(jobsDir, "superseded"), `${job.workerId}.before-recovery.json`, raw);
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, "wx", 0o600);
-  try { await handle.writeFile(next); await handle.sync(); } finally { await handle.close(); }
-  await rename(temporary, file);
+  const lockFile = `${file}.lock`;
+  const lock = await open(lockFile, "wx", 0o600).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new Error(`Another recovery apply holds job ${input.job} (${basename(lockFile)}). Nothing was changed; if no apply is running, remove that lock and dry-run again.`);
+    throw error;
+  });
+  try {
+    await lock.writeFile(`${process.pid}\n`);
+    const now = await readFile(file);
+    if (sha256(now) !== input.applySha256) throw new Error(`Job ${input.job} changed while this apply ran (now ${sha256(now)}). Nothing was changed; dry-run it again.`);
+    await archiveExactBytes(join(jobsDir, "superseded"), `${job.workerId}.before-recovery.json`, raw);
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(next); await handle.sync(); } finally { await handle.close(); }
+    await rename(temporary, file);
+  } finally { await lock.close(); await unlink(lockFile); }
   return { ...plan, recovery, applied: true, unchanged: false, afterSha256: sha256(next) };
 }
