@@ -1644,8 +1644,13 @@ Activation, with the floor off:
 `scripts/placement-qualification.mjs` runs each route before (absent), after
 (on) and on rollback (off) against a disposable daemon in a temporary home on a
 free port, with synthetic desk and epic projects and agents that never get a
-prompt. It archives every agent and workspace it made, stops the daemon and
-removes the home.
+prompt. With placement on, it also drives the stock summary helper's creation
+call for two jobs, with the generator's own fields and per-job `cwd` but no
+prompt, so no model turn runs. Each job must still be created; the project and
+workspace each one adds are recorded as the open summary-route gap below, not
+as correct placement. It records the candidate head and base, the installed
+plugin and the Paseo release, archives every agent and workspace it made, stops
+the daemon and removes the home.
 
 Before the floor, or `placement.json`, is turned on for the live host:
 
@@ -1660,9 +1665,19 @@ Before the floor, or `placement.json`, is turned on for the live host:
   and no readback mismatch is not no placement gap;
 - desk and epic projects keep their exact names (`DESK • <name>`,
   `ESW • <KEY>`), and each epic key names one project;
-- the summary helper places into its designated workspace (slice A,
-  `summary.json` bound), because its per-job import route is not guarded;
+- the summary-route gap `ASMA-8580-summary-placement-pending` is recorded as
+  open: the stock summary helper creates each job by `cwd` import, a route this
+  build neither guards nor detects, so summary jobs can keep adding one project
+  and one workspace each while placement is enforced. `placement.json` may be
+  turned on without a summary-placement fix only with the floor off, after the
+  qualification above passes at the installed build (including its summary
+  case) and the census and its dispositions are complete. Only a separately
+  installed and verified summary-placement fix, with repeated summary jobs
+  adding no project and no per-job workspace, closes the gap;
 - the detect-only routes below are accepted as residuals.
+
+Turning `placement.json` on does not stop all unwanted workspace creation: it
+prevents only the routes marked prevent below.
 
 The floor's seat hooks have their own conditions, which this switch does not
 cover. Turning the floor on with `placement.json` absent also enforces
@@ -1795,7 +1810,7 @@ so the detector sees them all, but it reports only the two kinds below.
 | A workflow seat in a misplaced legacy project (neither desk nor epic) | held to that project while a workflow claim remains on the caller or the requested initial agent; unguarded only when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies (unsupported) | The host keeps no label-independent provenance for it. Qualification cases. |
 | SDK `workspaces.create` with a labelled initial agent and no caller | prevent | Refused as a workflow creation with no caller; qualification case. |
 | Plugin New LSA/TPM/ADHOC/RSW and takeover successors | allowed by construction | The session-create service resolves the configured desk or epic project and directory (ASMA-8530 selected config), creates any workspace with no caller and creates the agent inside it. |
-| Summary helper | detect only on this branch; prevent by construction with slice A | Here it creates by `cwd` under the state root, an import with no hook. Slice A creates it inside one designated workspace, with no workspace creation. |
+| Summary helper | open gap (`ASMA-8580-summary-placement-pending`): unguarded and not detected | It creates each job by `cwd` under the plugin state root, an import with no before hook, and neither detected kind covers that directory. Each job can add one project and one workspace while placement is enforced; qualification cases. A separate summary-placement fix is needed. |
 | Procedural takeover | no workspace creation | Workspace-scoped agent create in the admission's workspace. |
 | MCP `create_workspace` (agent tool) | detect | Calls the provisioning service directly, so `workspace.create.before` never runs. Not driven here: the agent MCP route needs an injected capability token. Upstream request: getpaseo/paseo#10302 (open). |
 | MCP `create_agent`, SDK `agents.create` or `paseo run` with only a `cwd` | detect | Imports a workspace for the directory with no before hook; the published hook contract excludes import and lookup. A separate gap from #10302; the missing target and caller fields are discussed in getpaseo/paseo Discussions #8017 and #9979. Qualification case (a linked worktree is detected). |

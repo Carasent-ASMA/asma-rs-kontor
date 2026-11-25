@@ -1,8 +1,10 @@
 // Placement qualification on a disposable Paseo daemon. Never uses ~/.paseo or port 6767.
 // It starts a daemon in a temporary home, installs this plugin there with floor.json off, creates synthetic
 // desk and epic projects and agents (no prompt, so no turn), and runs each creation route with placement.json
-// absent (before), on (after) and off (rollback). Every agent and workspace it made is archived and read back,
-// then the daemon is stopped and the home and fixtures are removed.
+// absent (before), on (after) and off (rollback). With placement on, it also drives the stock summary helper's
+// creation call twice (slice A absent): each job must still be created, and the project and workspace it adds are
+// recorded as the open residual ASMA-8580-summary-placement-pending, not as correct placement. Every agent and
+// workspace it made is archived and read back, then the daemon is stopped and the home and fixtures are removed.
 //   node scripts/placement-qualification.mjs <report.json>
 import { createPaseoClient } from "@getpaseo/client";
 import assert from "node:assert/strict";
@@ -28,7 +30,12 @@ const paseo = (args, env = {}) => {
   const run = spawnSync("paseo", [...args, "--home", home], { env: { ...baseEnv, ...env }, encoding: "utf8" });
   return { status: run.status, stdout: run.stdout.trim(), stderr: run.stderr.trim() };
 };
-const report = { paseo: null, port, checks: [], detections: [], modes: [], cleanup: null };
+const git = (...args) => spawnSync("git", ["-C", pluginDir, ...args], { encoding: "utf8" }).stdout.trim();
+const report = {
+  paseo: null, port,
+  candidate: { head: git("rev-parse", "HEAD"), base: git("merge-base", "HEAD", "origin/master"), dirty: git("status", "--porcelain", "--", ".").split("\n").filter(Boolean) },
+  installed: null, checks: [], detections: [], summaryResidual: [], modes: [], cleanup: null,
+};
 const made = { workspaces: new Set(), agents: new Set() };
 let client;
 
@@ -65,7 +72,8 @@ try {
   const installed = paseo(["plugin", "install", pluginDir, "--json"]);
   assert.equal(installed.status, 0, installed.stderr.slice(0, 500));
   const plugins = JSON.parse(paseo(["plugin", "ls", "--json"]).stdout);
-  assert.equal(plugins.find((p) => p.id === "kontor")?.status, "running");
+  report.installed = plugins.find((p) => p.id === "kontor") ?? null;
+  assert.equal(report.installed?.status, "running");
   // The worker must read the isolated home's switches before any case relies on them.
   const startLines = pluginLines();
   assert.ok(startLines.some((l) => l.event === "kontor.floor.mode" && l.file === join(switches, "floor.json") && l.floor === "disabled"), JSON.stringify(startLines));
@@ -150,9 +158,37 @@ try {
     if (read?.agent.workspaceId) made.workspaces.add(read.agent.workspaceId);
     check("agent create with cwd only at a linked worktree (import, no hook)", "sdk agents.create cwd", "created", read?.agent.workspaceId ? "created" : "error", { workspaceId: read?.agent.workspaceId ?? null });
   }
+  // Stock summary helper, slice A absent: the generator's own create fields and per-job cwd under the summary state
+  // root, without the prompt and output schema, so no model turn runs. The import has no before hook, so placement
+  // neither refuses nor places it; each job adds a project and a workspace (the open residual).
+  const live = async () => {
+    const workspaces = (await client.workspaces.list({ includeBackground: true, page: { limit: 200 } })).entries.filter((w) => !w.archivingAt);
+    return { projects: ((await client.projects.list()).projects ?? []).length, workspaces: workspaces.length };
+  };
+  const jobs = join(home, "plugin-state", "kontor", "session-summaries-v1", "generation-jobs");
+  for (const job of [1, 2]) {
+    const before = await live();
+    const workerId = randomUUID(), cwd = join(jobs, workerId);
+    mkdirSync(cwd, { recursive: true, mode: 0o700 });
+    const result = await client.agents.create({
+      agentId: workerId, clientMessageId: randomUUID(), idempotencyKey: `kontor-summary:${workerId}`, cwd,
+      title: `Summary · qualification source ${job}`, config,
+      labels: { "kontor.summary.source": swe.id, "kontor.summary.job": `qualification-${job}` },
+    }).then((created) => (made.agents.add(created.id), { outcome: "created" }), (e) => ({ outcome: /Kontor workspace guard refused/.test(String(e?.message)) ? "refused" : "error", message: String(e?.message ?? e).slice(0, 300) }));
+    const read = result.outcome === "created" ? await client.agents.ref(workerId).refresh() : null;
+    const workspace = read?.agent.workspaceId ? await client.workspaces.ref(read.agent.workspaceId).refresh() : null;
+    if (workspace) made.workspaces.add(workspace.id);
+    const after = await live();
+    const residual = { job, workerId, workspaceId: workspace?.id ?? null, projectId: workspace?.projectId ?? null, workspaceDirectory: workspace?.workspaceDirectory ?? null, before, after, added: { projects: after.projects - before.projects, workspaces: after.workspaces - before.workspaces } };
+    report.summaryResidual.push(residual);
+    check(`stock summary helper job ${job} with placement enforced (slice A absent)`, "sdk agents.create cwd (summary helper import)", "created", result.outcome, residual);
+  }
   await new Promise((done) => setTimeout(done, 1500));
   report.detections = pluginLines().filter((l) => l.event === "kontor.placement.detected");
   assert.ok(report.detections.some((l) => l.kind === "project-at-linked-worktree" && resolve(l.projectRootPath) === resolve(linked)), JSON.stringify(report.detections));
+  // The detector covers two kinds only; a summary job's container is neither, so it is not detected.
+  const helperWorkspaces = new Set(report.summaryResidual.map((r) => r.workspaceId));
+  check("summary helper containers are not detected", "workspace.created detector", "not-detected", report.detections.some((l) => helperWorkspaces.has(l.workspaceId)) ? "detected" : "not-detected", { workspaces: [...helperWorkspaces] });
 
   placement("off");
   cliCreate("rollback: placement off lets the misplacement through again", "created", swe, target(esw2, "rollback"));
@@ -173,4 +209,4 @@ try {
   report.cleanup = cleanup;
   writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
 }
-console.log(JSON.stringify({ checks: report.checks.length, passed: report.checks.filter((c) => c.outcome === c.expected).length, detections: report.detections.length }));
+console.log(JSON.stringify({ checks: report.checks.length, passed: report.checks.filter((c) => c.outcome === c.expected).length, detections: report.detections.length, summaryResidual: report.summaryResidual.map((r) => r.added) }));
