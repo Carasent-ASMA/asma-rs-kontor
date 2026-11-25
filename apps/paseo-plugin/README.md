@@ -1483,8 +1483,10 @@ apps/paseo-plugin/scripts/closure-suite.sh
 It starts a disposable daemon home on a free loopback port with
 `KONTOR_PLUGIN_MCP=off`, installs the plugin from this directory, proves the
 native session subscription and complete page walk against that daemon, proves
-the guard and the interactive path, removes the plugin, and proves the refused
-create succeeds again. No `kontord` process or Kontor credential is present.
+the guard and the interactive path, requires the guard to refuse
+`paseo workspace create` and `paseo run --new-workspace` from a labelled seat's
+environment (the suite fails if either creates a workspace), removes the
+plugin, and proves the refused create succeeds again. No `kontord` process or Kontor credential is present.
 
 ### Running without kontord
 
