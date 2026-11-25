@@ -1372,8 +1372,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const h = await harness();
     const { jobs, file, job, text } = await unansweredAttempt(h);
     h.workerState.set(job.workerId, before); h.onHistory.set(job.workerId, after);
+    const waits = h.counts().waits;
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
     expect(h.created).toHaveLength(1);
+    // The attempt keeps its existing path, which waits on that helper for its result.
+    expect(h.counts().waits).toBe(waits + 1);
     // A closed readback before the history read is recorded, its original kept; nothing is retired.
     const closedFirst = before.status === "closed";
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(closedFirst ? observed(JSON.parse(text)) : JSON.parse(text));
@@ -1476,12 +1479,13 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const h = await harness();
     const { jobs, file, job, text } = await unansweredAttempt(h);
     h.workerState.set(job.workerId, failedClose);
-    const waits = h.counts().waits;
+    const waits = h.counts().waits, reads = h.workspaceReads.length;
     const errors = await twice(h);
     // The unsafe effects first: no replacement, no wait on that helper, the job's bytes as they were (an idle readback
     // records nothing), nothing kept aside.
     expect(h.created).toHaveLength(1);
     expect(h.counts().waits).toBe(waits);
+    expect(h.workspaceReads).toHaveLength(reads);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await superseded(jobs)).toEqual([]);
     for (const error of errors) expect(String(error)).toContain(`Summary helper ${job.workerId} reads back archived with this job's prompt and no reply, but not closed`);
@@ -1493,9 +1497,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const { jobs, file, job } = await jobOf(h);
     const text = await readFile(file, "utf8");
     h.archived.add(job.workerId); h.silent.add(job.workerId); h.workerState.set(job.workerId, failedClose);
+    const reads = h.workspaceReads.length;
     const errors = await twice(h);
     expect(h.created).toHaveLength(1);
     expect(h.counts().waits).toBe(0);
+    expect(h.workspaceReads).toHaveLength(reads);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await superseded(jobs)).toEqual([]);
     for (const error of errors) expect(String(error)).toContain("but not closed");
@@ -1507,6 +1513,7 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     h.earlier.add(b.job.workerId); h.archived.add(b.job.workerId); h.earlierState.set(b.job.workerId, failedClose);
     const errors = await twice(h);
     expect(h.created).toEqual([]);
+    expect(h.workspaceReads).toEqual([]);
     expect(await jobFiles(h)).toEqual([b.name]);
     expect(sha(await readFile(b.file))).toBe(sha(b.text));
     expect(await readdir(b.jobs)).not.toContain("superseded");
@@ -1520,8 +1527,10 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     delete job.placement; await writeFile(file, JSON.stringify(job));
     Object.assign(h.created[0]!, { cwd: join(jobs, job.workerId), workspaceId: "wks_legacy" });
     h.archived.add(job.workerId); h.silent.add(job.workerId); h.workerState.set(job.workerId, failedClose);
+    const reads = h.workspaceReads.length;
     const errors = await twice(h);
     expect(h.created).toHaveLength(1);
+    expect(h.workspaceReads).toHaveLength(reads);
     // The existing read path may record the helper's session id; the job keeps its helper and state and records no readback.
     const after = JSON.parse(await readFile(file, "utf8"));
     expect(after).toMatchObject({ workerId: job.workerId, state: "creating", previousWorkers: [] });
@@ -1564,8 +1573,10 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     await writeFile(file, JSON.stringify({ ...recorded, terminal: { ...recorded.terminal, ...drift } }));
     const stale = await readFile(file, "utf8");
     h.workerState.set(job.workerId, { status });
+    const reads = h.workspaceReads.length;
     const errors = await twice(h);
     expect(h.created).toHaveLength(1);
+    expect(h.workspaceReads).toHaveLength(reads);
     expect(await readFile(file, "utf8")).toBe(stale);
     expect(await superseded(jobs)).toEqual([]);
     for (const error of errors) expect(String(error)).toContain("but not closed");
@@ -1576,11 +1587,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const { jobs, file, text } = await unansweredAttempt(h);
     await writeFile(`${file}.lock`, "4242\n");
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
-    expect(String(error)).toContain(`Another write holds the summary job ${basename(file)}`);
     expect(h.created).toHaveLength(1);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await superseded(jobs)).toEqual([]);
     expect(await readFile(`${file}.lock`, "utf8")).toBe("4242\n");
+    expect(String(error)).toContain(`Another write holds the summary job ${basename(file)}`);
     await rm(`${file}.lock`);
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(2);
@@ -1676,6 +1687,18 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect(String(error)).toContain(reason);
   });
 
+  it("R5-01: a closed readback with no provider session is not recorded for a job that records none either", async () => {
+    const h = await harness();
+    const { jobs, file, job, text } = await lostCreateClosed(h);
+    expect(job).not.toHaveProperty("workerSessionId");
+    h.workerState.set(job.workerId, { status: "closed", persistence: null });
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h.created).toHaveLength(1);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(await superseded(jobs)).toEqual([]);
+    expect(error).toBeInstanceOf(Error);
+  });
+
   it("R5-01: a closed readback already recorded is not written again: a held job lock does not stop the retirement", async () => {
     const h = await harness();
     const { jobs, file, job, text } = await unansweredAttempt(h);
@@ -1708,11 +1731,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const other = JSON.stringify({ ...JSON.parse(text), recovery: RECOVERY });
     onFirstRead(h, job.workerId, () => writeFile(file, other));
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
-    expect(String(error)).toContain(`The summary job ${basename(file)} changed while it was read`);
     expect(h.created).toHaveLength(1);
     expect(await readFile(file, "utf8")).toBe(other);
     expect(await superseded(jobs)).toEqual([]);
     expect(await readdir(jobs)).not.toContain(`${basename(file)}.lock`);
+    expect(String(error)).toContain(`The summary job ${basename(file)} changed while it was read`);
   });
 
   it.each(["the job's bytes", "its helper's readback"])("R5-01: when %s changes before the retirement, nothing is retired or started", async what => {
@@ -1724,10 +1747,10 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
       else h.workerState.set(job.workerId, { status: "running", archivedAt: null });
     });
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
-    expect(String(error)).toContain(`The summary attempt ${basename(file)} changed while this summary was prepared`);
     expect(h.created).toHaveLength(1);
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(what === "the job's bytes" ? JSON.parse(other) : observed(JSON.parse(text)));
     expect(await superseded(jobs)).toEqual([`${job.workerId}.before-terminal.json`]);
+    expect(String(error)).toContain(`The summary attempt ${basename(file)} changed while this summary was prepared`);
   });
 
   it("R5-01: a legacy creating job whose helper is unarchived before the retirement is not retired", async () => {
@@ -1739,10 +1762,10 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     h.archived.add(job.workerId); h.workerState.set(job.workerId, { status: "closed" });
     onPlacementRead(h, async () => { h.workerState.set(job.workerId, { status: "running", archivedAt: null }); });
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
-    expect(String(error)).toContain("changed while this summary was prepared");
     expect(h.created).toHaveLength(1);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(await superseded(jobs)).toEqual([]);
+    expect(String(error)).toContain("changed while this summary was prepared");
   });
 
   it("R5-02: a recovered earlier attempt whose helper reads back before the retirement holds the replacement", async () => {
@@ -1751,11 +1774,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const b = await formerRow(h, "72b054e2", "waiting", h.source.model, RECOVERY);
     onPlacementRead(h, async () => { h.earlier.add(b.job.workerId); });
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
-    expect(String(error)).toContain(`The summary attempt ${b.name} changed while this summary was prepared`);
     expect(h.created).toHaveLength(1);
     expect(sha(await readFile(b.file))).toBe(sha(b.text));
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(observed(JSON.parse(text)));
     expect(await superseded(jobs)).toEqual([`${job.workerId}.before-terminal.json`]);
+    expect(String(error)).toContain(`The summary attempt ${b.name} changed while this summary was prepared`);
   });
 
   it("R5-01: an earlier attempt changed before it is folded into a complete current row is kept as changed", async () => {
@@ -1767,11 +1790,11 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     const other = JSON.stringify({ ...b.job, recovery: RECOVERY });
     onFirstRead(h, b.job.workerId, () => writeFile(b.file, other));
     const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
-    expect(String(error)).toContain(`The summary attempt ${b.name} changed while this summary was prepared`);
     expect(await readFile(b.file, "utf8")).toBe(other);
     expect(await readFile(current.file, "utf8")).toBe(currentText);
     expect(await readdir(b.jobs)).not.toContain("superseded");
     expect(h.created).toHaveLength(1);
+    expect(String(error)).toContain(`The summary attempt ${b.name} changed while this summary was prepared`);
   });
 
   it("R5-01: holds every new helper while a former attempt's helper reads back closed but not archived", async () => {
