@@ -1080,13 +1080,108 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect(sha(await readFile(former.file))).toBe(sha(former.text));
   });
 
-  it("does not find a former row it cannot map (the model changed): a stated limit, the row kept byte for byte", async () => {
+  const UNMAPPED = "nothing shows that it belongs to another source or another history";
+  /** The capture this build writes for the harness source's current history, from a separate reference run. */
+  async function currentCapture() {
+    const ref = await harness();
+    await ref.generator().generate(SOURCE);
+    const jobs = join(ref.root, "generation-jobs");
+    return JSON.parse(await readFile(join(jobs, (await readdir(jobs)).find(name => name.endsWith(".capture.json"))!), "utf8"));
+  }
+  /** An unfinished row under a key no producer here derives (another build's format), with a capture when one is given. */
+  async function unmappedRow(h: Awaited<ReturnType<typeof harness>>, capture: object | null, state = "creating", recovery?: object) {
+    const jobs = join(h.root, "generation-jobs");
+    await mkdir(jobs, { recursive: true });
+    const key = sha(`another build's key ${randomUUID()}`);
+    const job = { workerId: randomUUID(), state, previousWorkers: [], clientMessageId: randomUUID(), promptHash: sha("another build's prompt"), ...(recovery ? { recovery } : {}) };
+    const file = join(jobs, `${key}.json`), text = JSON.stringify(job);
+    await writeFile(file, text);
+    if (capture) await writeFile(join(jobs, `${key}.capture.json`), JSON.stringify(capture));
+    return { file, text, job, name: `${key}.json` };
+  }
+
+  it.each(["creating", "waiting"])("holds a %s former row it cannot map (the model changed): no helper, no prompt, the row kept byte for byte (SR-01)", async state => {
     const h = await harness(); omittedEvent(h);
-    const former = await formerRow(h, "2d5afed8", "creating", "an-earlier-model");
+    const former = await formerRow(h, "2d5afed8", state, "an-earlier-model");
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(UNMAPPED);
+    expect(h.created).toHaveLength(0);
+    expect(h.counts()).toEqual({ waits: 0, sends: 0 });
+    expect(await jobFiles(h)).toEqual([former.name]);
+    expect(sha(await readFile(former.file))).toBe(sha(former.text));
+  });
+
+  it("holds an unmapped row whose helper reads back for this source, even with a recorded recovery (SR-01)", async () => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8", "creating", "an-earlier-model", RECOVERY);
+    h.earlier.add(former.job.workerId); h.earlierState.set(former.job.workerId, { labels: { "kontor.summary.source": SOURCE } });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(UNMAPPED);
+    expect(h.created).toHaveLength(0);
+    expect(sha(await readFile(former.file))).toBe(sha(former.text));
+  });
+
+  it("starts one helper beside an unmapped row once its helper is gone and a recovery is recorded, leaving the row byte for byte (SR-01)", async () => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8", "creating", "an-earlier-model", RECOVERY);
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.created).toHaveLength(1);
     expect(await jobFiles(h)).toContain(former.name);
     expect(sha(await readFile(former.file))).toBe(sha(former.text));
+  });
+
+  it("starts one helper beside an unmapped row whose helper reads back labelled for another source (SR-01)", async () => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8", "creating", "an-earlier-model");
+    h.earlier.add(former.job.workerId); h.earlierState.set(former.job.workerId, { labels: { "kontor.summary.source": "00000000-0000-4000-8000-000000000002" } });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(sha(await readFile(former.file))).toBe(sha(former.text));
+  });
+
+  it("holds a captured unfinished row for this same history under another key, as after a key-format change on upgrade or rollback (SR-01)", async () => {
+    const capture = await currentCapture();
+    const h = await harness();
+    const row = await unmappedRow(h, capture, "waiting");
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(UNMAPPED);
+    expect(h.created).toHaveLength(0);
+    expect(sha(await readFile(row.file))).toBe(sha(row.text));
+  });
+
+  it("holds a row this build cannot read as a job, as one a later build wrote, and keeps it byte for byte (SR-01)", async () => {
+    const h = await harness();
+    const row = await unmappedRow(h, null);
+    const text = JSON.stringify({ ...row.job, laterBuildField: 1 });
+    await writeFile(row.file, text);
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(UNMAPPED);
+    expect(h.created).toHaveLength(0);
+    expect(await readFile(row.file, "utf8")).toBe(text);
+  });
+
+  it("holds a captured unfinished row whose boundary this build cannot read, even if it looks like other history (SR-01)", async () => {
+    const capture = await currentCapture();
+    const h = await harness();
+    await unmappedRow(h, { ...capture, historyBoundary: { ...capture.historyBoundary, snapshotHash: sha("other history"), keyFormat: 2 } });
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow(UNMAPPED);
+    expect(h.created).toHaveLength(0);
+  });
+
+  it.each([
+    ["a genuinely different history of this source", (capture: Record<string, any>) => ({ ...capture, historyBoundary: { ...capture.historyBoundary, toSeq: 6, snapshotHash: sha("an earlier history") } })],
+    ["another source", (capture: Record<string, any>) => ({ ...capture, sourceAgentId: "00000000-0000-4000-8000-000000000002" })],
+  ])("starts one helper beside a captured unfinished row of %s, the row kept byte for byte (SR-01 positive control)", async (_name, change) => {
+    const capture = await currentCapture();
+    const h = await harness();
+    const row = await unmappedRow(h, change(capture));
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(sha(await readFile(row.file))).toBe(sha(row.text));
+  });
+
+  it("still returns a complete current summary beside an unmapped unfinished row, with no helper (SR-01)", async () => {
+    const h = await harness(); omittedEvent(h);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    await formerRow(h, "2d5afed8", "creating", "an-earlier-model");
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
   });
 
   it.each([

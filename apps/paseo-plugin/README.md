@@ -79,10 +79,18 @@ Once every earlier attempt is qualified, each is
 kept byte for byte under `superseded/`, named in `previousWorkers` of the one job
 this history keeps, and removed; at most one new helper and key is made. Qualified attempts are
 folded only into a complete current row or into that new job, never into an
-unfinished current row. A `complete` or `failed` former row is history and is left as it is. A row it cannot map, for example because
-the source's model or history has changed since, is not found, so a new
-summary of that source may start another helper. Such a row is never treated as
-settled: its `creating` state keeps its container held in the dry run below.
+unfinished current row. A `complete` or `failed` former row is history and is left as it is.
+A `creating` or `waiting` row under a key the generator does not derive here,
+for example one 2d5afed8 keyed on a model the source no longer runs, may still
+be an earlier attempt at this history. It is set aside only on evidence that it
+belongs elsewhere: its capture names another source, or another history in the
+current boundary format, or, with no capture, its helper reads back labelled for
+another source. Otherwise, and when the row cannot be read, it holds every path
+that could start a helper, naming its file, until its helper no longer reads
+back and a recovery is recorded in it. A row with no capture whose helper does
+not read back therefore holds the summaries of every source, not only its own.
+Such a row is never folded, rewritten or marked, and its `creating` state keeps
+its container held in the dry run below.
 
 A fresh helper with a new key replaces a held job only when an operator records
 a recovery disposition in the job,
@@ -186,6 +194,9 @@ order, before the plugin with this change is reloaded:
    the previous file for rollback, and read it back.
 3. Only then install or reload the plugin with this change. A failure in step 1
    or 2 stops the install, so takeover never runs without a bound workspace.
+
+A row that holds every source (above) keeps every new summary, and so every
+idle-source takeover, held after the install until its own recovery is recorded.
 
 Rollback reinstalls the previous plugin build first. Removing or changing
 `summary.json` while this change is installed blocks new summaries and

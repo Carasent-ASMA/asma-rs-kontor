@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { PaseoApi, PaseoAgent, PaseoAgentHandle } from "@getpaseo/client";
-import { summaryRevisionSchema, type SummaryHistoryBoundary } from "../shared/session-navigator";
+import { summaryHistoryBoundarySchema, summaryRevisionSchema, type SummaryHistoryBoundary } from "../shared/session-navigator";
 import { latestStoredSummary, type CompactSummaryPayload, type SessionSummaryGenerator } from "./session-summaries";
 import { createProviders } from "../shared/session-create";
 import { allPages } from "./session-create";
@@ -172,6 +172,8 @@ function captureOf(entries: CapturedEntry[], page: { epoch: string; hasOlder: bo
 }
 type HelperRead = Awaited<ReturnType<PaseoAgentHandle["refresh"]>>;
 type HelperHistory = Awaited<ReturnType<PaseoAgentHandle["timeline"]["refetch"]>>;
+const sameBoundary = (left: SummaryHistoryBoundary, right: SummaryHistoryBoundary) =>
+  (Object.keys(summaryHistoryBoundarySchema.shape) as Array<keyof SummaryHistoryBoundary>).every(key => left[key] === right[key]);
 function sameSession(left: PaseoAgent, right: PaseoAgent) {
   return left.id === right.id && left.provider === right.provider && left.model === right.model && left.cwd === right.cwd && left.currentModeId === right.currentModeId &&
     (left.persistence?.sessionId ?? null) === (right.persistence?.sessionId ?? null);
@@ -258,6 +260,26 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       else if (!helper && !former.job.recovery)
         unqualified.push(`Summary helper ${former.job.workerId} was requested by an earlier version and may exist on the host although it does not read back. Its job ${name} is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
       else { formers.push({ name, ...former }); retiring.push({ file: join(jobs, name), raw: former.raw, workerId: former.job.workerId }); }
+    }
+    // An unfinished row under no key derived here may still be an attempt at this history: 2d5afed8 keyed on the source's
+    // model at the time, and another build may key differently. Only evidence places it elsewhere: its capture names
+    // another source, or another history in this build's boundary format; with no capture, its helper reads back labelled
+    // for another source. Otherwise it holds like an unqualified former row until its helper is gone and a recovery is
+    // recorded in it. It is never folded, rewritten or marked.
+    const derived = new Set([jobKey, ...formerKeys].map(key => `${key}.json`));
+    for (const name of await readdir(jobs)) {
+      if (derived.has(name) || !/^[0-9a-f]{64}\.json$/.test(name)) continue;
+      const held = `The summary job ${name} is unfinished, and nothing shows that it belongs to another source or another history: an earlier version may have keyed this history differently. It is held: nothing is resent and no new helper is started until its helper no longer reads back and a recovery is recorded for it.`;
+      let row: Awaited<ReturnType<typeof readJobFile>>;
+      try { row = await readJobFile(join(jobs, name)); } catch { unqualified.push(held); continue; }
+      if (!row || (row.job.state !== "creating" && row.job.state !== "waiting")) continue;
+      const stored = await readFile(join(jobs, name.replace(/\.json$/, ".capture.json")), "utf8").then(text => JSON.parse(text) as { sourceAgentId?: unknown; historyBoundary?: unknown } | null, () => null);
+      const boundary = summaryHistoryBoundarySchema.safeParse(stored?.historyBoundary);
+      if (stored && (stored.sourceAgentId !== agentId ? typeof stored.sourceAgentId === "string" : boundary.success && !sameBoundary(boundary.data, historyBoundary))) continue;
+      const helper = await paseo.agents.ref(row.job.workerId).refresh();
+      const label = helper?.agent.labels?.["kontor.summary.source"];
+      if ((!stored && typeof label === "string" && label !== agentId) || (!helper && row.job.recovery)) continue;
+      unqualified.push(held);
     }
     const dispatchable = () => { if (unqualified.length) throw new Error(unqualified[0]); };
     const found = await readJobFile(file);
