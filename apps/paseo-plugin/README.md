@@ -45,9 +45,8 @@ only a `..` segment leaves it), so a helper never runs above a checkout. A missi
 (containment, below): nothing is written or started. A workspace that does not
 read back that way records no job, creates no helper and keeps the capture; the
 message names the workspace id. The job records the placement
-with `owned: false` before anything is sent, and a retry uses the recorded
-placement, not a changed file. If the recorded workspace no longer reads back,
-the retry is refused with that recorded id, so it can be restored. The helper is
+with `owned: false` before anything is sent; a retry reads the helper back
+against the recorded placement, not a changed file. The helper is
 created through the workspace's own create, so no job makes a project or
 workspace. The helper's own readback must match too, also on retry. A helper
 whose own readback does not match right after create is kept with its
@@ -63,8 +62,9 @@ on `[source id, boundary, source model]`, then `[source id, boundary]` until
 agent messages were captured (d29bd08d), both over user and assistant messages
 only. Before anything is dispatched, the generator looks up every former key
 for the same source and history, also when a row under the current key exists.
-Each `creating` or `waiting` row found there is an earlier attempt at this
-history. It is qualified only when a recovery is recorded in it and its helper
+Each unfinished row found there is an earlier attempt at this history:
+`creating`, `waiting`, or `failed` without a correlated completed response
+(below). It is qualified only when a recovery is recorded in it and its helper
 does not read back by its exact id. A helper that reads back never qualifies an
 attempt, whatever its status. In Paseo 0.16.2, archived, `closed` and with no
 active turn is also what a helper reads back as after a restart repair, after a
@@ -72,16 +72,16 @@ repeated close that returned at once following a failed one (ACP, OMP and Pi)
 and after a Claude close whose kill timed out. That readback cannot show that
 the attempt's original work has stopped (AUD-A-R6-01). An
 unqualified row is never folded, rewritten or marked: it holds every path that
-could start a helper for this history (a fresh helper, or a keyed create sent
-again), naming that row's file. It does not withhold a summary that is already
+could start a helper for this history, naming that row's file. It does not withhold a summary that is already
 complete under the current key, and it does not stop the generator reading the
 correlated result of the current key's own helper: neither starts a helper.
 Once every earlier attempt is qualified, each is
 kept byte for byte under `superseded/`, named in `previousWorkers` of the one job
 this history keeps, and removed; at most one new helper and key is made. Qualified attempts are
 folded only into a complete current row or into that new job, never into an
-unfinished current row. A `complete` or `failed` former row is history and is left as it is.
-A `creating` or `waiting` row under a key the generator does not derive here,
+unfinished current row. A `complete` former row, or a `failed` one that records
+a correlated completed response, is history and is left as it is.
+An unfinished row under a key the generator does not derive here,
 for example one 2d5afed8 keyed on a model the source no longer runs, may still
 be an earlier attempt at this history. It is set aside only on evidence that it
 belongs elsewhere: its capture names another source, or another history in the
@@ -97,9 +97,9 @@ A fresh helper with a new key replaces a held job only when an operator records
 a recovery disposition in the job,
 `"recovery": {"disposition": "retire-legacy-create", "evidence": "…", "recordedAt": "…"}`,
 naming the reconciled evidence, and its helper does not read back by its exact
-id. That applies to a legacy `creating` job, to a placed `creating` job whose
-create the host could not confirm (`agent_request_outcome_unknown`) and to a
-`waiting` job. The recovery is the operator's record: the plugin does not
+id. That applies to a legacy `creating` job, to a placed `creating` job that an
+earlier call recorded (below), to a `waiting` job and to a `failed` job without
+a correlated completed response. The recovery is the operator's record: the plugin does not
 verify its evidence, and it is not native evidence that the earlier attempt had
 no effect. Without it such a job is held with a plain message; it is never
 re-keyed because its helper does not read back. On retirement the job's exact
@@ -107,14 +107,37 @@ bytes are kept at `generation-jobs/superseded/<worker id>.json`, written once:
 an existing archive with the same bytes is a replay, and one with other bytes
 holds the job and is never replaced. Just before it retires anything, the
 generator reads each attempt again; its bytes must be unchanged and its helper
-must still not read back, or nothing is retired. A placed `creating` job with
-no recovery whose helper does not read back repeats only its own keyed create,
-which the host answers under that key; it is not a fresh helper.
+must still not read back, or nothing is retired.
+
+Only a job the same call wrote sends its first create. A placed `creating` job
+an earlier call recorded, with no recovery, whose helper does not read back, is
+held: its create is never sent again, not even under its own key. Paseo 0.17.4
+runs a failed startup again under the same key when nothing registered before
+the failure, so a keyed repeat is not always the replay of a retained outcome,
+and an absent helper does not show that the first request had no effect
+(AUD-A-REL-03). That includes a create the host could not confirm
+(`agent_request_outcome_unknown`), one lost before it reached the host, and a
+call that stopped at its last binding check after writing its job. Named
+residual: Paseo records neither that a runtime which failed before registration
+was released, nor a retained unknown outcome for it. Until it does, such a job
+is released only by a recorded recovery.
 
 A job whose helper reads back is never retired, `closed` or not. That helper's
-correlated reply is still read: a valid reply completes the job, and a
-correlated provider error or invalid reply marks it failed, archives its helper
-and lets a retry start one new helper. Anything else holds the job with its
+correlated reply is still read: a valid reply completes the job. A correlated
+completed response that is not four nonempty sections marks the job failed
+with its origin and answer, `"failure": {"origin": "invalid-output",
+"responseHash": "…"}`, archives its helper and lets a retry start one new
+helper: the failed job's exact bytes, with its message id, prompt hash, route
+and session, are kept first at `generation-jobs/superseded/<worker id>.json`,
+written once and read again just before (AUD-A-REL-02). A correlated provider
+error marks the job failed and archives its helper, but holds the history: an
+archived readback cannot show that the helper's work stopped (AUD-A-REL-01). A
+`failed` job without `failure`, from a provider error or recorded by an earlier
+version (including the legacy-prompt failures an earlier version replaced), is
+held with its bytes unchanged under the current key, a former key or a key
+not derived here alike. Its archived helper reads back and the recovery
+recorder refuses it, so no supported route releases it; a later turn on the
+source is a new history and proceeds. Anything else holds the job with its
 bytes unchanged. An archived helper that never replied, for example one
 archived after the generator timed out, stays held: no new helper is started,
 nothing is resent, and the capture is kept. No supported route releases such a
@@ -227,8 +250,9 @@ To recover, install a gated forward fix, or reinstall a retained, qualified
 build of this change, with `summary.json` still aside, and read the installed
 build back. Then move the same bytes back and compare their sha256 with the
 saved file. Each held row resumes on its own path: a `waiting` row reads its
-helper's result, a placed `creating` row repeats only its own keyed create, and
-a row that holds every source stays held until its own recovery is recorded.
+helper's result, while a placed `creating` row whose helper does not read back
+(including one written by a call that stopped at its last check) and a row that
+holds every source stay held until their own recovery is recorded.
 Nothing is re-keyed or resent, and the workspace and existing saved summaries
 are never changed.
 
