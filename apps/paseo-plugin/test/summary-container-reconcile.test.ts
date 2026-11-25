@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { reconcileSummaryContainers } from "../server/summary-container-reconcile";
+import { reconcileSummaryContainers, recordSummaryRecovery } from "../server/summary-container-reconcile";
+import { summaryJobSchema } from "../server/stock-summary-generator";
 
 const SECTIONS = { task: "t", decisions: "d", currentState: "c", nextStep: "n" };
 const dirs: string[] = [];
@@ -66,7 +67,7 @@ async function fixture() {
       list: async (options: { filter: { projectKeys: string[]; includeArchived: boolean; includeBackground: boolean } }) => {
         reads.push(`agents:${options.filter.projectKeys.join(",")}:${options.filter.includeArchived}:${options.filter.includeBackground}`);
         const ids = new Set(workspaces.filter(workspace => options.filter.projectKeys.includes(workspace.projectId as string)).map(workspace => workspace.id));
-        return page(agents.filter(agent => ids.has(agent.workspaceId ?? "") || [...ids].some(id => workspaces.find(w => w.id === id)?.workspaceDirectory === agent.cwd)).map(agent => ({ agent, project: null })));
+        return page(agents.filter(agent => options.filter.includeArchived || !agent.archivedAt).filter(agent => ids.has(agent.workspaceId ?? "") || [...ids].some(id => workspaces.find(w => w.id === id)?.workspaceDirectory === agent.cwd)).map(agent => ({ agent, project: null })));
       },
     },
   };
@@ -134,6 +135,16 @@ describe("legacy summary container dry-run reconcile (ASMA-8580)", () => {
       agents: { ref: () => ({ refresh: async () => { throw new Error("down"); } }), list: async () => { throw new Error("down"); } } } as never, g.root);
     expect((await run).rows[0]).toMatchObject({ closeout: null, occupants: null, terminals: null,
       holds: ["The helper's own readback does not bind this workspace and project.", "Its occupants could not be read.", "Its terminals could not be read."] });
+  });
+
+  it("holds a container whose occupants alone cannot be read: no closeout is proposed", async () => {
+    const f = await fixture();
+    await f.container();
+    const run = reconcileSummaryContainers({ workspaces: { list: async () => ({ entries: f.workspaces, pageInfo: { hasMore: false } }), ref: () => ({ terminals: { list: async () => ({ entries: [] }) } }) },
+      agents: { ref: (id: string) => ({ refresh: async () => ({ agent: f.agents.find(agent => agent.id === id), project: { projectKey: f.workspaces[0]!.projectId } }) }), list: async () => { throw new Error("down"); } } } as never, f.root);
+    const [row] = (await run).rows;
+    expect(row!.closeout).toBeNull();
+    expect(row!.holds).toEqual(["Its occupants could not be read."]);
   });
 
   it("ignores workspaces outside the job directory, including a nested or sibling path", async () => {
@@ -235,5 +246,87 @@ describe("legacy summary container dry-run reconcile (ASMA-8580)", () => {
     await writeFile(join(f.jobs, name), "{" + await readFile(join(f.jobs, name), "utf8"));
     const [row] = (await f.run()).rows;
     expect(row).toMatchObject({ helperId: held.helperId, jobState: "unknown", closeout: null });
+  });
+});
+
+describe("summary recovery recording (ASMA-8580 round 2, item 3)", () => {
+  const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+  const NAME = `${"a".repeat(64)}.json`, WORKER = "0b6f2c1e-5d4a-4c3b-9a8f-7e6d5c4b3a21";
+  const EVIDENCE = "evidence/installer/RECEIPT-TRIAGE.json sha256 8a4e531b";
+  /** One job file in the earliest released shape, and a host whose agent reads are the only call. */
+  async function held(job: Record<string, unknown> = {}, format = (value: object) => JSON.stringify(value), helper: object | null = null) {
+    const root = await mkdtemp(join(tmpdir(), "summary-recovery-")); dirs.push(root);
+    const jobs = join(root, "generation-jobs"); await mkdir(jobs, { recursive: true });
+    const text = format({ workerId: WORKER, state: "creating", previousWorkers: [], clientMessageId: "7f1d2c3b-0a9e-4d8c-b7a6-5f4e3d2c1b0a", promptHash: "p".repeat(64), ...job });
+    await writeFile(join(jobs, NAME), text);
+    const reads: string[] = [];
+    const paseo = { agents: { ref: (id: string) => ({ refresh: async () => { reads.push(id); return helper; } }) } };
+    const record = (overrides: Partial<Parameters<typeof recordSummaryRecovery>[2]> = {}) =>
+      recordSummaryRecovery(paseo as never, root, { job: NAME, disposition: "retire-legacy-create", evidence: EVIDENCE, now: () => "2026-11-25T08:00:00Z", ...overrides });
+    return { root, jobs, file: join(jobs, NAME), text, reads, record };
+  }
+
+  it("is a dry run by default: the plan names the bytes it keeps, and nothing changes", async () => {
+    const h = await held();
+    expect(await h.record()).toEqual({ job: NAME, workerId: WORKER, beforeSha256: sha(h.text), archive: `superseded/${WORKER}.before-recovery.json`,
+      recovery: { disposition: "retire-legacy-create", evidence: EVIDENCE, recordedAt: "2026-11-25T08:00:00Z" }, applied: false, unchanged: false });
+    expect(await readFile(h.file, "utf8")).toBe(h.text);
+    expect(await readdir(h.jobs)).toEqual([NAME]);
+    expect(h.reads).toEqual([WORKER]);
+  });
+
+  it.each([
+    ["compact", (value: object) => JSON.stringify(value)],
+    ["compact, in another field order", (value: object) => JSON.stringify({ promptHash: (value as { promptHash: string }).promptHash, ...value })],
+    ["pretty-printed", (value: object) => JSON.stringify(value, null, 2) + "\n"],
+  ] as const)(
+    "on --apply keeps the %s original bytes first, then adds only the recovery; an identical repeat changes nothing", async (_name, format) => {
+      const h = await held({}, format);
+      const applied = await h.record({ applySha256: sha(h.text) });
+      expect(applied).toMatchObject({ applied: true, beforeSha256: sha(h.text) });
+      const kept = await readFile(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`));
+      expect(sha(kept)).toBe(sha(h.text));
+      const after = await readFile(h.file, "utf8");
+      // The exact bytes: the original fields in their own order and values, then only the recovery.
+      expect(after).toBe(JSON.stringify({ ...JSON.parse(h.text), recovery: { disposition: "retire-legacy-create", evidence: EVIDENCE, recordedAt: "2026-11-25T08:00:00Z" } }));
+      expect(sha(after)).toBe((applied as { afterSha256: string }).afterSha256);
+      const before = JSON.parse(h.text), now = JSON.parse(after);
+      expect(Object.keys(now)).toEqual([...Object.keys(before), "recovery"]);
+      for (const key of Object.keys(before)) expect(now[key]).toEqual(before[key]);
+      expect(now.recovery).toEqual({ disposition: "retire-legacy-create", evidence: EVIDENCE, recordedAt: "2026-11-25T08:00:00Z" });
+      expect(summaryJobSchema.parse(now).recovery).toBeDefined();
+      expect(await h.record({ applySha256: sha(h.text), now: () => "2026-11-26T00:00:00Z" })).toMatchObject({ applied: false, unchanged: true });
+      expect(await readFile(h.file, "utf8")).toBe(after);
+      expect(sha(await readFile(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`)))).toBe(sha(h.text));
+      expect((await readdir(h.jobs)).sort()).toEqual([NAME, "superseded"]);
+    });
+
+  it.each([
+    ["a job that is not creating", { job: { state: "waiting" } }, {}, "only a held creating job"],
+    ["a job whose helper reads back", { helper: { agent: { id: WORKER } } }, {}, "reads back on this host"],
+    ["blank evidence", {}, { evidence: "  " }, "non-blank evidence"],
+    ["another disposition", {}, { disposition: "retry" }, 'only recovery disposition is "retire-legacy-create"'],
+    ["a path instead of a job file", {}, { job: `../${"a".repeat(64)}.json` }, "Name one job file"],
+    ["bytes that are not the ones the dry run reviewed", {}, { applySha256: "0".repeat(64) }, "is not the bytes its dry run reviewed"],
+    ["another recovery already recorded", { job: { recovery: { disposition: "retire-legacy-create", evidence: "other", recordedAt: "2026-11-24T00:00:00Z" } } }, {}, "already records another recovery"],
+  ] as const)("refuses %s with --apply and changes nothing", async (_name, setup, overrides, message) => {
+    const h = await held((setup as { job?: Record<string, unknown> }).job, undefined, (setup as { helper?: object }).helper ?? null);
+    // A valid job one level up: a name that escapes generation-jobs would reach it.
+    await writeFile(join(h.root, NAME), h.text);
+    const error = await h.record({ applySha256: sha(h.text), ...overrides }).catch((cause: Error) => cause);
+    expect(await readFile(h.file, "utf8")).toBe(h.text);
+    expect(await readFile(join(h.root, NAME), "utf8")).toBe(h.text);
+    expect(await readdir(h.jobs)).toEqual([NAME]);
+    expect(String(error)).toContain(message);
+  });
+
+  it("holds, and never overwrites, an existing pre-recovery archive with other bytes", async () => {
+    const h = await held();
+    await mkdir(join(h.jobs, "superseded"));
+    await writeFile(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`), "earlier evidence");
+    const error = await h.record({ applySha256: sha(h.text) }).catch((cause: Error) => cause);
+    expect(await readFile(join(h.jobs, "superseded", `${WORKER}.before-recovery.json`), "utf8")).toBe("earlier evidence");
+    expect(await readFile(h.file, "utf8")).toBe(h.text);
+    expect(String(error)).toContain("already holds other evidence");
   });
 });

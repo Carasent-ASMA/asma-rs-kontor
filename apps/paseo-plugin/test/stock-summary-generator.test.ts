@@ -1,11 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stockSummaryGenerator, SUMMARY_SOURCE_ITEMS, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
+import { archiveExactBytes, stockSummaryGenerator, SUMMARY_SOURCE_ITEMS, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
 import { contributeSessionSummaries, createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
+import { recordSummaryRecovery } from "../server/summary-container-reconcile";
 
 import { UNSUPPORTED } from "../shared/session-navigator";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -34,6 +35,8 @@ async function harness() {
   // The host's creation receipts: one request fingerprint per idempotency key. The same key with another request is refused.
   const receipts = new Map<string, string>();
   const workspaceReads: string[] = [];
+  const otherWorkspaces: Array<Record<string, unknown>> = [];
+  let wrapCreateError = (error: Error): Error => error;
   const placementFile = join(root, "summary.json");
   await writeFile(placementFile, JSON.stringify(PLACEMENT));
   const catalog = { entries: [{ provider: "codex", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "model-mini", label: "Mini", isDefault: true }], modes: [{ id: "auto", label: "Auto" }, { id: "auto-review", label: "Review" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }] };
@@ -61,13 +64,20 @@ async function harness() {
     },
     create: async () => { throw new Error("A summary helper is never created by bare cwd."); },
   }, workspaces: {
+    // The host's workspace list: the designated workspace and any other active workspace a test adds.
+    list: async () => ({ entries: [{ ...workspace }, ...otherWorkspaces], pageInfo: { hasMore: false } }),
+    // A workspace archive is recorded like a helper's, so closing the designated workspace shows as an effect.
+    archive: async (id: string) => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; },
     ref: (id: string) => ({
+      archive: async () => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; },
       refresh: async () => { workspaceReads.push(id); return id === PLACEMENT.workspaceId && !workspace.absent ? { ...workspace } : null; },
       agents: { create: async (options: Record<string, any>) => {
         if (refuseBeforeEffect) { refuseBeforeEffect = false; throw new Error("Creation request lost"); }
         const fingerprint = JSON.stringify({ agentId: options.agentId, cwd: workspace.workspaceDirectory, workspaceId: id });
         const receipt = receipts.get(options.idempotencyKey);
-        if (receipt !== undefined && receipt !== fingerprint) throw new Error("agent_request_key_conflict");
+        // A receipt the host failed with an unknown outcome is replayed for every later create under its key.
+        if (receipt === "outcome-unknown") throw wrapCreateError(new Error("agent_request_outcome_unknown"));
+        if (receipt !== undefined && receipt !== fingerprint) throw wrapCreateError(new Error("agent_request_key_conflict"));
         if (receipt === fingerprint) return api.agents.ref(options.agentId);
         receipts.set(options.idempotencyKey, fingerprint);
         created.push({ ...options, cwd: workspace.workspaceDirectory, workspaceId: id }); workers.add(options.agentId);
@@ -81,7 +91,7 @@ async function harness() {
   const host = { env: {}, home: join(root, "home"), system: false, stopAt: root };
   const generator = () => stockSummaryGenerator(api as never, root, host, placementFile)!;
   const service = () => createSessionSummaryService(api as never, root, stockSummaryGenerator(api as never, root, host, placementFile));
-  return { root, api, source, workspace, workspaceReads, receipts, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
+  return { root, api, source, workspace, workspaceReads, otherWorkspaces, wrapCreateErrors: (wrap: (error: Error) => Error) => { wrapCreateError = wrap; }, receipts, placementFile, setWorkerProject: (id: string) => { workerProject = id; }, page, created, historyCalls, generator, host, service, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, loseCreateRequest: () => { refuseBeforeEffect = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
 }
 
 describe("stock summary generator", () => {
@@ -835,6 +845,206 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect((await jobOf(h)).job).toMatchObject({ workerId: job.workerId, state: "complete" });
     expect((await jobOf(h)).job).not.toHaveProperty("placement");
     await expect(readdir(join(jobs, "superseded"))).rejects.toThrow();
+  });
+
+  const sha = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+  const RECOVERY = { disposition: "retire-legacy-create", evidence: "installer receipt triage: no agent, receipt failed with no effect", recordedAt: "2026-11-25T00:00:00Z" };
+
+  /**
+   * A record as a released earlier producer wrote it, from its own key and shape: the capture over user and assistant
+   * messages only, with no omitted-event flag (2d5afed8:58-73), keyed on [id, boundary, model] at 2d5afed8:77 or on
+   * [id, boundary] from 72b054e2 until d29bd08d; the minimal 2d5afed8 record (:86-87) serialized as its writeJob did.
+   */
+  async function formerRow(h: Awaited<ReturnType<typeof harness>>, formula: "2d5afed8" | "72b054e2", state = "creating", model = h.source.model, recovery?: object) {
+    const entries = h.page.entries.filter(entry => entry.item.type === "user_message" || entry.item.type === "assistant_message");
+    let remaining = SUMMARY_SOURCE_CHARACTERS;
+    const captured: Array<{ seqStart: number; seqEnd: number; role: string; text: string }> = [];
+    for (const entry of [...entries].reverse()) {
+      if (!remaining) break;
+      const text = (entry.item as { text: string }).text.slice(-remaining);
+      remaining -= text.length;
+      captured.unshift({ seqStart: entry.seqStart, seqEnd: entry.seqEnd, role: entry.item.type, text });
+    }
+    const historyBoundary = { epoch: h.page.epoch, fromSeq: captured[0]!.seqStart, toSeq: captured.at(-1)!.seqEnd, snapshotHash: sha(JSON.stringify(captured)),
+      partial: h.page.hasOlder || remaining === 0, provider: h.source.provider, providerSessionId: h.source.persistence?.sessionId ?? null };
+    const key = sha(JSON.stringify(formula === "2d5afed8" ? [SOURCE, historyBoundary, model] : [SOURCE, historyBoundary]));
+    const job = { workerId: randomUUID(), state, previousWorkers: [], clientMessageId: randomUUID(), promptHash: sha("the earlier producer's prompt"), ...(recovery ? { recovery } : {}) };
+    const jobs = join(h.root, "generation-jobs");
+    await mkdir(jobs, { recursive: true });
+    const file = join(jobs, `${key}.json`), text = JSON.stringify(job);
+    await writeFile(file, text);
+    // The host holds a receipt for the old key from the earlier producer's per-job cwd create.
+    h.receipts.set(`kontor-summary:${job.workerId}`, JSON.stringify({ agentId: job.workerId, cwd: join(jobs, job.workerId) }));
+    return { jobs, file, job, text, name: `${key}.json` };
+  }
+  /** A page whose current boundary differs from the earlier producers': a skipped tool event marks only the current one partial. */
+  function omittedEvent(h: Awaited<ReturnType<typeof harness>>) {
+    h.page.hasOlder = false;
+    h.page.entries.push({ seqStart: 9, seqEnd: 9, timestamp: "2026-10-28T10:02:00Z", item: { type: "tool_call", name: "shell" } } as never);
+  }
+
+  it.each([["2d5afed8", false], ["72b054e2", false], ["2d5afed8", true]] as const)("holds a former-key creating row written by the %s producer (agent message in history: %s): no helper, no second row, bytes unchanged (AUD-R2-01)", async (formula, agentMessage) => {
+    const h = await harness(); omittedEvent(h);
+    // The earlier producers captured user and assistant messages only; an agent message is not in their boundary.
+    if (agentMessage) h.page.entries.push({ seqStart: 10, seqEnd: 10, timestamp: "2026-10-28T10:03:00Z", item: { type: "tool_call", name: "agent_message", agentMessage: { event: "message", text: "Report the pending review." } } } as never);
+    const former = await formerRow(h, formula);
+    const errors = [await h.generator().generate(SOURCE).catch((cause: Error) => cause), await h.generator().generate(SOURCE).catch((cause: Error) => cause)];
+    // The unsafe effects first: no helper, no second row, the old bytes as they were.
+    expect(h.created).toEqual([]);
+    expect(await jobFiles(h)).toEqual([former.name]);
+    expect(sha(await readFile(former.file))).toBe(sha(former.text));
+    expect(await readdir(former.jobs)).not.toContain("superseded");
+    expect([...h.receipts.keys()]).toEqual([`kontor-summary:${former.job.workerId}`]);
+    for (const error of errors) expect(String(error)).toContain(`Summary helper ${former.job.workerId} was requested by an earlier version`);
+  });
+
+  it("holds a former-key waiting row: its helper may still be running", async () => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8", "waiting");
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h.created).toEqual([]);
+    expect(await jobFiles(h)).toEqual([former.name]);
+    expect(sha(await readFile(former.file))).toBe(sha(former.text));
+    expect(String(error)).toContain("It remains held; nothing was resent.");
+  });
+
+  it("retires a former-key creating row on its recorded recovery: one live row, its exact bytes kept, one fresh helper and key", async () => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8", "creating", h.source.model, RECOVERY);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const names = await jobFiles(h);
+    expect(names).toHaveLength(1);
+    expect(names[0]).not.toBe(former.name);
+    const fresh = JSON.parse(await readFile(join(former.jobs, names[0]!), "utf8"));
+    expect(fresh).toMatchObject({ state: "complete", previousWorkers: [former.job.workerId], placement: { ...PLACEMENT, owned: false } });
+    expect(h.created.map(item => item.idempotencyKey)).toEqual([`kontor-summary:${fresh.workerId}`]);
+    expect(sha(await readFile(join(former.jobs, "superseded", `${former.job.workerId}.json`)))).toBe(sha(former.text));
+  });
+
+  it("retires a 2d5afed8 row after the installer's recorded recovery, keeping both the original and the recovered bytes", async () => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8");
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("was requested by an earlier version");
+    const recorded = await recordSummaryRecovery(h.api as never, h.root, { job: former.name, disposition: "retire-legacy-create", evidence: RECOVERY.evidence, applySha256: sha(former.text) });
+    const recoveredText = await readFile(former.file, "utf8");
+    expect(sha(recoveredText)).toBe((recorded as { afterSha256: string }).afterSha256);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(await jobFiles(h)).toHaveLength(1);
+    expect(await jobFiles(h)).not.toContain(former.name);
+    const superseded = join(former.jobs, "superseded");
+    expect(sha(await readFile(join(superseded, `${former.job.workerId}.before-recovery.json`)))).toBe(sha(former.text));
+    expect(await readFile(join(superseded, `${former.job.workerId}.json`), "utf8")).toBe(recoveredText);
+  });
+
+  it.each(["complete", "failed"])("leaves a %s former-key row as history: a fresh helper and key, the old row kept byte for byte", async state => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8", state);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(await jobFiles(h)).toHaveLength(2);
+    expect(sha(await readFile(former.file))).toBe(sha(former.text));
+  });
+
+  it("does not find a former row it cannot map (the model changed): a stated limit, the row kept byte for byte", async () => {
+    const h = await harness(); omittedEvent(h);
+    const former = await formerRow(h, "2d5afed8", "creating", "an-earlier-model");
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(await jobFiles(h)).toContain(former.name);
+    expect(sha(await readFile(former.file))).toBe(sha(former.text));
+  });
+
+  it.each([
+    ["pretty-printed JSON", (job: object) => JSON.stringify(job, null, 2) + "\n"],
+    ["a recovery appended to compact JSON", (job: object) => JSON.stringify(job).replace(/,"recovery":\{[^}]*\}/, "").replace(/\}$/, `,"recovery":${JSON.stringify(RECOVERY)}}`)],
+  ])("keeps the superseded record's exact bytes for %s (AUD-R2-02)", async (_name, format) => {
+    const h = await harness();
+    const { jobs, file, legacy } = await legacyCreating(h, RECOVERY);
+    const original = format(legacy);
+    await writeFile(file, original);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const kept = await readFile(join(jobs, "superseded", `${legacy.workerId}.json`));
+    expect(kept.toString("utf8")).toBe(original);
+    expect(sha(kept)).toBe(sha(original));
+  });
+
+  it("holds, and never overwrites, an existing superseded record with other evidence; an identical one is a replay", async () => {
+    const h = await harness();
+    const { jobs, file, legacy, text } = await legacyCreating(h, RECOVERY);
+    const archive = join(jobs, "superseded", `${legacy.workerId}.json`);
+    await mkdir(dirname(archive), { recursive: true });
+    await writeFile(archive, "earlier retained evidence");
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(await readFile(archive, "utf8")).toBe("earlier retained evidence");
+    expect(h.created).toEqual([]);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(String(error)).toContain("already holds other evidence");
+    await writeFile(archive, text);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(await readFile(archive, "utf8")).toBe(text);
+    expect(await readdir(dirname(archive))).toEqual([`${legacy.workerId}.json`]);
+  });
+
+  it("archives exclusively: never replaces a different archive, accepts the same bytes, leaves no temporary file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "summary-archive-")); dirs.push(dir);
+    await archiveExactBytes(dir, "a.json", Buffer.from("one"));
+    await archiveExactBytes(dir, "a.json", Buffer.from("one"));
+    await expect(archiveExactBytes(dir, "a.json", Buffer.from("two"))).rejects.toThrow("already holds other evidence");
+    expect(await readFile(join(dir, "a.json"), "utf8")).toBe("one");
+    expect(await readdir(dir)).toEqual(["a.json"]);
+  });
+
+  it("holds a placed job whose create outcome the host cannot confirm, and releases it only on a recorded recovery (N3)", async () => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const { jobs, file, job } = await jobOf(h);
+    h.receipts.set(`kontor-summary:${job.workerId}`, "outcome-unknown");
+    const text = await readFile(file, "utf8");
+    const errors = [await h.generator().generate(SOURCE).catch((cause: Error) => cause), await h.generator().generate(SOURCE).catch((cause: Error) => cause)];
+    expect(h.created).toEqual([]);
+    expect(await readFile(file, "utf8")).toBe(text);
+    for (const error of errors) {
+      expect(String(error)).toContain(`The host could not confirm whether summary helper ${job.workerId} was created under its key. The job is held`);
+      expect(String(error)).not.toContain("outcome_unknown");
+    }
+    const recovered = text.replace(/\}$/, `,"recovery":${JSON.stringify(RECOVERY)}}`);
+    await writeFile(file, recovered);
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const fresh = (await jobOf(h)).job;
+    expect(fresh.workerId).not.toBe(job.workerId);
+    expect(fresh.previousWorkers).toEqual([job.workerId]);
+    expect(h.created.map(item => item.idempotencyKey)).toEqual([`kontor-summary:${fresh.workerId}`]);
+    expect(await readFile(join(jobs, "superseded", `${job.workerId}.json`), "utf8")).toBe(recovered);
+  });
+
+  it.each([
+    ["wrapped in a cause", (error: Error) => new Error("Creation failed", { cause: error })],
+    ["renamed with detail", (error: Error) => new Error(`workspace_${error.message}: fingerprint differs`)],
+    ["carried as a code", (error: Error) => Object.assign(new Error("Creation refused"), { code: error.message })],
+  ])("shows the plain held message for a key conflict %s, never the host's text (F2-QA-1)", async (_name, wrap) => {
+    const h = await harness(); h.loseCreateRequest();
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Creation request lost");
+    const { file, job } = await jobOf(h);
+    h.receipts.set(`kontor-summary:${job.workerId}`, JSON.stringify({ agentId: job.workerId, cwd: "/fixture/another-request" }));
+    h.wrapCreateErrors(wrap);
+    const error = await h.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(String(error)).toContain(`Summary helper ${job.workerId} was already requested under its key with a different request. The job is held`);
+    expect(String(error)).not.toMatch(/key_conflict|Creation (failed|refused)|fingerprint/);
+    expect(h.created).toEqual([]);
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual(job);
+  });
+
+  it("refuses a designated directory with another active workspace beneath it, before any job or helper (N1)", async () => {
+    const h = await harness();
+    h.otherWorkspaces.push({ id: "wks_archived", workspaceDirectory: `${PLACEMENT.cwd}/old`, archivingAt: "2026-11-01T00:00:00Z" }, { id: "wks_sibling", workspaceDirectory: "/fixture/summary-helpers-2", archivingAt: null });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const h2 = await harness();
+    h2.otherWorkspaces.push({ id: "wks_checkout", workspaceDirectory: `${PLACEMENT.cwd}/repo`, archivingAt: null });
+    const error = await h2.generator().generate(SOURCE).catch((cause: Error) => cause);
+    expect(h2.created).toEqual([]);
+    expect(await jobFiles(h2)).toEqual([]);
+    expect(String(error)).toContain(`The summary workspace ${PLACEMENT.workspaceId} has another active workspace beneath ${PLACEMENT.cwd}`);
   });
 });
 

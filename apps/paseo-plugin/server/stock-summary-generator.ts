@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { PaseoApi, PaseoAgent } from "@getpaseo/client";
 import { summaryRevisionSchema, type SummaryHistoryBoundary } from "../shared/session-navigator";
 import { latestStoredSummary, type CompactSummaryPayload, type SessionSummaryGenerator } from "./session-summaries";
 import { createProviders } from "../shared/session-create";
+import { allPages } from "./session-create";
+import { within } from "./placement";
 import { readProviderCatalog } from "./provider-catalog";
 import type { HostConfigDeps } from "./opencode-config";
 import { readConfig } from "./config";
@@ -84,12 +86,87 @@ async function writeJob(file: string, job: Job) {
   await rename(temporary, file);
 }
 
-async function readJob(file: string): Promise<Job | null> {
-  try { return summaryJobSchema.parse(JSON.parse(await readFile(file, "utf8"))); }
+/** A job with the exact bytes it was read from, so a superseded record is kept as it was. */
+async function readJobFile(file: string): Promise<{ job: Job; raw: Buffer } | null> {
+  let raw: Buffer;
+  try { raw = await readFile(file); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return null; throw error; }
+  return { job: summaryJobSchema.parse(JSON.parse(raw.toString("utf8"))), raw };
+}
+
+/**
+ * Keep a record's exact bytes at `<dir>/<name>` before anything replaces or enriches it. The archive is written once and
+ * never replaced: an existing archive with the same bytes is a replay, and one with other bytes holds the caller.
+ */
+export async function archiveExactBytes(dir: string, name: string, raw: Buffer): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const target = join(dir, name), temporary = `${target}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try { await handle.writeFile(raw); await handle.sync(); } finally { await handle.close(); }
+  try { await link(temporary, target); }
+  catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    if (!(await readFile(target)).equals(raw)) throw new Error(`The archived record ${name} already holds other evidence. It is kept unchanged and this record is held; nothing was replaced.`);
+  } finally { await unlink(temporary); }
+}
+
+/** The host's refusal of a held key, by its code in the error or any cause; the stock client exposes no structured code. */
+function heldCreate(error: unknown): "conflict" | "unknown" | null {
+  for (let cause = error, depth = 0; cause && depth < 8; cause = (cause as { cause?: unknown }).cause, depth++) {
+    const text = cause instanceof Error ? `${String((cause as { code?: unknown }).code ?? "")} ${cause.message}` : String(cause);
+    if (/request_key_conflict/.test(text)) return "conflict";
+    if (/request_outcome_unknown/.test(text)) return "unknown";
+  }
+  return null;
 }
 
 function digest(text: string) { return createHash("sha256").update(text).digest("hex"); }
+
+/**
+ * The designated workspace, read back exactly: the recorded placement on retry, else the operator file. It must be a
+ * plain directory workspace outside any repository, and no other active workspace may sit beneath its directory, so a
+ * helper never runs inside or above a checkout.
+ */
+async function designatedWorkspace(paseo: PaseoApi, placementFile: string, recorded: SummaryHelperPlacement | undefined) {
+  let placement = recorded;
+  if (!placement) {
+    try { placement = placementSchema.parse(JSON.parse(await readFile(placementFile, "utf8"))); } catch { throw new Error(PLACEMENT_UNSET); }
+  }
+  const workspace = paseo.workspaces.ref(placement.workspaceId);
+  const read = await workspace.refresh();
+  if (!read || read.id !== placement.workspaceId || read.projectId !== placement.projectId || read.workspaceDirectory !== placement.cwd || read.archivingAt
+    || read.workspaceKind !== "directory" || (read.projectKind !== "non_git" && read.projectKind !== "directory")) throw new Error(placementMismatch(placement, !!recorded));
+  const cwd = placement.cwd;
+  const nested = (await allPages(cursor => paseo.workspaces.list({ includeBackground: true, page: { limit: 200, ...(cursor ? { cursor } : {}) } })))
+    .some(other => other.id !== placement.workspaceId && !other.archivingAt && !!other.workspaceDirectory && other.workspaceDirectory !== cwd && within(other.workspaceDirectory, cwd));
+  if (nested) throw new Error(`The summary workspace ${placement.workspaceId} has another active workspace beneath ${cwd}. A helper never runs above a checkout. Capture retained; no helper was created.`);
+  return { placement: { workspaceId: placement.workspaceId, projectId: placement.projectId, cwd: placement.cwd }, workspace };
+}
+
+/** Whether a new summary could be placed now: the same readback a new job runs, for a caller that must check before acting. */
+export async function summaryPlacementReady(paseo: PaseoApi, placementFile = summaryPlacementFile()): Promise<void> {
+  await designatedWorkspace(paseo, placementFile, undefined);
+}
+
+type CapturedEntry = { seqStart: number; seqEnd: number; role: string; text: string };
+/** The excerpt and boundary of the newest entries within the character budget; `omitted` marks skipped page events. */
+function captureOf(entries: CapturedEntry[], page: { epoch: string; hasOlder: boolean }, agent: PaseoAgent, omitted: boolean) {
+  let remaining = SUMMARY_SOURCE_CHARACTERS;
+  const captured: CapturedEntry[] = [];
+  for (const entry of [...entries].reverse()) {
+    if (!remaining) break;
+    const text = entry.text.slice(-remaining);
+    remaining -= text.length;
+    captured.unshift({ seqStart: entry.seqStart, seqEnd: entry.seqEnd, role: entry.role, text });
+  }
+  const excerpt = JSON.stringify(captured);
+  const snapshotHash = createHash("sha256").update(excerpt).digest("hex");
+  const historyBoundary: SummaryHistoryBoundary = {
+    epoch: page.epoch, fromSeq: captured[0]!.seqStart, toSeq: captured.at(-1)!.seqEnd,
+    snapshotHash, partial: page.hasOlder || remaining === 0 || omitted, provider: agent.provider, providerSessionId: agent.persistence?.sessionId ?? null,
+  };
+  return { captured, excerpt, historyBoundary };
+}
 function sameSession(left: PaseoAgent, right: PaseoAgent) {
   return left.id === right.id && left.provider === right.provider && left.model === right.model && left.cwd === right.cwd && left.currentModeId === right.currentModeId &&
     (left.persistence?.sessionId ?? null) === (right.persistence?.sessionId ?? null);
@@ -106,21 +183,7 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     return run.finally(() => { if (tails.get(key) === run) tails.delete(key); });
   } };
 
-  /**
-   * The recorded placement wins on retry; a new job reads the operator file. Either way the native workspace must match
-   * exactly and be a plain directory workspace outside any repository, so a helper never runs inside a checkout.
-   */
-  async function designatedWorkspace(recorded: SummaryHelperPlacement | undefined) {
-    let placement = recorded;
-    if (!placement) {
-      try { placement = placementSchema.parse(JSON.parse(await readFile(placementFile, "utf8"))); } catch { throw new Error(PLACEMENT_UNSET); }
-    }
-    const workspace = paseo.workspaces.ref(placement.workspaceId);
-    const read = await workspace.refresh();
-    if (!read || read.id !== placement.workspaceId || read.projectId !== placement.projectId || read.workspaceDirectory !== placement.cwd || read.archivingAt
-      || read.workspaceKind !== "directory" || (read.projectKind !== "non_git" && read.projectKind !== "directory")) throw new Error(placementMismatch(placement, !!recorded));
-    return { placement: { workspaceId: placement.workspaceId, projectId: placement.projectId, cwd: placement.cwd }, workspace };
-  }
+  function designatedWorkspaceFor(recorded: SummaryHelperPlacement | undefined) { return designatedWorkspace(paseo, placementFile, recorded); }
 
   async function generate(agentId: string): Promise<CompactSummaryPayload> {
     const source = paseo.agents.ref(agentId);
@@ -143,23 +206,16 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       return [];
     });
     if (!entries.length) throw new Error("This source has no message history to summarize.");
-    let remaining = SUMMARY_SOURCE_CHARACTERS;
-    const captured: Array<{ seqStart: number; seqEnd: number; role: string; text: string }> = [];
-    for (const entry of [...entries].reverse()) {
-      if (!remaining) break;
-      const text = entry.text.slice(-remaining);
-      remaining -= text.length;
-      captured.unshift({ seqStart: entry.seqStart, seqEnd: entry.seqEnd, role: entry.role, text });
-    }
-    const excerpt = JSON.stringify(captured);
-    const snapshotHash = createHash("sha256").update(excerpt).digest("hex");
-    const historyBoundary: SummaryHistoryBoundary = {
-      epoch: page.epoch, fromSeq: captured[0]!.seqStart, toSeq: captured.at(-1)!.seqEnd,
-      snapshotHash, partial: page.hasOlder || remaining === 0 || entries.length !== page.entries.length, provider: agent.provider, providerSessionId: agent.persistence?.sessionId ?? null,
-    };
+    const { captured, excerpt, historyBoundary } = captureOf(entries, page, agent, entries.length !== page.entries.length);
     const cutoff = entries.at(-1)!.timestamp;
     if (!Number.isFinite(Date.parse(cutoff))) throw new Error("The source history has no valid cutoff timestamp.");
-    const jobKey = createHash("sha256").update(JSON.stringify([agentId, historyBoundary])).digest("hex");
+    const keyOf = (parts: unknown[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+    const jobKey = keyOf([agentId, historyBoundary]);
+    // Earlier released producers keyed this boundary differently: 2d5afed8 on [id, boundary, model], then [id, boundary]
+    // until agent messages were captured (d29bd08d), both over user and assistant messages with no omitted-event flag.
+    const messages = entries.filter(entry => entry.role !== "agent_message");
+    const formerBoundary = messages.length ? captureOf(messages, page, agent, false).historyBoundary : null;
+    const formerKeys = formerBoundary ? [...new Set([keyOf([agentId, formerBoundary, agent.model]), keyOf([agentId, formerBoundary])])].filter(key => key !== jobKey) : [];
     const jobs = join(root, "generation-jobs");
     await mkdir(jobs, { recursive: true, mode: 0o700 });
     const file = join(jobs, `${jobKey}.json`);
@@ -179,9 +235,28 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     const context = [JSON.stringify({ sourceAgentId: agentId, sourceTitle: agent.title, cutoff, historyBoundary, priorSummary }), excerpt];
     const prompt = [SUMMARY_INSTRUCTIONS, ...context].join("\n\n");
     const legacyPromptHash = digest([LEGACY_SUMMARY_INSTRUCTIONS, ...context].join("\n\n"));
-    let job = await readJob(file);
+    // An unfinished row under a former key is this boundary's job, never an absent one; a finished one is history. Its
+    // prompt is never this version's, so unless it is retired below, the correlation check holds it before any write.
+    let jobFile = file, found = await readJobFile(file);
+    for (const key of found ? [] : formerKeys) {
+      const former = await readJobFile(join(jobs, `${key}.json`));
+      if (former && (former.job.state === "creating" || former.job.state === "waiting")) { found = former; jobFile = join(jobs, `${key}.json`); break; }
+    }
+    let job = found?.job ?? null;
+    // A creating job without placement was written by an earlier version, which may already have sent its create with a
+    // per-job cwd under this helper's key; an absent helper does not prove that create had no effect. A placed creating job
+    // whose create outcome the host could not confirm is the same case once a recovery is recorded for it. Such a job is
+    // never rewritten or re-sent under its key, and it is held. Only native evidence that its create is terminal (the
+    // helper reads back archived by its exact id) or a recovery disposition recorded in the job retires it, its bytes
+    // kept, for a fresh helper and key. A legacy helper that reads back live keeps the legacy per-job cwd check below.
+    let legacyCreating = false;
+    if (job?.state === "creating" && (!job.placement || job.recovery)) {
+      const legacy = await paseo.agents.ref(job.workerId).refresh();
+      if (!legacy && !job.recovery) throw new Error(`Summary helper ${job.workerId} was requested by an earlier version and may exist on the host although it does not read back. The job is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
+      legacyCreating = legacy ? legacy.agent.id === job.workerId && !!legacy.agent.archivedAt : true;
+    }
     const migrateLegacyFailure = job?.state === "failed" && job.cleaned === true && !job.promptVersion && !!job.clientMessageId && job.promptHash === legacyPromptHash && !job.sections;
-    if (job && (!job.clientMessageId || (job.promptHash !== digest(prompt) && !migrateLegacyFailure))) throw new Error("The recorded summary job has no matching prompt correlation. It remains held; nothing was resent.");
+    if (job && !legacyCreating && (!job.clientMessageId || (job.promptHash !== digest(prompt) && !migrateLegacyFailure))) throw new Error("The recorded summary job has no matching prompt correlation. It remains held; nothing was resent.");
     // Closes only the job's own effect, its helper, after the caller wrote a terminal state. The designated workspace is
     // never closed, and a legacy per-job container (no `placement`, even with cleaned=true) is left to the gated reconcile.
     async function cleanup() {
@@ -193,31 +268,18 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       job.cleaned = true; await writeJob(file, job);
     }
     if (job?.state === "complete" && job.sections) { await cleanup(); return { sections: job.sections, cutoff, historyBoundary }; }
-    // A creating job without placement was written by an earlier version, which may already have sent its create with a
-    // per-job cwd under this helper's key; an absent helper does not prove that create had no effect. It is never
-    // rewritten or re-sent under its key, and it is held. Only native evidence that its create is terminal (the helper
-    // reads back archived by its exact id) or a recovery disposition recorded in the job retires it, record kept, for a
-    // fresh helper and key. A helper that reads back live keeps the legacy per-job cwd check below.
-    let legacyCreating = false;
-    if (job?.state === "creating" && !job.placement) {
-      const legacy = await paseo.agents.ref(job.workerId).refresh();
-      if (!legacy && !job.recovery) throw new Error(`Summary helper ${job.workerId} was requested by an earlier version and may exist on the host although it does not read back. The job is held: nothing is resent under its key and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
-      legacyCreating = legacy ? legacy.agent.id === job.workerId && !!legacy.agent.archivedAt : true;
-    }
     let designated: Awaited<ReturnType<typeof designatedWorkspace>> | null = null;
     if (!job || job.state === "failed" || legacyCreating) {
       if (job?.state === "failed") await cleanup();
       if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
-      designated = await designatedWorkspace(undefined);
+      designated = await designatedWorkspaceFor(undefined);
       const route = await selectSummaryRoute(paseo, agent.cwd, host);
-      if (job && (migrateLegacyFailure || legacyCreating)) {
-        const superseded = join(jobs, "superseded");
-        await mkdir(superseded, { recursive: true, mode: 0o700 });
-        await writeJob(join(superseded, `${job.workerId}.json`), job);
-      }
+      if (job && (migrateLegacyFailure || legacyCreating)) await archiveExactBytes(join(jobs, "superseded"), `${job.workerId}.json`, found!.raw);
       job = { workerId: randomUUID(), state: "creating", previousWorkers: job ? [...job.previousWorkers, job.workerId] : [], clientMessageId: randomUUID(), promptHash: digest(prompt), route, promptVersion: SUMMARY_PROMPT_VERSION,
         placement: { ...designated.placement, owned: false } };
       await writeJob(file, job);
+      // The former-key row is kept byte for byte under superseded/, so this boundary has one live job.
+      if (jobFile !== file) await unlink(jobFile);
     }
     if (!job.route) throw new Error("The recorded worker has no validated summarizer route. It remains held.");
     const route = job.route;
@@ -226,7 +288,7 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
     if (existing && existing.agent.id !== job.workerId) throw new Error("The summary worker identity did not match. Nothing was sent.");
     if (!existing) {
       if (job.state !== "creating") throw new Error(`Summary generation is unconfirmed. Inspect summary session ${job.workerId}; retry never sends another prompt.`);
-      const { placement, workspace } = designated ?? await designatedWorkspace(job.placement);
+      const { placement, workspace } = designated ?? await designatedWorkspaceFor(job.placement);
       const workerId = job.workerId;
       // Workspace-scoped creation: the host places the helper in the designated workspace and creates no project or workspace.
       // The host refuses a key it holds for another request; that refusal is held, never escaped with a new key.
@@ -238,7 +300,9 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
         outputSchema,
         prompt,
       }).catch((error: unknown) => {
-        if (error instanceof Error && /_request_key_conflict$/.test(error.message)) throw new Error(`Summary helper ${workerId} was already requested under its key with a different request. The job is held: nothing was resent and no new helper was started. Capture retained.`);
+        const held = heldCreate(error);
+        if (held === "conflict") throw new Error(`Summary helper ${workerId} was already requested under its key with a different request. The job is held: nothing was resent and no new helper was started. Capture retained.`);
+        if (held === "unknown") throw new Error(`The host could not confirm whether summary helper ${workerId} was created under its key. The job is held: it is never re-keyed, a retry repeats only this keyed request, and no new helper is started until a recovery disposition is recorded for it. Capture retained.`);
         throw error;
       });
       if (worker.id !== job.workerId) throw new Error("The created summary worker identity did not match. Inspect the generation session before retrying.");

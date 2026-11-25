@@ -39,7 +39,8 @@ The helper session runs in one operator-designated workspace, named in
 job reads that file, and the native workspace must read back with exactly that
 id, project and directory, not archiving, as a `directory` workspace in a
 `non_git` or `directory` project, before the job is recorded. A repository or
-worktree workspace is refused. A missing or invalid file, or a workspace that
+worktree workspace is refused, and so is a directory with another active
+workspace beneath it, so a helper never runs above a checkout. A missing or invalid file, or a workspace that
 does not read back that way, records no job, creates no helper and keeps the
 capture; the message names the workspace id. The job records the placement
 with `owned: false` before anything is sent, and a retry uses the recorded
@@ -55,22 +56,61 @@ A `creating` job recorded by an earlier version has no placement and may
 already have been sent with a per-job directory under its helper's key. A helper
 that does not read back does not prove that create had no effect, so the job is
 held: it is never rewritten, never re-sent under that key, and no new helper is
-started. A fresh helper with a new key replaces it only on one of two grounds:
+started. Earlier released versions keyed the same history differently: 2d5afed8
+on `[source id, boundary, source model]`, then `[source id, boundary]` until
+agent messages were captured (d29bd08d), both over user and assistant messages
+only. Before a job counts as absent, the generator also looks up those former
+keys for the same source and history; a `creating` or `waiting` row found there
+is this job and is held the same way. A row it cannot map, for example because
+the source's model or history has changed since, is not found, so a new
+summary of that source may start another helper. Such a row is never treated as
+settled: its `creating` state keeps its container held in the dry run below.
+
+A fresh helper with a new key replaces a held job only on one of two grounds:
 its helper reads back archived by its exact id (the old create is terminal), or
 an operator records a recovery disposition in the job,
 `"recovery": {"disposition": "retire-legacy-create", "evidence": "…", "recordedAt": "…"}`,
-naming the reconciled evidence. The old record is then kept unchanged under
-`generation-jobs/superseded/` and its container stays held in the dry run
-below. A legacy helper that reads back live keeps its per-job directory check.
-The host refuses a key it holds for a different request; the generator holds
-that job with a plain message and never escapes the refusal with a new key.
+naming the reconciled evidence. The same applies to a job whose create the host
+could not confirm (`agent_request_outcome_unknown`): it is held with a plain
+message, and only a recorded recovery releases it; it is never re-keyed because
+the helper does not read back. On retirement the job's exact bytes are kept at
+`generation-jobs/superseded/<worker id>.json`, written once: an existing archive
+with the same bytes is a replay, and one with other bytes holds the job and is
+never replaced. A former-key row moves there, so the history keeps one live job.
+A legacy helper that reads back live keeps its per-job directory check. The
+host refuses a key it holds for a different request; the generator holds that
+job with a plain message, never shows the host's text, and never escapes the
+refusal with a new key.
+
+Record a recovery with the reconcile runner, never by hand:
+
+```sh
+bun scripts/summary-container-reconcile.ts <daemon-port> <summary-state-root> \
+  record-recovery <job-file> retire-legacy-create '<evidence reference>'          # dry run
+bun scripts/summary-container-reconcile.ts <daemon-port> <summary-state-root> \
+  record-recovery <job-file> retire-legacy-create '<evidence reference>' \
+  --apply <beforeSha256 from the dry run>
+```
+
+It accepts only a `creating` job whose helper does not read back by its exact
+id. The dry run prints the job's `beforeSha256`; `--apply` must name it, and a
+job whose bytes have changed since is refused unchanged, so drift stops that
+job. Before any change it keeps the job's exact bytes at
+`generation-jobs/superseded/<worker id>.before-recovery.json`, then adds only the
+`recovery` object, leaving every other field (including `promptHash` and
+`clientMessageId`) as it was, by an atomic replace. Repeating the same evidence
+changes nothing. It never deletes a job, resends or writes to the host. It does
+not read the host's creation receipt; the evidence must cite the installer's
+own receipt triage.
 
 **Takeover depends on it.** Taking over an idle session saves its handoff
 summary first. Without a valid `summary.json`, that summary cannot be generated,
 so every idle-source takeover answers "Its handoff summary could not be
-generated: …" and is not started, and Summarize & copy fails closed. A running
-source is worse off: apply stops it first and then fails to take its final
-summary, so it stays stopped with no successor and the takeover ends uncertain.
+generated: …" and is not started, and Summarize & copy fails closed. For a
+running source, apply reads the designated workspace back before it stops the
+source; when that fails, the takeover is refused and the source keeps running.
+A later failure of the final summary itself, after the stop, still leaves the
+source stopped with no successor, and the takeover ends uncertain.
 
 The designated workspace is one singleton utility workspace named `SUMMARIES`
 in the `DESK • ADAM` desk project, on the directory `summaries` under that

@@ -20,7 +20,7 @@ import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createStateRoot, createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
 import { createSessionSummaryService } from "../server/session-summaries";
-import { stockSummaryGenerator } from "../server/stock-summary-generator";
+import { stockSummaryGenerator, summaryPlacementReady } from "../server/stock-summary-generator";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -142,7 +142,7 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const observedAt = new Date().toISOString();
   const fleetCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, promotionRoot: createRoot,
-    summaries, snapshot: async () => ({ ...SNAPSHOT, requestId: "snapshot-1", generatedAt: new Date().toISOString(), entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
+    summaries, summaryPlacement: async () => {}, snapshot: async () => ({ ...SNAPSHOT, requestId: "snapshot-1", generatedAt: new Date().toISOString(), entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
     operatorFleetDiscovery: async () => ({ choices, catalog: fleetCatalog }),
     evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
@@ -1753,6 +1753,23 @@ describe("universal takeover operation", () => {
     expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
     expect(applied.message).toContain("could not be found");
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("reads the designated summary workspace back before the stop and leaves the source running when it fails (N2)", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    const stop = vi.fn(async (id: string) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    // The production readback on this host's client, against a summary.json that is not there.
+    h.deps.summaryPlacement = () => summaryPlacementReady(h.client as never, join(h.root, "..", "absent-summary.json"));
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    // The unsafe effect first: the source is still running and nothing was archived or created.
+    expect(h.agents.get("agent-1")!.status).toBe("running");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(applied.message).toContain("The source was not stopped");
   });
 
   it("refuses a running source that remains active after the stop, with no archive or create", async () => {
