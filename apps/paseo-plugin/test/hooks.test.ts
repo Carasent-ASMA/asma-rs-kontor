@@ -660,6 +660,16 @@ describe("workspace.create hook", () => {
         config(),
       ),
     ).resolves.toBeUndefined();
+    // A project that only carries a key in its name is neither a desk nor an epic project.
+    for (const projectDisplayName of ["TICKETS • ASMA-8507", "asma-rs-kontor • ASMA-8507"]) {
+      await expect(
+        guardWorkspaceCreate(
+          workspaceRequest({ source: { kind: "directory", path: "/tmp/elsewhere", projectId: "prj_1" } }),
+          context({}, { wks_caller: { projectId: "prj_lookalike", workspaceDirectory: "/tmp/repo", projectDisplayName } }),
+          config(),
+        ),
+      ).resolves.toBeUndefined();
+    }
   });
 
   it("refuses when the caller cannot be read back, whatever its labels", async () => {

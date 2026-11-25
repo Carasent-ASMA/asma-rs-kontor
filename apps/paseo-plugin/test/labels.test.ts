@@ -83,7 +83,7 @@ describe("epicProjectKey", () => {
   it("names the epic of an ESW project only for a confirmed key", () => {
     expect(epicProjectKey("ESW • ASMA-8539")).toBe("ASMA-8539");
     expect(epicProjectKey(" esw  •  ASMA-1 ")).toBe("ASMA-1");
-    for (const name of [null, undefined, "", "DESK • ADAM", "ESW • asma-8539", "ESW • ASMA-0", "ESW • ASMA-8539-slug", "ESW • ASMA-1 • X", "asma-rs-kontor", "ESW"])
+    for (const name of [null, undefined, "", "DESK • ADAM", "ESW • asma-8539", "ESW • ASMA-0", "ESW • ASMA-8539-slug", "ESW • ASMA-1 • X", "asma-rs-kontor", "ESW", "TICKETS • ASMA-8507", "DESK • ASMA-8507"])
       expect(epicProjectKey(name)).toBeNull();
   });
 });
