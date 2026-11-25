@@ -545,6 +545,28 @@ describe("SessionDirectory", () => {
     expect(toDirectoryEntry(seed)).toMatchObject({ lastUserMessageAt: null, activeTurn: false });
   });
 
+  it("reads the host's live background-work summary and never invents one", () => {
+    const seed = entry("background");
+    const withReport = (backgroundWork: unknown) => toDirectoryEntry({
+      ...seed,
+      agent: { ...seed.agent, backgroundWork } as unknown as AgentDirectoryPage["agent"],
+    });
+
+    expect(withReport({ count: 3, runningCount: 2 }).backgroundWork).toEqual({ count: 3, runningCount: 2 });
+    // A host that reports no running split keeps exactly that: no invented split.
+    expect(withReport({ count: 2 }).backgroundWork).toEqual({ count: 2 });
+    // A reported zero is a fact, not an absent field.
+    expect(withReport({ count: 0 }).backgroundWork).toEqual({ count: 0 });
+    // A host bug that claims more running than total is clamped, never shown as a contradiction.
+    expect(withReport({ count: 1, runningCount: 4 }).backgroundWork).toEqual({ count: 1, runningCount: 1 });
+    // An untrustworthy shape is "not reported", never zero work.
+    expect(withReport({ count: "2" }).backgroundWork).toBeUndefined();
+
+    const absent = toDirectoryEntry(seed);
+    expect(absent.backgroundWork).toBeUndefined();
+    expect("backgroundWork" in absent).toBe(false);
+  });
+
   it("retains closed unarchived history across pages, subscriptions, stale cache and archive toggles", async () => {
     const history = Array.from({ length: 13 }, (_, n) => entry(`history-${n}`, {
       status: "closed", requiresAttention: true, attentionReason: "error",

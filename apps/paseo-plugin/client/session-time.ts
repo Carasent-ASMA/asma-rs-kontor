@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { DirectoryEntry } from "./session-directory";
+import { hasRunningBackgroundWork, type DirectoryEntry } from "./session-directory";
 import { sessionState, STATE_LABELS, type OrganizationState } from "./session-organization";
 
 /**
@@ -161,6 +161,7 @@ export function stateSinceLine(entry: DirectoryEntry, clock: Clock): TimeLine {
   if (state === "running") {
     const started = parseTime(entry.activeTurnStartedAt);
     if (started !== null) return { label, value: `At least ${timed(started, clock, "When the current turn started. A prompt that interrupts a turn starts a new one, so the session may have run longer")}` };
+    if (hasRunningBackgroundWork(entry)) return { label, value: "Running background work; Paseo reports no session-level start. Open the session for each task's start." };
   } else if (state === "attention" && raised !== null) {
     return { label, value: timed(raised, clock, "When Paseo raised it, at a finished turn or Mark as unread; it has stayed raised since, through any later turn") };
   }

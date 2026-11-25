@@ -620,7 +620,7 @@ describe("Start or switch sheet", () => {
     choose(s, "kontor-switch-more");
     expect(byTestId(s.tree, "kontor-switch-more")?.props.expanded).toBe(true);
     expect(within(s.tree, "kontor-switch-more-panel").filter((node) => node.props.onPress).map((node) => node.props.label)).toEqual(["Last visited", "Last activity", "Running", "Questions",
-      "Errors", "All", "Idle", "Attention", "Favorites", "Current", "Starting", "Closed", "Earlier errors", "Provider blocked (observed)", "Archived sessions"]);
+      "Errors", "All", "Idle", "Attention", "Favorites", "Current", "Background tasks", "Starting", "Closed", "Earlier errors", "Provider blocked (observed)", "Archived sessions"]);
     expect(within(s.tree, "kontor-switch-more-panel").filter((node) => node.props.role === "group").map((node) => node.props.accessibilityLabel)).toEqual(["All states", "More states"]);
     expect(byTestId(s.tree, "kontor-switch-more-recent")?.props).toMatchObject({ selected: true, icon: "Clock" });
     search(s, " route ");

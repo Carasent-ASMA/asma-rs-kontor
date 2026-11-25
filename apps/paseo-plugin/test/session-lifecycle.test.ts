@@ -67,6 +67,22 @@ describe("current runtime and retained error history", () => {
     expect(sortDirectoryEntries([earlier, unread, running, current]).map((entry) => entry.id)).toEqual(["current", "running", "unread", "history"]);
   });
 
+  it("shows reported background work as Running without displacing questions or errors", () => {
+    const running = sessionEntry("bg", { status: "idle", backgroundWork: { count: 2, runningCount: 1 } });
+    expect(sessionState(running)).toBe("running");
+    expect(matchesStatus(running, "running")).toBe(true);
+    expect(matchesStatus(running, "background")).toBe(true);
+    expect(buildOrganizationTree({ entries: [running] })[0]!.aggregate).toMatchObject({ running: 1 });
+    // Paseo's own precedence: a question or an error keeps its higher state.
+    expect(sessionState(sessionEntry("asking", { pendingPermissionCount: 1, backgroundWork: { count: 1, runningCount: 1 } }))).toBe("needs_input");
+    expect(sessionState(sessionEntry("failed", { status: "error", backgroundWork: { count: 1, runningCount: 1 } }))).toBe("failed");
+    // A host without a running split reports one total, which Paseo counts as running.
+    expect(sessionState(sessionEntry("splitless", { status: "idle", backgroundWork: { count: 1 } }))).toBe("running");
+    // An absent summary is not zero reported work, and a reported zero is not running.
+    expect(sessionState(sessionEntry("unreported", { status: "idle" }))).toBe("idle");
+    expect(sessionState(sessionEntry("reported-none", { status: "idle", backgroundWork: { count: 0 } }))).toBe("idle");
+  });
+
   it("does not infer archive or completion from a closed runtime or an earlier error", () => {
     const closed = sessionEntry("closed", { status: "closed", attentionReason: "error" });
     const archived = sessionEntry("archived", { status: "closed", attentionReason: "error", archivedAt: "2026-10-20T20:00:00Z" });

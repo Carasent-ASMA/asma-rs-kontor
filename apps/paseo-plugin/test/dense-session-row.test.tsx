@@ -29,11 +29,11 @@ const text = (node: Element) => elements(node).filter((child) => child.type === 
 const NOW = Date.parse("2026-10-22T12:00:00.000Z");
 const COLORS = { surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", accent: "#00f", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } as never;
 
-function row(mode?: DenseRowMode, totals?: SessionTotals | null, note?: string) {
+function row(mode?: DenseRowMode, totals?: SessionTotals | null, note?: string, overrides: Parameters<typeof sessionEntry>[1] = {}) {
   harness.fresh();
   const onPress = vi.fn(), onSelectStart = vi.fn();
   const draw = (next = mode) => {
-    const tree = elements(harness.current.render(() => DenseSessionRow({ entry: sessionEntry("agent-a", { title: "Route review" }), colors: COLORS, clock: { now: NOW, zone: "UTC" },
+    const tree = elements(harness.current.render(() => DenseSessionRow({ entry: sessionEntry("agent-a", { title: "Route review", ...overrides }), colors: COLORS, clock: { now: NOW, zone: "UTC" },
       opened: null, totals, note, spokenDetail: "Native ID agent-a", mode: next, onPress, onSelectStart })));
     return { tree, body: byTestId(tree, "session-row-body"), state: byTestId(tree, "session-row-state") };
   };
@@ -77,6 +77,20 @@ describe("DenseSessionRow", () => {
     vi.advanceTimersByTime(1_000);
     expect(onSelectStart).toHaveBeenCalledTimes(1);
     expect(onPress).not.toHaveBeenCalled();
+  });
+
+  it("shows reported background work on the row note and keeps it spoken", () => {
+    const running = row(undefined, undefined, undefined, { backgroundWork: { count: 2, runningCount: 1 } });
+    expect(text(byTestId(running.tree, "session-row-note"))).toBe("2 background tasks · 1 running");
+    expect(running.body.props.accessibilityLabel).toContain("2 background tasks · 1 running");
+
+    // Reported work with nothing running is "waiting", so a heartbeat cannot read as work in progress.
+    const waiting = row(undefined, undefined, undefined, { backgroundWork: { count: 1, runningCount: 0 } });
+    expect(text(byTestId(waiting.tree, "session-row-note"))).toBe("1 background task · waiting");
+
+    // A reported zero and a host that reports no field both show nothing.
+    expect(byTestId(row(undefined, undefined, undefined, { backgroundWork: { count: 0 } }).tree, "session-row-note")).toBeUndefined();
+    expect(byTestId(row().tree, "session-row-note")).toBeUndefined();
   });
 
   it("toggles a selectable row once on Space, ignoring a held key and other keys", () => {

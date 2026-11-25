@@ -686,10 +686,10 @@ function nativePlace(entry: DirectoryEntry): string {
 
 /**
  * What a Sessions row adds to the shared dense row, which already shows the title, state, origin with its task and
- * PR, model and times. The note line is kept for exceptions to act on: role declarations that disagree, archive
- * membership, and a native record found absent or already archived. Routine facts, such as the native runtime behind
- * a derived state or unverified provider history, are spoken with the exact native ID and the whole place, and
- * Details keeps every value.
+ * PR, model, times and reported background work. The note line is kept for exceptions to act on: role declarations
+ * that disagree, archive membership, and a native record found absent or already archived. Routine facts, such as the
+ * native runtime behind a derived state or unverified provider history, are spoken with the exact native ID and the
+ * whole place, and Details keeps every value.
  */
 export function sessionRowExtras(entry: DirectoryEntry, place: string): { note: string | null; spoken: string } {
   const evidence = entry.requiresAttention ? freshAvailability(entry) : null;

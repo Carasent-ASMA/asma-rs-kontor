@@ -144,6 +144,20 @@ pill is the in-session return control where the composer supports it.
   a stale badge. The badge is only as current as the host snapshot: a host that
   omits both public fields cannot be distinguished from a resolved permission.
   No question subtype is inferred.
+- **Background work.** Paseo 0.16 and later report a session's live background
+  work: background shells, monitors and other tasks still running behind a
+  finished turn. The plugin carries that summary into the row note and its
+  Details. A session with background work still **running** shows as
+  **Running**, exactly as Paseo's own state bucket does; reported work with
+  nothing running (a heartbeat, for example) keeps its native state and says
+  **waiting**. **More → Background tasks** lists every session with reported
+  work, and work still running also appears under **Running**. Native error and
+  Needs input keep their higher precedence, and the Background tasks filter
+  still reaches those sessions. Counts are live runtime state from the direct
+  directory only: a shared-catalog read shows the count as unavailable rather
+  than zero, and a summary the host stops reporting is never carried forward.
+  The declared Paseo floor is unchanged; a host that reports no summary simply
+  shows nothing.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
@@ -303,7 +317,7 @@ route in the form's notes and where its rows would be.
   what it counts. Counts follow this host's non-archived sessions and the search;
   partial, stale or unavailable reads show updating or unknown counts. **More**
   lists All, Current, Idle, Favorites, Attention, Starting, Closed, Earlier
-  errors and Provider blocked with their counts, plus **Archived sessions**,
+  errors, Background tasks and Provider blocked with their counts, plus **Archived sessions**,
   which Kontor lists. Provider blocked needs exact refusal evidence, so unchecked
   errors are never counted blocked or reported as a verified zero; the switcher
   never probes providers and opens that state in Kontor, which reads the

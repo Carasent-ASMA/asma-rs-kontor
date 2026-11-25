@@ -52,6 +52,19 @@ const AGENT_SORT: NonNullable<PaseoAgentListOptions["sort"]> = [
   { key: "updated_at", direction: "desc" },
 ];
 
+/**
+ * The background work one Paseo host reports for a session: background shells,
+ * monitors and other tasks that keep running behind a finished turn. It is live
+ * runtime state, not history: the host reports only what is still there.
+ * `runningCount` is the host's running split; hosts before Paseo 0.17 omit it and
+ * then the total is the only number they report. An absent summary means the host
+ * did not report background work at all, which is not the same as zero.
+ */
+export type BackgroundWork = {
+  readonly count: number;
+  readonly runningCount?: number;
+};
+
 export type DirectoryEntry = {
   /** Exact-ID read evidence; absent or probe failure is unknown, never dead by age. */
   readonly availability?: SessionAvailability;
@@ -76,6 +89,8 @@ export type DirectoryEntry = {
   readonly activeTurn?: boolean;
   /** When the running turn started; Paseo loses it on a restart. */
   readonly activeTurnStartedAt?: string | null;
+  /** Live background work the host reports; absent means it reported none at all. */
+  readonly backgroundWork?: BackgroundWork;
   readonly cwd: string;
   readonly workspaceId: string | null;
   readonly provider: string;
@@ -242,6 +257,74 @@ export function deriveNeedsInput(input: {
   );
 }
 
+/**
+ * Paseo's own rule (its `agent-state-bucket`): a host that reports no running
+ * split reports one total, so every task it reports counts as running. An absent
+ * summary means the host reported no background work to count.
+ */
+export function runningBackgroundWork(
+  entry: Pick<DirectoryEntry, "backgroundWork">,
+): number {
+  const work = entry.backgroundWork;
+  if (work === undefined) {
+    return 0;
+  }
+  return Math.min(work.runningCount ?? work.count, work.count);
+}
+
+/** Reported background work of any kind: what the Background filter lists. */
+export function hasBackgroundWork(
+  entry: Pick<DirectoryEntry, "backgroundWork">,
+): boolean {
+  return (entry.backgroundWork?.count ?? 0) > 0;
+}
+
+/** Reported background work still running: Paseo counts such a session as Running. */
+export function hasRunningBackgroundWork(
+  entry: Pick<DirectoryEntry, "backgroundWork">,
+): boolean {
+  return runningBackgroundWork(entry) > 0;
+}
+
+/**
+ * Paseo's own running test (`agent-state-bucket`): a native turn, or reported
+ * background work that is still running. One helper keeps the badge, the sort
+ * rank and the Running filter from disagreeing about the same session.
+ */
+export function isSessionRunning(
+  entry: Pick<DirectoryEntry, "status" | "backgroundWork">,
+): boolean {
+  return entry.status === "running" || hasRunningBackgroundWork(entry);
+}
+
+/**
+ * Reads the wire summary defensively. A host that does not send it, or sends a
+ * shape this plugin cannot trust, is "not reported": the row must not claim zero
+ * background work out of a field it never read.
+ */
+function readBackgroundWork(agent: unknown): BackgroundWork | undefined {
+  const reported = (agent as { backgroundWork?: unknown }).backgroundWork;
+  if (reported === null || typeof reported !== "object") {
+    return undefined;
+  }
+  const record = reported as { count?: unknown; runningCount?: unknown };
+  if (
+    typeof record.count !== "number" ||
+    !Number.isFinite(record.count) ||
+    record.count < 0
+  ) {
+    return undefined;
+  }
+  const count = Math.floor(record.count);
+  const running =
+    typeof record.runningCount === "number" &&
+    Number.isFinite(record.runningCount) &&
+    record.runningCount >= 0
+      ? Math.min(Math.floor(record.runningCount), count)
+      : undefined;
+  return running === undefined ? { count } : { count, runningCount: running };
+}
+
 function text(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -307,6 +390,7 @@ export function toDirectoryEntry(
     },
   };
   const attentionReason = agent.attentionReason ?? null;
+  const backgroundWork = readBackgroundWork(agent);
   return {
     id: agent.id,
     title,
@@ -322,6 +406,7 @@ export function toDirectoryEntry(
     lastUserMessageAt: agent.lastUserMessageAt ?? null,
     activeTurn: agent.activeTurn !== null && agent.activeTurn !== undefined,
     activeTurnStartedAt: agent.activeTurn?.startedAt ?? null,
+    ...(backgroundWork === undefined ? {} : { backgroundWork }),
     cwd,
     workspaceId: agent.workspaceId ?? null,
     ...usage,
@@ -355,6 +440,7 @@ function latestHostTime(rows: Iterable<{ readonly updatedAt: string; readonly cr
 /**
  * Current needs input, error, running, attention, then other sessions.
  * Retained error notices stay in history and never promote the current state.
+ * Running includes reported background work, as Paseo's own state bucket does.
  */
 function stateBucketRank(entry: DirectoryEntry): number {
   if (entry.needsInput) {
@@ -363,7 +449,7 @@ function stateBucketRank(entry: DirectoryEntry): number {
   if (entry.status === "error") {
     return 1;
   }
-  if (entry.status === "running") {
+  if (isSessionRunning(entry)) {
     return 2;
   }
   if (hasSessionAttention(entry)) {

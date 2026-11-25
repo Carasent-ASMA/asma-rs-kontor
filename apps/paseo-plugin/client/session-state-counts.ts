@@ -59,6 +59,10 @@ export function sessionStateCounts(input: CountRead & {
   return Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => {
     if (restrictedUnknown) return [status, { text: "—", label: "Count unavailable: shared catalog rows carry no session labels for this filter" }];
     if (status === "provider_blocked") return [status, input.providerBlocked];
+    // Background work is live runtime state; a catalog or snapshot read cannot assert its count.
+    if (status === "background" && input.state.source !== undefined && input.state.source !== "direct") {
+      return [status, { text: "—", label: "Count unavailable: background work is reported only by the live direct read, not the shared catalog" }];
+    }
     const count = (entries: readonly DirectoryEntry[]) => new Set(entries.filter((entry) => matchesStatus(entry, status, favorites, recent)).map((entry) => entry.id)).size;
     const matched = count(candidates), total = count(universe);
     const numerator = compactSessionCount(matched), denominator = compactSessionCount(total);
