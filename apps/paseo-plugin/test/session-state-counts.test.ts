@@ -53,11 +53,11 @@ describe("same-state counts", () => {
 
   it("counts background work only from the live direct read, never a catalog zero", () => {
     const working = [...entries, sessionEntry("bg", { backgroundWork: { count: 1, runningCount: 0 } })];
-    const read = { ...input, universe: working, candidates: working };
+    const read = { ...input, state: { ...state, entries: working }, universe: working, candidates: working };
     expect(sessionStateCounts(read).background.text).toBe("1");
-    expect(sessionStateCounts({ ...read, state: { ...state, source: "direct" } }).background.text).toBe("1");
+    expect(sessionStateCounts({ ...read, state: { ...read.state, source: "direct" } }).background.text).toBe("1");
     for (const source of ["catalog", "catalog-snapshot"] as const) {
-      const count = sessionStateCounts({ ...read, state: { ...state, source } }).background;
+      const count = sessionStateCounts({ ...read, state: { ...read.state, source } }).background;
       expect(count.text).toBe("—");
       expect(count.label).toContain("Count unavailable");
     }
@@ -70,7 +70,7 @@ describe("same-state counts", () => {
     expect(silent.label).toContain("may not report it");
     // One reported zero shows the host reports summaries, so its zero count is a fact.
     const reported = [...entries, sessionEntry("bg-none", { backgroundWork: { count: 0 } })];
-    expect(sessionStateCounts({ ...input, universe: reported, candidates: reported }).background.text).toBe("0");
+    expect(sessionStateCounts({ ...input, state: { ...state, entries: reported }, universe: reported, candidates: reported }).background.text).toBe("0");
   });
 
   it("does not assert a provider-blocked zero under a label-unknown scope", () => {

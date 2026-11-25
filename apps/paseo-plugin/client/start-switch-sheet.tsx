@@ -24,7 +24,7 @@ import { copySessionId, SessionActionsMenu, type SessionAction } from "./session
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { buildOrganizationTree, flattenOrganizationTree, sessionState } from "./session-organization";
 import { byLastActivity, totalsDetail, type SessionTotals } from "./session-row-format";
-import type { SessionStateCount } from "./session-state-counts";
+import { backgroundUnavailable, type SessionStateCount } from "./session-state-counts";
 import { SessionPulseContext, SessionStateMarker } from "./session-state-marker";
 import { startSwitchCounts, type SwitchView } from "./session-state-shortcuts";
 import { SessionLayoutControl } from "./session-layout-control";
@@ -381,7 +381,9 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     </View>;
   const muted = { color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 4 } as const;
   let empty: string | null = null;
-  if (!rows.length && query.trim()) empty = `No ${status === "recent" ? "" : `${quickFilterLabel(status)} `}session matches “${query.trim()}”.`;
+  const backgroundGap = status === "background" ? backgroundUnavailable(archive.directory) : null;
+  if (!rows.length && backgroundGap) empty = `No Background tasks shown: ${backgroundGap}.`;
+  else if (!rows.length && query.trim()) empty = `No ${status === "recent" ? "" : `${quickFilterLabel(status)} `}session matches “${query.trim()}”.`;
   else if (!rows.length && status !== "recent") empty = `No ${quickFilterLabel(status)} sessions on this host.`;
   else if (!rows.length && recent.record.clearedAt !== null) empty = `Cleared on this device at ${new Date(recent.record.clearedAt).toLocaleTimeString()}. Sessions you open from Kontor after that appear here.`;
   else if (!rows.length) empty = "Sessions you open from Kontor appear here, most recent first.";
@@ -411,7 +413,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
     <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 32 }}>
-        <Text testID="kontor-switch-count" style={{ ...muted, flex: 1 }}>{`${rows.length} of ${total}`}</Text>
+        <Text testID="kontor-switch-count" style={{ ...muted, flex: 1 }}>{backgroundGap ? `${rows.length} shown · total unavailable` : `${rows.length} of ${total}`}</Text>
         {rows.length < total ? <Action small label={`Show ${total - rows.length} more`} accessibilityLabel={`Show the other ${total - rows.length} of ${total}`} colors={colors} onPress={() => { cancelDelayedOpen(); setRevealed(true); }} /> : null}
         {status === "recent" ? <Action small label="Clear recent" accessibilityLabel="Clear recent on this device" colors={colors} onPress={() => clearRecent(hostId)} /> : null}
       </View>

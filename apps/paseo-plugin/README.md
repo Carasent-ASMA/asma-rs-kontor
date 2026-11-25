@@ -156,9 +156,10 @@ pill is the in-session return control where the composer supports it.
   Attention. Paseo raises only an unread error above Running. **More →
   Background tasks** lists every session with reported work, including ones
   that show Needs input or Error, and work still running also matches
-  **Running**. Counts are live runtime state from the direct directory only. A
-  shared-catalog read shows the count as unavailable rather than zero, and so
-  does a read in which no session carries a summary. A summary is read as
+  **Running**. Counts are live runtime state from the direct directory only. On
+  a shared-catalog read, or a read in which no session carries a summary, the
+  state count, the matching count and an empty list say unavailable rather
+  than zero, in Sessions and in the switcher. A summary is read as
   strictly as Paseo validates it: a malformed one, or one the host stops
   reporting, shows as not reported and is never carried forward. The declared
   Paseo floor is unchanged.

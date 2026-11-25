@@ -572,6 +572,23 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("20 of 23");
   });
 
+  it("never shows Background tasks as an empty zero on a read that cannot report background work", () => {
+    const pick = (entries: DirectoryEntry[]) => {
+      const s = sheet({ directory: complete(entries) });
+      choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-background");
+      return s;
+    };
+    // No row carries a summary: the host may not report it, so the chip, the list and its count all stay unknown.
+    const silent = pick(RUNNING);
+    expect(byTestId(silent.tree, "kontor-switch-more")?.props.count).toMatchObject({ text: "—" });
+    expect(byTestId(silent.tree, "kontor-switch-empty")?.props.children).toBe("No Background tasks shown: no session in this read carries a background-work summary, so this host may not report it.");
+    expect(byTestId(silent.tree, "kontor-switch-count")?.props.children).toBe("0 shown · total unavailable");
+    // One reported zero shows the host reports summaries, so the empty list is a fact.
+    const reported = pick([...RUNNING, sessionEntry("bg-none", { backgroundWork: { count: 0 } })]);
+    expect(byTestId(reported.tree, "kontor-switch-empty")?.props.children).toBe("No Background tasks sessions on this host.");
+    expect(byTestId(reported.tree, "kontor-switch-count")?.props.children).toBe("0 of 0");
+  });
+
   it("narrows the chosen state by the search and refines its count", () => {
     const s = sheet({ directory: complete(RUNNING) });
     choose(s, "kontor-switch-state-running");
