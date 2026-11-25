@@ -538,9 +538,17 @@ describe("workspace.create hook", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("allows a Paseo-direct-only caller creating an explicit directory placement", async () => {
+  it("allows a Paseo-direct-only caller any explicit directory in its own project: the checkout is not resolved (project-only scope residual)", async () => {
     await expect(
       guardWorkspaceCreate(workspaceRequest(), context(paseoDirectLabels()), config()),
+    ).resolves.toBeUndefined();
+    // Another task's review worktree in the same project passes too: no source the hook reads names this caller's checkout.
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({ source: { kind: "directory", path: "/Users/test/carasent/asma-modules/.worktrees/asma-8508-review/asma-rs-kontor", projectId: PROJECT } }),
+        context(paseoDirectLabels()),
+        config(),
+      ),
     ).resolves.toBeUndefined();
   });
 
@@ -900,6 +908,26 @@ describe("workspace.create hook: caller identity and scope (ASMA-8580)", () => {
     ).rejects.toThrow("project outside");
   });
 
+  it("takes the scope of a borrowed caller id: the caller is client-reported, so another live agent's id gets that agent's project (residual)", async () => {
+    // Agent A runs in ESW • ASMA-8507 and agent B in ESW • ASMA-9000. The 0.17.4 CLI sends whatever PASEO_AGENT_ID holds,
+    // and the daemon only checks that the agent exists; the hook can read only the agent the id names.
+    const seats: Record<string, string> = { "agent-a": "wks_a", "agent-b": "wks_b" };
+    const base = context(paseoDirectLabels(), {
+      wks_a: { projectId: "prj_esw_8507", workspaceDirectory: "/Users/test/epics/ASMA-8507/task-a", projectDisplayName: "ESW • ASMA-8507" },
+      wks_b: { projectId: "prj_esw_9000", workspaceDirectory: "/Users/test/epics/ASMA-9000/task-b", projectDisplayName: "ESW • ASMA-9000" },
+    });
+    const daemon = {
+      ...base,
+      paseo: {
+        ...(base.paseo as object),
+        agents: { ref: (agentId: string) => ({ current: () => null, refresh: () => Promise.resolve({ agent: { id: agentId, labels: paseoDirectLabels(), workspaceId: seats[agentId] } }) }) },
+      },
+    } as unknown as Context;
+    const intoB = { kind: "directory", path: "/Users/test/epics/ASMA-9000/new-checkout", projectId: "prj_esw_9000" } as const;
+    await expect(guardWorkspaceCreate(workspaceRequest({ callerAgentId: "agent-a", source: intoB }), daemon, config())).rejects.toThrow("project outside");
+    await expect(guardWorkspaceCreate(workspaceRequest({ callerAgentId: "agent-b", source: intoB }), daemon, config())).resolves.toBeUndefined();
+  });
+
   it("refuses a valid project id outside the caller's project (the 0.16.2 payload, top-level callerAgentId)", async () => {
     const payload = {
       callerAgentId: "agent-tpm",
@@ -917,6 +945,32 @@ describe("workspace.create hook: caller identity and scope (ASMA-8580)", () => {
     await expect(
       guardWorkspaceCreate(workspaceRequest({ source: { kind: "worktree", cwd: CANONICAL, projectId: PROJECT } } as never), context({}), config()),
     ).rejects.toThrow("worktree creation is outside it");
+  });
+});
+
+describe("workspace.create hook: Paseo 0.17.4 CLI requests carry no initial agent", () => {
+  // `paseo workspace create` sends its source, title, background and the resolved caller (cli workspace/create.js:115-120).
+  // `paseo run --new-workspace` sends only its source and the caller (run.js:405-409); its labels go to the agent it
+  // creates afterwards (run.js:510-523), and the local source it builds has no projectId (run.js:61-75,
+  // workspace/create.js:12-27).
+  const runSource = { kind: "directory", path: "/Users/test/carasent/asma-modules/.worktrees/asma-other/x" } as const;
+
+  it("leaves `run --new-workspace` with no caller unguarded, whatever labels the run carries", async () => {
+    await expect(guardWorkspaceCreate({ source: runSource } as never, context("error"), config())).resolves.toBeUndefined();
+  });
+
+  it("refuses a workflow caller's `run --new-workspace` for its missing projectId, not for the run's labels", async () => {
+    await expect(
+      guardWorkspaceCreate({ source: runSource, callerAgentId: "agent-1" } as never, context(paseoDirectLabels()), config()),
+    ).rejects.toThrow("explicit projectId");
+    // An unlabelled caller outside any desk or epic project is not scoped: the run's labels never reach the guard.
+    await expect(
+      guardWorkspaceCreate(
+        { source: runSource, callerAgentId: "agent-1" } as never,
+        context({}, { wks_caller: { projectId: "prj_repo", workspaceDirectory: "/tmp/repo", projectDisplayName: "asma-modules" } }),
+        config(),
+      ),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -1002,7 +1056,7 @@ describe("placement switch and detector (ASMA-8580)", () => {
   }
   const mode = (placement: string, reason: string) => ({ event: PLACEMENT_MODE_EVENT, placement, reason, file });
 
-  it("follows the floor when placement.json is absent, so the live floor-off install is inert", async () => {
+  it("follows the floor when placement.json is absent: with the floor off the guard leaves every creation untouched", async () => {
     const off = register(false);
     await expect(off.before.get("workspace.create")!(misplaced(), context({}))).resolves.toEqual(misplaced().request);
     const on = register(true);

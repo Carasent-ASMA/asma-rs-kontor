@@ -114,14 +114,19 @@ export async function seatEnvironment(
 }
 
 /**
- * The caller the daemon attached to this creation, when the release carries it.
+ * The caller the client reported on this creation, when it sent one.
  *
  * Paseo 0.16.2 carries it as a top-level `callerAgentId` on the
  * `workspace.create` request; its initial agent (`agent`, an agent-create
- * request) may carry one too, which 0.11.2 used. Both are read.
+ * request) may carry one too, which 0.11.2 used. Both are read. It is
+ * client-reported: the 0.17.4 CLI copies it from its own `PASEO_AGENT_ID`
+ * (cli `utils/caller-agent.js:4-15`), and the daemon passes it to this hook
+ * unchanged and later checks only that the agent exists (`session.js:5621-5631`,
+ * `:5654-5657`, `:5670`). A process that sets another live agent's id gets
+ * that agent's scope; nothing here can tell it apart.
  * `firstAgentContext` holds only a prompt and attachments for name generation,
  * so it names no caller and carries no labels. The guard also reads the
- * initial agent's labels below.
+ * initial agent's labels below; only an SDK request carries an initial agent.
  */
 function callerAgentIdOf(request: WorkspaceCreateRequest): string | undefined {
   const direct = (request as { callerAgentId?: unknown }).callerAgentId;
@@ -198,16 +203,22 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
     const binding = await readPlacementBinding(paseo, labels, options);
     return binding ? { projects: [binding.projectId], directory: binding.directory } : "the seat's placement binding could not be resolved";
   }
+  // Project only: no source the hook can read names an unbound caller's checkout, so any directory that passes the
+  // source checks is accepted inside this project (the residual "project-only scope; checkout not resolved").
   return { projects: [caller.projectId] };
 }
 
 /**
  * Refuse a workflow creation outside its own placement.
  *
- * Scope comes from the authoritative caller the daemon attached
- * (`callerAgentId`), read back natively: a caller in a desk or epic project,
+ * Scope comes from the client-reported caller (`callerAgentId`, see
+ * `callerAgentIdOf`), read back natively: a caller in a desk or epic project,
  * or one whose labels or whose initial agent's labels claim workflow work, is
- * held to its own project (see `callerScope`). For a caller in a desk or epic
+ * held to its own project (see `callerScope`). Only an SDK request carries an
+ * initial agent: the 0.17.4 CLI sends none on `workspace.create`
+ * (`paseo workspace create`, and `paseo run --new-workspace`, whose labels go
+ * only to the agent it creates afterwards), so a CLI request is classified by
+ * its caller alone. For a caller in a desk or epic
  * project the scope comes from that native placement, so removing its labels
  * does not remove it. A caller anywhere else is in scope only through a
  * workflow claim on its own labels or on the requested initial agent's
@@ -218,6 +229,9 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  *
  * With no caller, a Kontor binding on the initial agent is enforced and any
  * other workflow claim is refused because it names no caller to scope it.
+ *
+ * A caller id borrowed from another live agent gets that agent's scope: the
+ * id is client-reported, and its owner is all the hook can read.
  *
  * Unsupported, and left unguarded: a request with no caller and no workflow
  * claim, and a request from a caller outside any desk or epic project when
@@ -263,9 +277,11 @@ export const PLACEMENT_DETECTED_EVENT = "kontor.placement.detected";
 
 /**
  * Whether placement is enforced, read on every request from `placement.json`
- * (`{"placement":"on"|"off"}`). Absent follows the floor read at start, so
- * installing this build with the floor off changes nothing. A present file that
- * does not conform enforces, like the floor.
+ * (`{"placement":"on"|"off"}`). Absent follows the floor read at start, so with
+ * the floor off the guard leaves every creation untouched. The hook stays
+ * registered, though, so each workspace creation still waits for this worker's
+ * answer (see the README's "Placement switch"). A present file that does not
+ * conform enforces, like the floor.
  */
 export function placementEnforced(floorEnabled: boolean, file = placementFile()): { enforced: boolean; line: string } {
   const mode = readFloor(file, "placement");
@@ -313,6 +329,9 @@ export async function detectPlacement(
  * Placement prevention and detection, registered whatever the floor and
  * independent of the observer MCP. Each request reads `placement.json`; off
  * leaves every creation untouched. The mode line is logged when it changes.
+ * The host runs the hook only while this worker is loaded: during a stop, a
+ * reload, a failed start or after an exit, creations are neither guarded nor
+ * detected, and this worker logs nothing about it; the plugin status shows it.
  */
 export function contributePlacement(
   server: PluginServerContext,

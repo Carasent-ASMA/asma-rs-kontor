@@ -60,7 +60,8 @@ const WORKFLOW_ORCHESTRATIONS = new Set(["paseo", PASEO_DIRECT_ORCHESTRATION, "k
  *
  * A claim only adds enforcement; it never grants placement. `kontor.summary.*`
  * marks a stock summary helper, which is not a workflow seat. `workflow=free`
- * claims nothing on its own.
+ * claims nothing on its own; a workflow orchestration value claims whatever the
+ * workflow, so a `free/paseo` session is guarded.
  */
 export function claimsWorkflow(labels: AgentLabels): boolean {
   if (!labels) {

@@ -62,7 +62,7 @@ describe("seatBinding", () => {
 });
 
 describe("claimsWorkflow", () => {
-  it("reads current and retained markers, never a summary helper's or a free one's", () => {
+  it("reads current and retained markers, never a summary helper's, and `workflow=free` alone claims nothing", () => {
     const marked: Record<string, string>[] = [
       { orchestration: "paseo" },
       { orchestration: "kontor" },

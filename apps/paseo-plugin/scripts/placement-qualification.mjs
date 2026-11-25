@@ -214,13 +214,36 @@ try {
       .then((ws) => (made.workspaces.add(ws.id), { outcome: "created", workspaceId: ws.id }), (e) => ({ outcome: /Kontor workspace guard refused/.test(String(e?.message)) ? "refused" : "error", message: String(e?.message ?? e).slice(0, 300) }));
     check(name, "sdk workspaces.create (initial agent, no caller)", "refused", result.outcome, result);
   }
+  // Paseo 0.17.4's `run --new-workspace` sends `workspace.create` with its source and, when one resolves, the caller
+  // (cli run.js:405-409), never an initial agent: the run's labels go only to the agent it creates afterwards
+  // (run.js:510-523). The local source it builds carries no projectId (run.js:61-75, workspace/create.js:12-27).
   {
-    // Labelled as well, so a run that carried no caller is refused too and no agent or turn ever starts. The prompt
-    // is a fixed word; if the guard failed, the turn would reach only the envelope's refusing stub.
+    // A workflow caller is held to its own project and refused because the request names no project; the run's label
+    // never reaches the guard. Refused before any agent or turn starts.
     const run = paseo(["run", "--new-workspace", "local", "--cwd", dir("targets/a12"), "--provider", config.provider, "--label", "orchestration=paseo-direct", "--json", "qualification"], { PASEO_AGENT_ID: swe.id, PASEO_WORKSPACE_ID: swe.workspaceId, PASEO_AGENT_CWD: swe.cwd });
     const id = run.status === 0 ? JSON.parse(run.stdout).agentId : null;
     if (id) made.agents.add(id);
-    check("cli run --new-workspace from a workflow caller", "cli run --new-workspace (caller env)", "refused", id ? "created" : /Kontor workspace guard refused/.test(run.stderr) ? "refused" : "error", { message: /Kontor workspace guard refused[^"\n]*/.exec(run.stderr)?.[0] ?? run.stderr.slice(0, 300) });
+    check("cli run --new-workspace from a workflow caller (refused for the missing projectId)", "cli run --new-workspace (caller env)", "refused", id ? "created" : /Kontor workspace guard refused/.test(run.stderr) ? "refused" : "error", { message: /Kontor workspace guard refused[^"\n]*/.exec(run.stderr)?.[0] ?? run.stderr.slice(0, 300) });
+  }
+  {
+    // With no caller the request carries no caller and no workflow claim, whatever labels the run has, so it is
+    // unclassified and unguarded: the workspace is created and the daemon finds or creates a project for the directory
+    // (workspace-provisioning-service.js:137-140). The run's agent is then created in it with the workflow labels, and
+    // its one turn reaches only the envelope's refusing stub.
+    const cwd = dir("targets/a15");
+    const run = paseo(["run", "--new-workspace", "local", "--cwd", cwd, "--provider", config.provider, "--label", "orchestration=paseo", "--label", "workflow=kontor", "--no-wait", "--json", "qualification"]);
+    const id = run.status === 0 ? JSON.parse(run.stdout).agentId : null;
+    if (id) made.agents.add(id);
+    const agentRead = id ? (await client.agents.ref(id).refresh())?.agent ?? null : null;
+    // The run's workspace, by its agent or, if the agent was not created, by its directory.
+    const listed = agentRead?.workspaceId ? { id: agentRead.workspaceId } : (await client.workspaces.list({ includeBackground: true, page: { limit: 200 } })).entries.find((w) => w.workspaceDirectory && resolve(w.workspaceDirectory) === resolve(cwd));
+    const workspace = listed ? await client.workspaces.ref(listed.id).refresh() : null;
+    if (workspace) made.workspaces.add(workspace.id);
+    const labels = agentRead?.labels ?? null;
+    const fixtures = [desk, esw1, esw2, plain].map((p) => p.projectId);
+    check("cli run --new-workspace with no caller and workflow labels (unclassified, unguarded)", "cli run --new-workspace (no caller)", "created",
+      workspace ? "created" : /Kontor workspace guard refused/.test(run.stderr) ? "refused" : "error",
+      { workspaceId: workspace?.id ?? null, projectId: workspace?.projectId ?? null, fixtureProject: workspace ? fixtures.includes(workspace.projectId) : null, agentId: id, agentLabels: labels, message: workspace ? undefined : run.stderr.slice(0, 300) });
   }
   // Routes the hook cannot see: the import on agent create and an operator's directory open. Detection only.
   {

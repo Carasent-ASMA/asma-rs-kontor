@@ -130,7 +130,7 @@ describe("evaluatePlacement", () => {
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
   });
 
-  it("accepts an explicit directory in the caller's own project without a canonical directory", () => {
+  it("accepts an explicit directory in the caller's own project without a canonical directory: the checkout is not resolved (project-only scope)", () => {
     expect(
       evaluatePlacement(
         create({
