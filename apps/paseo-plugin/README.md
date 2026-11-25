@@ -1649,8 +1649,28 @@ call for two jobs, with the generator's own fields and per-job `cwd` but no
 prompt, so no model turn runs. Each job must still be created; the project and
 workspace each one adds are recorded as the open summary-route gap below, not
 as correct placement. It records the candidate head and base, the installed
-plugin and the Paseo release, archives every agent and workspace it made, stops
-the daemon and removes the home.
+plugin, the Paseo release and the app archive hash, archives every agent and
+workspace it made, stops the daemon and removes the home.
+
+It runs only inside a no-live-provider envelope, which it builds itself and
+checks before it starts anything (macOS, `sandbox-exec`):
+
+- Every child gets an explicit environment: an isolated OS `HOME`, XDG roots
+  and `TMPDIR` in a new directory, and nothing else from the caller's
+  environment. Provider config roots and executable overrides (for example
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_COMMAND`) are therefore unset and fall
+  back under that `HOME` and `PATH`. The isolated daemon config holds no
+  provider setting.
+- `PATH` is a directory of stubs, then the system directories only. Each
+  provider executable the installed Paseo can launch has a stub that answers
+  `--version` and refuses anything else. `security`, which the Claude usage
+  source bundled with Paseo 0.17 uses to read the Keychain, is always refused.
+  Every stub call is logged in the report.
+- A sandbox refuses every connection that is not loopback.
+
+If any part is missing, it refuses with "the no-live-provider envelope is not
+in place" and starts nothing. `--paseo <cli>` names the Paseo CLI to qualify;
+`--envelope-only` checks the envelope and stops.
 
 Before the floor, or `placement.json`, is turned on for the live host:
 
@@ -1666,14 +1686,30 @@ Before the floor, or `placement.json`, is turned on for the live host:
 - desk and epic projects keep their exact names (`DESK • <name>`,
   `ESW • <KEY>`), and each epic key names one project;
 - the summary-route gap `ASMA-8580-summary-placement-pending` is recorded as
-  open: the stock summary helper creates each job by `cwd` import, a route this
-  build neither guards nor detects, so summary jobs can keep adding one project
-  and one workspace each while placement is enforced. `placement.json` may be
-  turned on without a summary-placement fix only with the floor off, after the
-  qualification above passes at the installed build (including its summary
-  case) and the census and its dispositions are complete. Only a separately
-  installed and verified summary-placement fix, with repeated summary jobs
-  adding no project and no per-job workspace, closes the gap;
+  open. Its owner is the TPM who owns the activation plan. It is reviewed by
+  2026-12-02 (Europe/Oslo).
+  - Effect: the stock summary helper creates each job by `cwd` import, a route
+    this build neither guards nor detects, so summary jobs can keep adding one
+    project and one workspace each while placement is enforced.
+  - Scope: `placement.json` only, with the floor off. It may be turned on
+    without a summary-placement fix only after all four of these:
+    1. this build's own gates pass (exact-head QA and AUD, its independent
+       review, merge, installation, the census and the tested rollback);
+    2. the qualification above passes at the installed build and Paseo
+       release, including its summary case;
+    3. the census and its dispositions are complete;
+    4. the gap is recorded with its owner, review date and counts.
+  - Lifted only by all of this (the decision's words): "A separately gated
+    and installed summary-placement fix binds the approved SUMMARIES utility
+    under DESK • ADAM and repeated installed summary jobs add no project and
+    no per-job workspace. Saved summaries and correlation remain intact, and
+    only owned helper sessions are archived."
+  - Not lifted by any of: "A source merge alone", "A local-only fixture pass",
+    "A status/terminal cache", "The passage of the review date", "Renaming or
+    hiding the generated containers".
+  - Monitoring: the installer evidence keeps the before and after native
+    inventory and explicit coverage counts. No new scheduler is added, and no
+    detector is claimed to cover summary imports;
 - the detect-only routes below are accepted as residuals.
 
 Turning `placement.json` on does not stop all unwanted workspace creation: it

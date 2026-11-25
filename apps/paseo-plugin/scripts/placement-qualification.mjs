@@ -1,39 +1,107 @@
-// Placement qualification on a disposable Paseo daemon. Never uses ~/.paseo or port 6767.
-// It starts a daemon in a temporary home, installs this plugin there with floor.json off, creates synthetic
-// desk and epic projects and agents (no prompt, so no turn), and runs each creation route with placement.json
-// absent (before), on (after) and off (rollback). With placement on, it also drives the stock summary helper's
+// Placement qualification on a disposable Paseo daemon. Never uses ~/.paseo or port 6767, and runs only inside the
+// no-live-provider envelope below. It starts a daemon in a temporary home, installs this plugin there with floor.json
+// off, creates synthetic desk and epic projects and agents (no prompt, so no turn), and runs each creation route with
+// placement.json absent (before), on (after) and off (rollback). With placement on, it also drives the stock summary helper's
 // creation call twice (slice A absent): each job must still be created, and the project and workspace it adds are
 // recorded as the open residual ASMA-8580-summary-placement-pending, not as correct placement. Every agent and
 // workspace it made is archived and read back, then the daemon is stopped and the home and fixtures are removed.
-//   node scripts/placement-qualification.mjs <report.json>
+//   node scripts/placement-qualification.mjs <report.json> [--paseo <cli>] [--envelope-only]
+// `--paseo` names the Paseo CLI (default: the first `paseo` on PATH); `--envelope-only` checks the envelope and stops.
 import { createPaseoClient } from "@getpaseo/client";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { connect, createServer } from "node:net";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const out = process.argv[2];
-assert.ok(out, "Usage: node scripts/placement-qualification.mjs <report.json>");
+const [out, ...flags] = process.argv.slice(2);
+assert.ok(out, "Usage: node scripts/placement-qualification.mjs <report.json> [--paseo <cli>] [--envelope-only]");
+const option = (name) => (flags.includes(name) ? flags[flags.indexOf(name) + 1] : undefined);
+const envelopeOnly = flags.includes("--envelope-only");
+
+// The no-live-provider envelope (AUD-B-R5-02). The script runs itself again under sandbox-exec with an explicit
+// environment and nothing else from the caller's: an isolated OS HOME, XDG roots and TMPDIR in a new directory, and
+// a PATH of stubs before the system directories only. A provider stub answers `--version` and refuses anything else;
+// `security` (the Keychain reader in Paseo 0.17's bundled claude-usage-source) is always refused; each call is logged.
+// Provider config roots (CLAUDE_CONFIG_DIR, CODEX_HOME, ...) and executable overrides (PI_COMMAND, OMP_COMMAND) stay
+// unset, so they fall back under the isolated HOME and PATH, and the isolated daemon config holds no provider
+// override. The sandbox refuses every connection that is not loopback, which covers in-process HTTPS as well. The
+// inner run checks all of this before it starts anything, and refuses otherwise.
+const STUBS = ["claude", "codex", "copilot", "cursor-agent", "opencode", "pi", "omp", "agy", "fx", "goose", "hermes", "hoplite", "muse"];
+const DENIED = ["security"];
+const SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+const ALLOWED_ENV = ["HOME", "PATH", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "KONTOR_PLACEMENT_ENVELOPE", "__CF_USER_TEXT_ENCODING"];
+const boxEnv = (box) => ({
+  HOME: join(box, "home"), PATH: `${join(box, "bin")}:${SYSTEM_PATH}`, TMPDIR: join(box, "tmp"),
+  XDG_CONFIG_HOME: join(box, "xdg", "config"), XDG_CACHE_HOME: join(box, "xdg", "cache"), XDG_DATA_HOME: join(box, "xdg", "data"), XDG_STATE_HOME: join(box, "xdg", "state"),
+  KONTOR_PLACEMENT_ENVELOPE: box,
+});
+const sandbox = (box) => `(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (remote unix-socket))(deny file-write* (literal "${join(box, "sandbox-witness")}"))`;
+const stub = (name, log, answers) => `#!/bin/sh
+# Kontor placement qualification stub: no ${name} code runs in the envelope.
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ] && [ ${answers ? 1 : 0} -eq 1 ]; then
+  echo '{"tool":"${name}","op":"version"}' >> '${log}'; echo "99.0.0 (Kontor qualification stub)"; exit 0
+fi
+echo '{"tool":"${name}","op":"denied","argc":'"$#"'}' >> '${log}'; echo "${name} is disabled in the Kontor qualification envelope" >&2; exit 86
+`;
+
+const box = process.env.KONTOR_PLACEMENT_ENVELOPE;
+if (!box) {
+  if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) {
+    console.error("Kontor placement qualification refused: the no-live-provider envelope needs macOS sandbox-exec.");
+    process.exit(3);
+  }
+  const made = realpathSync(mkdtempSync(join(tmpdir(), "kontor-placement-envelope-")));
+  for (const dir of ["home", "tmp", "bin", "xdg/config", "xdg/cache", "xdg/data", "xdg/state"]) mkdirSync(join(made, dir), { recursive: true, mode: 0o700 });
+  for (const name of [...STUBS, ...DENIED]) writeFileSync(join(made, "bin", name), stub(name, join(made, "provider-invocations.jsonl"), STUBS.includes(name)), { mode: 0o700 });
+  const cli = option("--paseo") ?? spawnSync("/usr/bin/which", ["paseo"], { env: { PATH: process.env.PATH ?? "" }, encoding: "utf8" }).stdout.trim();
+  const inner = spawnSync("/usr/bin/sandbox-exec", ["-p", sandbox(made), process.execPath, fileURLToPath(import.meta.url), resolve(out), ...(cli ? ["--paseo", realpathSync(cli)] : []), ...(envelopeOnly ? ["--envelope-only"] : [])], { env: boxEnv(made), stdio: "inherit" });
+  rmSync(made, { recursive: true, force: true });
+  process.exit(inner.status ?? 1);
+}
+{
+  const faults = Object.keys(process.env).filter((key) => !ALLOWED_ENV.includes(key)).map((key) => `${key} is outside the allow-list`);
+  for (const [key, value] of Object.entries(boxEnv(box))) if (process.env[key] !== value) faults.push(`${key} is not the envelope's`);
+  if (process.env.HOME === userInfo().homedir) faults.push("HOME is the account home");
+  for (const name of [...STUBS, ...DENIED]) {
+    const found = spawnSync("/usr/bin/which", ["-a", name], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+    if (found[0] !== join(box, "bin", name) || (STUBS.includes(name) && found.length !== 1)) faults.push(`${name} resolves to ${found.join(", ") || "nothing"}`);
+  }
+  try { writeFileSync(join(box, "sandbox-witness"), ""); faults.push("the sandbox is not applied"); } catch (error) { if (error.code !== "EPERM") faults.push(`sandbox witness: ${error.code}`); }
+  // 192.0.2.1 is a documentation address (RFC 5737): outside the sandbox the probe goes nowhere.
+  const network = await new Promise((done) => { const s = connect(9, "192.0.2.1").on("error", (e) => done(e.code)).on("connect", () => (s.destroy(), done("connected"))); setTimeout(() => (s.destroy(), done("timeout")), 3000); });
+  if (network !== "EPERM") faults.push(`an outside connection was not refused (${network})`);
+  if (faults.length) {
+    console.error(`Kontor placement qualification refused: the no-live-provider envelope is not in place: ${faults.join("; ")}`);
+    process.exit(3);
+  }
+  if (envelopeOnly) {
+    console.log(JSON.stringify({ envelope: "in place", stubs: STUBS, denied: DENIED, path: process.env.PATH, env: Object.keys(process.env).sort() }));
+    process.exit(0);
+  }
+}
+const cli = option("--paseo");
+assert.ok(cli, "no Paseo CLI: pass --paseo <cli>");
+const app = join(dirname(cli), "..", "app.asar");
 const pluginDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const home = mkdtempSync(join(tmpdir(), "kontor-placement-home-"));
 const root = mkdtempSync(join(tmpdir(), "kontor-placement-fixtures-"));
 const port = await new Promise((done) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => done(p)); }); });
 assert.notEqual(port, 6767);
 const switches = join(home, "plugin-config", "kontor");
-// Only PATH and HOME reach the CLI, so no live caller identity leaks into a case; a case adds its own.
-const baseEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
+// Children get the envelope's environment only, so no live caller identity leaks into a case; a case adds its own.
 const paseo = (args, env = {}) => {
-  const run = spawnSync("paseo", [...args, "--home", home], { env: { ...baseEnv, ...env }, encoding: "utf8" });
+  const run = spawnSync(cli, [...args, "--home", home], { env: { ...process.env, ...env }, encoding: "utf8" });
   return { status: run.status, stdout: run.stdout.trim(), stderr: run.stderr.trim() };
 };
 const git = (...args) => spawnSync("git", ["-C", pluginDir, ...args], { encoding: "utf8" }).stdout.trim();
 const report = {
-  paseo: null, port,
+  paseo: null, paseoCli: cli, paseoAppAsarSha256: existsSync(app) ? createHash("sha256").update(readFileSync(app)).digest("hex") : null, port,
   candidate: { head: git("rev-parse", "HEAD"), base: git("merge-base", "HEAD", "origin/master"), dirty: git("status", "--porcelain", "--", ".").split("\n").filter(Boolean) },
+  envelope: { stubs: STUBS, denied: DENIED, path: process.env.PATH, env: Object.keys(process.env).sort(), network: "loopback only (sandbox-exec)", invocations: null, configAgents: null },
   installed: null, checks: [], detections: [], summaryResidual: [], modes: [], cleanup: null,
 };
 const made = { workspaces: new Set(), agents: new Set() };
@@ -65,9 +133,12 @@ try {
   paseo(["daemon", "config", "set", "daemon.listen", `127.0.0.1:${port}`, "--string"]);
   paseo(["daemon", "config", "set", "pluginsEnabled", "true"]);
   report.relayOff = paseo(["daemon", "config", "set", "daemon.relay.enabled", "false"]).status;
+  // No provider override or command replacement in the isolated daemon config: provider launches stay on PATH.
+  report.envelope.configAgents = JSON.parse(readFileSync(join(home, "config.json"), "utf8")).agents ?? null;
+  assert.equal(report.envelope.configAgents, null, "the isolated daemon config carries agent or provider settings");
   mkdirSync(switches, { recursive: true });
   writeFileSync(join(switches, "floor.json"), '{"floor":"off"}');
-  const started = spawnSync("paseo", ["daemon", "start", "--home", home], { env: { ...baseEnv, PASEO_HOME: home, KONTOR_PLUGIN_MCP: "off" }, encoding: "utf8" });
+  const started = spawnSync(cli, ["daemon", "start", "--home", home], { env: { ...process.env, PASEO_HOME: home, KONTOR_PLUGIN_MCP: "off" }, encoding: "utf8" });
   assert.equal(started.status, 0, started.stderr);
   const installed = paseo(["plugin", "install", pluginDir, "--json"]);
   assert.equal(installed.status, 0, installed.stderr.slice(0, 500));
@@ -144,7 +215,8 @@ try {
     check(name, "sdk workspaces.create (initial agent, no caller)", "refused", result.outcome, result);
   }
   {
-    // Labelled as well, so a run that carried no caller is refused too and no agent or turn ever starts.
+    // Labelled as well, so a run that carried no caller is refused too and no agent or turn ever starts. The prompt
+    // is a fixed word; if the guard failed, the turn would reach only the envelope's refusing stub.
     const run = paseo(["run", "--new-workspace", "local", "--cwd", dir("targets/a12"), "--provider", config.provider, "--label", "orchestration=paseo-direct", "--json", "qualification"], { PASEO_AGENT_ID: swe.id, PASEO_WORKSPACE_ID: swe.workspaceId, PASEO_AGENT_CWD: swe.cwd });
     const id = run.status === 0 ? JSON.parse(run.stdout).agentId : null;
     if (id) made.agents.add(id);
@@ -204,9 +276,12 @@ try {
     await client.close().catch(() => {});
   }
   cleanup.daemonStop = paseo(["daemon", "stop"]).status;
+  const calls = join(box, "provider-invocations.jsonl");
+  report.envelope.invocations = existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   report.cleanup = cleanup;
   writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
 }
-console.log(JSON.stringify({ checks: report.checks.length, passed: report.checks.filter((c) => c.outcome === c.expected).length, detections: report.detections.length, summaryResidual: report.summaryResidual.map((r) => r.added) }));
+const answered = report.envelope.invocations.filter((c) => c.op === "version").length;
+console.log(JSON.stringify({ checks: report.checks.length, passed: report.checks.filter((c) => c.outcome === c.expected).length, detections: report.detections.length, summaryResidual: report.summaryResidual.map((r) => r.added), providerCalls: { versionAnswered: answered, refused: report.envelope.invocations.length - answered } }));

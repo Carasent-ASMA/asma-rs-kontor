@@ -245,6 +245,28 @@ describe("evaluatePlacement", () => {
       vi.resetModules();
     }
   });
+
+  it("refuses a Windows sibling and another drive when Paseo's worktree root is on a different drive (AUD-B-R5-03)", async () => {
+    vi.resetModules();
+    vi.doMock("node:path", async () => {
+      const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
+      return { ...win32, default: win32 };
+    });
+    try {
+      const { evaluatePlacement: evaluate } = await import("../server/placement");
+      // Paseo's root on D does not contain these paths, so only the placement-root check can refuse them.
+      const split = { paseoWorktreesRoot: "D:\\paseo\\worktrees", placementRoots: ["C:\\work"] };
+      const at = (path: string) => evaluate(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), split, direct);
+      expect(at("C:\\work-sibling\\task").allowed).toBe(false);
+      expect(at("D:\\work\\task").allowed).toBe(false);
+      expect(at("C:\\work-sibling\\task")).toMatchObject({ reason: expect.stringContaining("placement roots") });
+      expect(at("D:\\work\\task")).toMatchObject({ reason: expect.stringContaining("placement roots") });
+      expect(at("C:\\work\\..scratch\\task")).toEqual({ allowed: true });
+    } finally {
+      vi.doUnmock("node:path");
+      vi.resetModules();
+    }
+  });
 });
 
 describe("within", () => {
