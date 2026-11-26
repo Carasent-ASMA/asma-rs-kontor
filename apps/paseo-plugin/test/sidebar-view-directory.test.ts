@@ -74,4 +74,25 @@ describe("Kontor sidebar view directory ownership", () => {
     expect(seen.length).toBeGreaterThan(0);
     release();
   });
+
+  it("claims the owner when a host-bearing mount finds a read-only record first", async () => {
+    const directory = await vi.importActual<typeof import("../client/use-session-directory")>("../client/use-session-directory");
+    const seen: unknown[] = [];
+    const release = directory.bindHostDirectory((state) => seen.push(state));
+    const draw = () => {
+      let view!: ReturnType<typeof directory.useSessionDirectory>;
+      harness.current.render(() => {
+        view = directory.useSessionDirectory({ hostId: "srv_a", hostStatus: "online", claimOwner: false });
+      });
+      return view;
+    };
+
+    draw();
+    expect(seen).toEqual([]);
+
+    directory.startHostDirectory("srv_a");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.at(-1)).toEqual(draw().state);
+    release();
+  });
 });

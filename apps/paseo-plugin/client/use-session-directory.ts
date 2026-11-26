@@ -124,7 +124,11 @@ function claimOwnerFor(record: RetainedDirectory): void {
 
 function retain(hostId: string, includeArchived: boolean, claimOwner = true): RetainedDirectory {
   const existing = retained.get(hostId);
-  if (existing) return existing;
+  if (existing) {
+    // A read-only mount may have created the record first. A later host-bearing mount still claims it.
+    if (claimOwner) claimOwnerFor(existing);
+    return existing;
+  }
   const listeners = new Set<(state: DirectoryState) => void>();
   const record: RetainedDirectory = {
     hostId,
