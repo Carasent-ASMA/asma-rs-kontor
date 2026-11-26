@@ -118,9 +118,11 @@ between Paseo's own header and footer.
 ### Sidebar view
 
 On each device, open **Settings → Sidebar → Sidebar view** and select
-**Kontor**. Paseo's own header rows may stay on or be switched off; the view
-does not depend on them. A row opens its native session while the view stays
-in place at desktop width. On a phone the drawer closes for the session, and
+**Kontor**. Keep the **Kontor** row on under **Settings → Sidebar → Header**:
+it connects the in-session **← Kontor** pill to this host. The other header
+rows may be switched off. Without the Kontor row the view still works, but
+chats show no pill. A row opens its native session while the view stays in
+place at desktop width. On a phone the drawer closes for the session, and
 reopening it shows Kontor again.
 
 - **Complete inventory, with honest partial reads.** The screen walks every
@@ -1350,9 +1352,10 @@ Desktop steps:
 7. In an authorized controlled/disposable check, disconnect and reconnect the
    host. Confirm the rows first show stale/not-live, then a complete reconciled
    inventory with no missing or duplicated rows.
-8. Under **Settings → Sidebar → Sidebar view**, select **Kontor** (with Paseo's
-   header rows on or off), open a row, and confirm the sidebar stays beside the
-   session at desktop width. Repeat at phone width in the drawer.
+8. Under **Settings → Sidebar → Sidebar view**, select **Kontor** (with the
+   Kontor header row on), open a row, and confirm the sidebar stays beside the
+   session at desktop width. Repeat at phone width in the drawer. Switching the
+   Kontor header row off removes the composer pill; that is expected.
 
 iPhone steps:
 
@@ -1382,6 +1385,8 @@ Evidence checklist:
       expansion and scroll position on iPhone.
 - [ ] Kontor is selected as the sidebar view on desktop and phone; opening a
       row keeps it beside the session at desktop width and in the phone drawer.
+- [ ] The **← Kontor** pill shows in a session opened from the view, with the
+      Kontor header row on.
 - [ ] A pending permission shows **Needs input** with an amber indicator and is
       included in the attention filter; after resolution/cancel it clears.
 - [ ] On compact layouts the full toolbar collapses on deliberate downward
