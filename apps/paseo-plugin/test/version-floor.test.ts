@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const read = (path: string) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+const here = dirname(fileURLToPath(import.meta.url));
+const read = (path: string) => JSON.parse(readFileSync(resolve(here, path), "utf8"));
 
 describe("Paseo version floor", () => {
   it("supports only the current Paseo release in the manifest and the SDK ranges", () => {
