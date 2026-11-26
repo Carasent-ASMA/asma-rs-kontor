@@ -10,6 +10,7 @@ import { contributeReturnControl } from "./client/return-control";
 import { contributePromotionCommand } from "./client/promotion-command";
 import { KontorScreen } from "./client/kontor-screen";
 import { contributePlanControl } from "./client/plan-control";
+import { contributeSidebarView } from "./client/sidebar-view";
 import { SWITCH_SHEET } from "./client/start-switch-sheet";
 import {
   disposeRetainedDirectories,
@@ -106,10 +107,12 @@ export default function contribute(client: PluginClientContext): () => void {
   ];
   const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID, summaryAttachments.available);
   const stopPlanControl = contributePlanControl(client, SESSIONS_SCREEN_ID);
+  const stopSidebarView = contributeSidebarView(client, SESSIONS_SCREEN_ID);
   return () => {
     runCleanup("summary attachments", summaryAttachments.remove);
     runCleanup("retained directories", () => disposeRetainedDirectories());
     runCleanup("workspace directories", forgetWorkspaceDirectories);
+    runCleanup("sidebar view", stopSidebarView);
     runCleanup("plan control", stopPlanControl);
     runCleanup("return control", stopReturnControl);
     for (const cleanup of cleanups) {

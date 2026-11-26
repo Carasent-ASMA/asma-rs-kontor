@@ -7,7 +7,7 @@
  */
 import { useCallback, useSyncExternalStore } from "react";
 import type { ZodType } from "zod";
-import { currentHostStatus, fakePaseo, HOST_ID, HOST_LABEL, keyboardSnapshot, saveKeyboard, saveSettings, settingsSnapshot, subscribeHost, subscribeKeyboard, subscribeSettings } from "./runtime";
+import { currentHostStatus, fakePaseo, fixtureSessions, HOST_ID, HOST_LABEL, keyboardSnapshot, saveKeyboard, saveSettings, settingsSnapshot, subscribeHost, subscribeKeyboard, subscribeSettings } from "./runtime";
 import { logHostEvent } from "./event-log";
 
 export { usePaseo, useAgent, useWorkspace, useRpc } from "paseo-sdk/client";
@@ -27,6 +27,20 @@ export function useHosts(): readonly HostSummary[] {
 export function getPaseoClient(serverId: string) {
   if (serverId !== HOST_ID) throw new Error(`Unknown prototype host ${serverId}`);
   return fakePaseo;
+}
+
+type FixtureRef<Kind extends string> = { readonly kind: Kind; readonly key: string; readonly hostId: string; readonly id: string };
+const fixtureRef = <Kind extends string>(kind: Kind, id: string): FixtureRef<Kind> => ({ kind, key: JSON.stringify([HOST_ID, id]), hostId: HOST_ID, id });
+
+/** Paseo interns an entity by host and id; the fixture host builds the same refs from its own rows. */
+export function useAgents(query?: { readonly hosts?: readonly string[] }): readonly FixtureRef<"agent">[] {
+  if (query?.hosts && !query.hosts.includes(HOST_ID)) return [];
+  return fixtureSessions().map((row) => fixtureRef("agent", row.agent.id));
+}
+
+export function useWorkspaces(query?: { readonly hosts?: readonly string[] }): readonly FixtureRef<"workspace">[] {
+  if (query?.hosts && !query.hosts.includes(HOST_ID)) return [];
+  return [...new Set(fixtureSessions().map((row) => row.agent.workspaceId).filter((id): id is string => !!id))].map((id) => fixtureRef("workspace", id));
 }
 
 export async function openExternalUrl(url: string): Promise<void> {

@@ -140,9 +140,15 @@ function openRequest(overrides: Partial<SessionOpenRequest> = {}): SessionOpenRe
     workspaceId: "wks_0000000000000001",
     provider: "claude",
     cwd: "/Users/test/carasent/asma-modules",
+    title: null,
     reason: "resume",
     purpose: "interactive",
     env: { EXISTING: "kept" },
+    background: false,
+    labels: {},
+    metadata: {},
+    tools: [],
+    mcpServers: {},
     ...overrides,
   };
 }

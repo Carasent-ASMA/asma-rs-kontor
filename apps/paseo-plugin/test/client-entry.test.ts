@@ -170,4 +170,25 @@ describe("Kontor client entry", () => {
     expect(stopReturnControl).toHaveBeenCalledTimes(1);
     expect(cleaned).toEqual(["screen", "sidebar", "command", "command", "command"]);
   });
+
+  it("registers the Kontor sidebar view when the app has one and loads unchanged without it", () => {
+    const stopSidebarView = vi.fn();
+    const addSidebarView = vi.fn((_view: { id: string; title: string }) => stopSidebarView);
+    const client = {
+      addScreen: () => () => undefined,
+      addSidebarHeaderItem: () => () => undefined,
+      addSlashCommand: () => () => undefined,
+      addCommandCenterItem: () => () => undefined,
+      addSidebarView,
+    } as unknown as PluginClientContext;
+
+    const cleanup = contribute(client);
+    expect(addSidebarView).toHaveBeenCalledTimes(1);
+    expect(addSidebarView.mock.calls[0]![0]).toMatchObject({ id: "kontor", title: "Kontor" });
+    cleanup();
+    expect(stopSidebarView).toHaveBeenCalledTimes(1);
+
+    // Paseo before 0.16 has no sidebar views: the same entry loads and keeps the header row, screen and popover.
+    expect(() => contribute({ addScreen: () => () => undefined, addSidebarHeaderItem: () => () => undefined, addSlashCommand: () => () => undefined, addCommandCenterItem: () => () => undefined } as unknown as PluginClientContext)).not.toThrow();
+  });
 });
