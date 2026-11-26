@@ -1042,6 +1042,21 @@ describe("composer popover hand-off", () => {
     expect(readRecent(host).record.visits).toEqual([]);
   });
 
+  it("names the host mismatch when a sidebar tile for another host reaches this screen, and consumes the request", () => {
+    model.hosts = [{ serverId: "main", label: "MAIN", status: "online" }, { serverId: "test", label: "TEST", status: "online" }];
+    const fabricated = mount(false, { tab: "Overview" }, { hostId: "main", params: { target: "not-a-request", handoffHost: "test" } });
+    fabricated.commit();
+    expect(model.toastError).not.toHaveBeenCalled();
+    const key = handOffOpen("test", { kind: "view", status: "running", query: "", membership: "sessions" });
+    model.slots = [];
+    const screen = mount(false, { tab: "Overview" }, { hostId: "main", params: { target: key, handoffHost: "test" } });
+    screen.commit();
+    expect(model.toastError).toHaveBeenCalledExactlyOnceWith("This Kontor sidebar shows TEST; the full Kontor screen opens on Host only. Use the sidebar rows for TEST, or open Kontor on Host.");
+    expect(screen.props.navigation!.openAgent).not.toHaveBeenCalled();
+    expect(takeHandOff("test", key)).toBeNull();
+    expect(readRecent("main").record.visits).toEqual([]);
+  });
+
   it("does nothing without a request and leaves a pending one for its own screen", () => {
     const key = handOffOpen(host, { kind: "session", agentId: "native" });
     const screen = mount(false, { tab: "Overview" }, { hostId: host });

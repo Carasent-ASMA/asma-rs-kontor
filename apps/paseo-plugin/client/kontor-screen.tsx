@@ -29,7 +29,7 @@ import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
 import { OrganizationSettingsPage } from "./organization-settings-page";
-import { openCreatedSession, openTakeoverSuccessor, openHandOff, openSessionById } from "./session-actions";
+import { openCreatedSession, openTakeoverSuccessor, openHandOff, openSessionById, pendingHandOffHost, withdrawHandOff } from "./session-actions";
 import { confirmedEpic, jiraCapture, jiraIssueUrl, withJiraCapture } from "./page-data";
 import { linkedPlans } from "./navigation-state";
 import { GraphPage } from "./graph-page";
@@ -143,11 +143,19 @@ function HostScreen(props: PluginScreenProps) {
     if (props.params.sheet === SWITCH_SHEET) setMenu("switch");
   }, [props.params.sheet, props.params.at]);
   // A composer popover hands its open to this screen by a one-shot key. A used, replaced or foreign key opens
-  // nothing and says nothing: this screen is already where to choose again.
+  // nothing and says nothing: this screen is already where to choose again. A sidebar tile also names the host it
+  // showed, so a screen opened on another host explains the mismatch instead of swallowing the tile as stale.
   useEffect(() => {
+    const shownHostId = props.params.handoffHost;
+    if (props.params.target && shownHostId && shownHostId !== host.id && pendingHandOffHost(props.params.target) === shownHostId) {
+      withdrawHandOff(props.params.target);
+      const shown = hosts.find((candidate) => candidate.serverId === shownHostId)?.label ?? shownHostId;
+      toast.error(`This Kontor sidebar shows ${shown}; the full Kontor screen opens on ${host.label} only. Use the sidebar rows for ${shown}, or open Kontor on ${host.label}.`);
+      return;
+    }
     const result = openHandOff({ hostId: host.id, key: props.params.target, entries: directory.state.entries, navigation: props.navigation, onView: showView });
     if (result && !result.ok && result.reason !== "stale") toast.error(result.message);
-  }, [props.params.target]);
+  }, [props.params.target, props.params.handoffHost]);
   useEffect(() => {
     if (routeViewKey(hostNavigation(host.id).route) !== routeViewKey(route)) return;
     const resolved = resolveContextPlan(route, sourceState.sources, sourceState.reads, route.originAgentId ? saved.planAssociations[route.originAgentId] ?? [] : null, projectEpics);

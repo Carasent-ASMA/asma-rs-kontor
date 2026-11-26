@@ -113,7 +113,7 @@ export default function contribute(client: PluginClientContext): () => void {
     description: "Start or switch: session states, search and your desks, epics and workspaces.",
     Component: (props) => createElement(KontorSidebarView, {
       ...props,
-      onOpenKontor: (key: string) => openKontor((input) => client.openScreen(input), SESSIONS_SCREEN_ID, key),
+      onOpenKontor: (key: string, handoffHost: string) => openKontor((input) => client.openScreen(input), SESSIONS_SCREEN_ID, key, handoffHost),
     }),
   });
   return () => {

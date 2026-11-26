@@ -108,10 +108,20 @@ actions do not silently switch these choices; `free/kontor` is not another mode.
 
 ## Sessions navigator
 
-The plugin adds the **Kontor** screen, one sidebar entry, one global Command
-Center command and an in-session **← Kontor** composer pill for live agents with
-a workspace. The screen, sidebar and command are navigation affordances; the
-pill is the in-session return control where the composer supports it.
+The plugin adds the **Kontor** screen, one sidebar entry, one sidebar view,
+one global Command Center command and an in-session **← Kontor** composer pill
+for live agents with a workspace. The screen, sidebar and command are
+navigation affordances; the pill is the in-session return control where the
+composer supports it. The sidebar view puts the same Start or switch body
+between Paseo's own header and footer.
+
+### Sidebar view
+
+On each device, open **Settings → Sidebar → Sidebar view** and select
+**Kontor**. Paseo's own header rows may stay on or be switched off; the view
+does not depend on them. A row opens its native session while the view stays
+in place at desktop width. On a phone the drawer closes for the session, and
+reopening it shows Kontor again.
 
 - **Complete inventory, with honest partial reads.** The screen walks every
   page of the selected host's native agent directory (200 rows per page) before
@@ -1340,6 +1350,9 @@ Desktop steps:
 7. In an authorized controlled/disposable check, disconnect and reconnect the
    host. Confirm the rows first show stale/not-live, then a complete reconciled
    inventory with no missing or duplicated rows.
+8. Under **Settings → Sidebar → Sidebar view**, select **Kontor** (with Paseo's
+   header rows on or off), open a row, and confirm the sidebar stays beside the
+   session at desktop width. Repeat at phone width in the drawer.
 
 iPhone steps:
 
@@ -1367,6 +1380,8 @@ Evidence checklist:
       expansion and scroll position on desktop.
 - [ ] Pill, sidebar and Command Center returns preserve search, filter,
       expansion and scroll position on iPhone.
+- [ ] Kontor is selected as the sidebar view on desktop and phone; opening a
+      row keeps it beside the session at desktop width and in the phone drawer.
 - [ ] A pending permission shows **Needs input** with an amber indicator and is
       included in the attention filter; after resolution/cancel it clears.
 - [ ] On compact layouts the full toolbar collapses on deliberate downward

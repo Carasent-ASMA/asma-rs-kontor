@@ -63,6 +63,12 @@ describe("Kontor sidebar view", () => {
     expect(openScreen).toHaveBeenCalledWith({ screenId: "sessions", params: { target: "key-1" } });
   });
 
+  it("carries the sidebar's shown host so a screen opened elsewhere can name the mismatch", () => {
+    const openScreen = vi.fn();
+    expect(openKontor(openScreen, "sessions", "key-2", "srv_b")).toBeNull();
+    expect(openScreen).toHaveBeenCalledWith({ screenId: "sessions", params: { target: "key-2", handoffHost: "srv_b" } });
+  });
+
   it("withdraws the hand-off and reports why when Paseo refuses to open Kontor", () => {
     const key = handOffOpen("srv_a", { kind: "session", agentId: "agt_1" });
     expect(openKontor(() => { throw new Error("screen gone"); }, "sessions", key)).toBe("screen gone");

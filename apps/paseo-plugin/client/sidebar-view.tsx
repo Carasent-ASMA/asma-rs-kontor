@@ -46,12 +46,13 @@ export function screenNavigation(hostId: string, navigation: PluginSidebarViewPr
 }
 
 /** Hands one request to Kontor's screen, as the composer popover does; a refused open withdraws it and says why. */
-export function openKontor(openScreen: (input: PluginOpenScreenInput) => void, screenId: string, key: string): string | null {
-  try { openScreen({ screenId, params: { target: key } }); return null; }
+export function openKontor(openScreen: (input: PluginOpenScreenInput) => void, screenId: string, key: string, handoffHost?: string): string | null {
+  try { openScreen({ screenId, params: { target: key, ...(handoffHost ? { handoffHost } : {}) } }); return null; }
   catch (error) { withdrawHandOff(key); return error instanceof Error && error.message ? error.message : "Paseo could not open Kontor."; }
 }
 
-type OpenKontor = (key: string) => string | null;
+/** The shown host rides along so a screen opened on another host can explain the mismatch instead of ignoring the tile. */
+type OpenKontor = (key: string, handoffHost: string) => string | null;
 
 /**
  * One host at a time: the active session's, else the active workspace's, else the first online host, else the first
@@ -82,7 +83,7 @@ export function KontorSidebarView(props: PluginSidebarViewProps & { onOpenKontor
 function HostSidebar({ theme, layout, active, navigation, dismiss, onOpenKontor, hostId, hostLabel, hostStatus }: PluginSidebarViewProps & {
   onOpenKontor: OpenKontor; hostId: string; hostLabel: string; hostStatus: PluginHostSummary["status"];
 }) {
-  const directory = useSessionDirectory({ hostId, hostStatus });
+  const directory = useSessionDirectory({ hostId, hostStatus, claimOwner: false });
   const toast = useToast();
   const [height, setHeight] = useState(0);
   const agentRefs = useAgents({ hosts: [hostId] });
@@ -104,7 +105,7 @@ function HostSidebar({ theme, layout, active, navigation, dismiss, onOpenKontor,
     onOpenCreated: (outcome) => openCreatedSession({ outcome, serverId: hostId, navigation: open }),
     // The Kontor tile: the full Sessions screen with this state, search and membership; on a phone the drawer gives way to it.
     onShowView: (view) => {
-      const failure = onOpenKontor(handOffOpen(hostId, { kind: "view", ...view }));
+      const failure = onOpenKontor(handOffOpen(hostId, { kind: "view", ...view }), hostId);
       if (failure) toast.error(failure); else dismiss();
     },
     onClose: dismiss,
