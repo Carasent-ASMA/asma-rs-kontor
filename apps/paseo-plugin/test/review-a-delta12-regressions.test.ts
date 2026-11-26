@@ -1,8 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
-import { defineRpc } from "@getpaseo/plugin";
+import { describe, expect, it } from "vitest";
 import { AgentCreateRequestSchema } from "@getpaseo/protocol/messages";
-import { callPluginRpc } from "../node_modules/@getpaseo/plugin/dist/rpc.js";
 import {
   createFeatureSchema, createRequestSchema, featureValuesProblem, featureValuesSchema, keptFeatureValues, type FeatureValues,
 } from "../shared/session-create";
@@ -70,13 +67,15 @@ describe("D12-F2 recording shape rejection", () => {
     }
   });
 
-  it("does not forward a non-record Map through the SDK RPC helper", async () => {
-    const invoke = vi.fn(async () => null);
-    const rpc = defineRpc({ name: "fixture.values", input: featureValuesSchema, output: z.null() });
-    const result = await callPluginRpc(rpc, invoke, new Map([["house", "slow"]]) as unknown as Record<string, unknown>)
-      .then(() => ({ accepted: true }), () => ({ accepted: false }));
-    expect(result.accepted).toBe(false);
-    expect(invoke).not.toHaveBeenCalled();
+  it("rejects a non-record Map at the create request contract that the worker parses", () => {
+    // SDK 0.17.4's callPluginRpc parses only the output; the plugin worker parses contract.input before the handler.
+    // The request contract stays the boundary that refuses a Map rather than letting JSON normalise it away.
+    const read = createRequestSchema.safeParse({
+      requestId: "00000000-0000-4000-8000-000000000001", role: "LSA", start: "ad-hoc",
+      projectId: "fixture-project", provider: "claude", model: "house-model", effort: null, modeId: null,
+      featureValues: new Map([["house", "slow"]]),
+    });
+    expect(read.success).toBe(false);
   });
 });
 

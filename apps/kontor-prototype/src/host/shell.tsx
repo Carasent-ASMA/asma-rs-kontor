@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PaseoApiProvider, PluginRpcProvider } from "paseo-sdk/host";
+import type { PluginPaseoApi } from "paseo-sdk/client";
+import type { PluginSubscribe } from "paseo-sdk/host";
 import { Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native-web";
 import { hostNavigation, navigate, sessionScopeKey } from "../../../paseo-plugin/client/navigation-state";
 import { patchSessionView } from "../../../paseo-plugin/client/session-view-store";
 import { hostEvents, subscribeHostEvents, logHostEvent } from "./event-log";
 import type { PluginButtonContentProps, PluginButtonIconProps } from "paseo-sdk/client";
-import { contributedScreen, contributedSidebar, pillsFor, registryVersion, setOpenScreenHandler, subscribeRegistry, type HostRoute, type Pill } from "./plugin-host";
+import { contributedScreen, contributedSidebar, contributedSidebarView, pillsFor, registryVersion, setOpenScreenHandler, subscribeRegistry, type HostRoute, type Pill } from "./plugin-host";
+import { PASEO_HEADER_ROWS_HELP, PASEO_HEADER_ROWS_LABEL, PASEO_HEADER_ROWS_START_OPEN } from "./sidebar-chrome";
 import { fakePaseo, fixtureSessions, HOST_ID, HOST_LABEL, invokeRpc, scenario, setHostStatus, simulateUpdate } from "./runtime";
 import { Icon, ToastLayer } from "./sdk-react-native";
 import { PluginPopover, SHEET_BELOW_WIDTH } from "./plugin-popover";
@@ -17,6 +20,18 @@ import { PLAN_99101, PLAN_99102 } from "../fixtures/sources";
 /** Assumed compact breakpoint; Paseo's own layout decision is not exported to plugins. */
 const COMPACT_WIDTH = 768;
 const queryClient = new QueryClient();
+/** The fixture API models the calls Kontor makes; the app's reference handles are app-side adapters this shim does not imitate. */
+const fixturePaseoApi = fakePaseo as unknown as PluginPaseoApi;
+/** The prototype has no live plugin subscription source; a caller that tries one gets the shim's refusal, not invented events. */
+const subscribeRpc: PluginSubscribe = (method) => {
+  logHostEvent("paseo.unsupported", `subscribe ${method}`);
+  throw new Error(`${method} subscriptions are not simulated in the review prototype.`);
+};
+/** Paseo 0.16: the user picks a plugin's sidebar view under Settings > Sidebar > Sidebar view; `?sidebar=kontor` stands for that choice. */
+const KONTOR_SIDEBAR = new URLSearchParams(window.location.search).get("sidebar") === "kontor";
+/** Paseo's own sidebar width and header rows, as measured on 0.16.1; each row has an on/off switch under Settings > Sidebar > Header. */
+const SIDEBAR_WIDTH = 320;
+const PASEO_HEADER_ROWS = [{ icon: "Plus", label: "New workspace", keys: "⌘N" }, { icon: "History", label: "History" }, { icon: "Search", label: "Search", keys: "⌘K" }, { icon: "CalendarClock", label: "Schedules" }] as const;
 
 // Seed the plugin's own in-memory route and Sessions view, as a user would have left them.
 const start = scenario.start;
@@ -35,8 +50,16 @@ export function HostShell() {
   const colors = shellColors();
   const { width } = useWindowDimensions();
   const compact = width < COMPACT_WIDTH;
-  const [stack, setStack] = useState<HostRoute[]>([{ kind: "screen", screenId: "sessions", params: scenario.start?.sheet ? { sheet: scenario.start.sheet } : {} }]);
+  const [stack, setStack] = useState<HostRoute[]>(() => {
+    // With the Kontor sidebar chosen the host opens on a conversation, as Paseo does; the full screen stays one press away on the header item.
+    const sessions = KONTOR_SIDEBAR ? fixtureSessions().filter((value) => !value.agent.archivedAt) : [];
+    const first = sessions.find((value) => value.agent.status === "running") ?? sessions[0];
+    const start: HostRoute = first ? { kind: "agent", agentId: first.agent.id } : { kind: "screen", screenId: "sessions", params: scenario.start?.sheet ? { sheet: scenario.start.sheet } : {} };
+    return [start];
+  });
   const [logOpen, setLogOpen] = useState(false);
+  const [drawer, setDrawer] = useState(KONTOR_SIDEBAR);
+  const [headerRows, setHeaderRows] = useState(PASEO_HEADER_ROWS_START_OPEN);
   useSyncExternalStore(subscribeRegistry, registryVersion);
   const events = useSyncExternalStore(subscribeHostEvents, () => hostEvents().length);
   useEffect(() => setOpenScreenHandler((route) => setStack((current) => [...current, route])), []);
@@ -49,6 +72,13 @@ export function HostShell() {
   const route = stack[stack.length - 1]!;
   const theme = { colors };
   const hostProps = { theme, host: { id: HOST_ID, label: HOST_LABEL }, layout: { compact, platform: "web" as const }, navigation };
+  // Paseo 0.16 hands a sidebar view refs, not ids, and dismisses the compact sidebar after it navigates.
+  const ref = <Kind extends string>(kind: Kind, id: string) => ({ kind, key: JSON.stringify([HOST_ID, id]), hostId: HOST_ID, id });
+  const activeWorkspaceId = route.kind === "workspace" ? route.workspaceId : route.kind === "agent" ? fixtureSessions().find((value) => value.agent.id === route.agentId)?.agent.workspaceId ?? null : null;
+  const SidebarView = KONTOR_SIDEBAR ? contributedSidebarView()?.Component : undefined;
+  const sidebarView = SidebarView ? <SidebarView theme={theme} layout={hostProps.layout} dismiss={() => setDrawer(false)}
+    active={{ agent: route.kind === "agent" ? ref("agent", route.agentId) : null, workspace: activeWorkspaceId ? ref("workspace", activeWorkspaceId) : null }}
+    navigation={{ openAgent: (agent: { id: string }) => { navigation.openAgent({ agentId: agent.id }); setDrawer(false); }, openWorkspace: (workspace: { id: string }) => { navigation.openWorkspace({ workspaceId: workspace.id }); setDrawer(false); } }} /> : null;
 
   let body;
   let title = "Kontor";
@@ -76,26 +106,55 @@ export function HostShell() {
     </Pressable>
   </View>;
   const hostHeader = <View testID="host-header" style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: 6, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
+    {compact ? <Pressable testID="host-menu" accessibilityRole="button" accessibilityLabel="Open sidebar (host)" accessibilityState={{ expanded: drawer }} onPress={() => setDrawer(true)} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
+      <Icon name="Menu" size={18} color={colors.foreground} />
+    </Pressable> : null}
     {stack.length > 1 ? <Pressable testID="host-back" accessibilityRole="button" accessibilityLabel="Back (host)" onPress={back} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
       <Icon name="ArrowLeft" size={18} color={colors.foreground} />
     </Pressable> : null}
     <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{title}</Text>
   </View>;
 
-  return <QueryClientProvider client={queryClient}><PaseoApiProvider paseo={fakePaseo}><PluginRpcProvider invoke={invokeRpc}>
+  // Paseo keeps its own header, header items and footer around the chosen view; only the middle is the plugin's.
+  const rowHeight = compact ? 44 : 30;
+  const sidebar = <View testID="host-sidebar" style={{ width: compact ? Math.min(SIDEBAR_WIDTH + 40, width * 0.92) : SIDEBAR_WIDTH, borderRightWidth: 1, borderColor: colors.border, backgroundColor: colors.surface1 }}>
+    <View style={{ padding: 8, gap: 2 }}>
+      <View style={{ flexDirection: "row", alignItems: "center" }}>
+        <Text style={{ flex: 1, color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 6 }}>{HOST_LABEL} · host shim</Text>
+        <Pressable testID="host-header-rows" accessibilityRole="button" accessibilityState={{ expanded: headerRows }} aria-expanded={headerRows} accessibilityLabel={PASEO_HEADER_ROWS_HELP} onPress={() => setHeaderRows(!headerRows)}
+          style={{ minHeight: compact ? 44 : 26, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8 }}>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{PASEO_HEADER_ROWS_LABEL}</Text>
+          <Icon name={headerRows ? "ChevronUp" : "ChevronDown"} size={14} color={colors.foregroundMuted} />
+        </Pressable>
+      </View>
+      {headerRows ? PASEO_HEADER_ROWS.map((row) => <Pressable key={row.label} accessibilityRole="button" accessibilityLabel={`${row.label} (host shim)`} onPress={() => logHostEvent("host.header", `${row.label}: Paseo's own row, not simulated`)}
+        style={{ minHeight: rowHeight, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 10, borderRadius: 6 }}>
+        <Icon name={row.icon} size={15} color={colors.foregroundMuted} />
+        <Text numberOfLines={1} style={{ flex: 1, color: colors.foregroundMuted, fontSize: 13 }}>{row.label}</Text>
+        {"keys" in row && !compact ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{row.keys}</Text> : null}
+      </Pressable>) : null}
+      {contributedSidebar().map((item) => { const Item = item.Component; return <Item key={item.id} {...hostProps} currentScreen={route.kind === "screen" ? { screenId: route.screenId, params: route.params } : null} openScreen={(input: { screenId: string; params?: Record<string, string> }) => { setDrawer(false); push({ kind: "screen", screenId: input.screenId, params: input.params ?? {} }); }} openPopover={() => undefined} />; })}
+    </View>
+    {sidebarView ? <View style={{ flex: 1, minHeight: 0, borderTopWidth: 1, borderColor: colors.border }}>{sidebarView}</View>
+      : <View style={{ flex: 1, borderTopWidth: 1, borderColor: colors.border, padding: 18 }}><Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Paseo default view: projects and workspaces (host shim, not simulated).</Text></View>}
+    <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 18, paddingVertical: 10, borderTopWidth: 1, borderColor: colors.border }}>Paseo footer · Settings</Text>
+  </View>;
+
+  return <QueryClientProvider client={queryClient}><PaseoApiProvider paseo={fixturePaseoApi}><PluginRpcProvider invoke={invokeRpc} subscribe={subscribeRpc}>
     <View style={{ height: "100%", backgroundColor: colors.surface0 }}>
       {prototypeBar}
       <View style={{ flex: 1, flexDirection: "row", minHeight: 0 }}>
-        {compact ? null : <View testID="host-sidebar" style={{ width: 240, borderRightWidth: 1, borderColor: colors.border, backgroundColor: colors.surface1, padding: 8, gap: 4 }}>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 6 }}>{HOST_LABEL} · host shim</Text>
-          {contributedSidebar().map((item) => { const Item = item.Component; return <Item key={item.id} {...hostProps} currentScreen={route.kind === "screen" ? { screenId: route.screenId, params: route.params } : null} openScreen={(input: { screenId: string; params?: Record<string, string> }) => push({ kind: "screen", screenId: input.screenId, params: input.params ?? {} })} openPopover={() => undefined} />; })}
-        </View>}
+        {compact ? null : sidebar}
         <View style={{ flex: 1, minWidth: 0 }}>
           {hostHeader}
           <View style={{ flex: 1, minHeight: 0 }}>{body}</View>
         </View>
         {logOpen ? <HostLog onClose={() => setLogOpen(false)} compact={compact} /> : null}
       </View>
+      {compact && drawer ? <View testID="host-drawer" style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, flexDirection: "row" }}>
+        {sidebar}
+        <Pressable testID="host-drawer-scrim" accessibilityRole="button" accessibilityLabel="Close sidebar (host)" onPress={() => setDrawer(false)} style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)" }} />
+      </View> : null}
       <ToastLayer />
     </View>
   </PluginRpcProvider></PaseoApiProvider></QueryClientProvider>;

@@ -5,9 +5,12 @@ the KR-11 foundation of the Kontor relaunch plan (ASMA-8507): the decided
 binding hooks plus the `before("workspace.create")` placement guard. The
 navigator reads Paseo directly and works without `kontord`.
 
+Kontor supports only the current Paseo release. The manifest requires Paseo
+`>=0.17.4`; older Paseo versions are not supported or tested.
+
 ## Saved session summaries on stock Paseo
 
-Summarize & copy uses stock Paseo 0.12 agent creation, timeline and finish APIs.
+Summarize & copy uses Paseo's agent creation, timeline and finish APIs.
 It reads a bounded tail of up to 48 source history items and 24,000 message
 characters, then runs a separate, visible read-only Codex summary session. It
 never prompts the source or a destination. A working source must finish first;
@@ -66,7 +69,7 @@ Composition still requires independent review before installation.
 
 ### Native saved-summary attachments (R29)
 
-On stock Paseo 0.12, **Choose summary attachment in destination** reads a saved
+On the current Paseo release, **Choose summary attachment in destination** reads a saved
 revision and shows its exact search identifier. It never generates on Attach,
 writes a remote draft, starts a new lead or sends a turn. If no revision exists,
 use Summarize & copy first. Cancel closes this preparation without effects.
@@ -105,10 +108,22 @@ actions do not silently switch these choices; `free/kontor` is not another mode.
 
 ## Sessions navigator
 
-The plugin adds the **Kontor** screen, one sidebar entry, one global Command
-Center command and an in-session **← Kontor** composer pill for live agents with
-a workspace. The screen, sidebar and command are navigation affordances; the
-pill is the in-session return control where the composer supports it.
+The plugin adds the **Kontor** screen, one sidebar entry, one sidebar view,
+one global Command Center command and an in-session **← Kontor** composer pill
+for live agents with a workspace. The screen, sidebar and command are
+navigation affordances; the pill is the in-session return control where the
+composer supports it. The sidebar view puts the same Start or switch body
+between Paseo's own header and footer.
+
+### Sidebar view
+
+On each device, open **Settings → Sidebar → Sidebar view** and select
+**Kontor**. Keep the **Kontor** row on under **Settings → Sidebar → Header**:
+it connects the in-session **← Kontor** pill to this host. The other header
+rows may be switched off. Without the Kontor row the view still works, but
+chats show no pill. A row opens its native session while the view stays in
+place at desktop width. On a phone the drawer closes for the session, and
+reopening it shows Kontor again.
 
 - **Complete inventory, with honest partial reads.** The screen walks every
   page of the selected host's native agent directory (200 rows per page) before
@@ -161,8 +176,8 @@ pill is the in-session return control where the composer supports it.
   state count, the matching count and an empty list say unavailable rather
   than zero, in Sessions and in the switcher. A summary is read as
   strictly as Paseo validates it: a malformed one, or one the host stops
-  reporting, shows as not reported and is never carried forward. The declared
-  Paseo floor is unchanged.
+  reporting, shows as not reported and is never carried forward. The manifest
+  requires Paseo `>=0.17.4`.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
@@ -223,7 +238,7 @@ pill is the in-session return control where the composer supports it.
   (the context, search, Task, Archived history, Group and sort).
 - **Open the existing session.** Each row shows its native agent ID and opens
   by that ID through the host's navigation API. Duplicate titles never select
-  by name. Missing sessions, older hosts without plugin navigation and host
+  by name. Missing sessions, hosts that refuse plugin navigation and host
   failures produce a recoverable message instead of opening a different
   conversation.
 - **Return entry.** Opening a session uses the host's native workspace
@@ -1227,7 +1242,7 @@ they never authorize a filesystem path or a workflow action.
 Observed on this workstation:
 
 - Paseo app and daemon/CLI `0.11.4` observed. The plugin development/SDK pin
-  is `0.11.4`; the manifest declares `paseo >= 0.11.4`. Only `0.11.4` is
+  was `0.11.4`; the manifest then declared `paseo >= 0.11.4`. Only `0.11.4` was
   runtime-qualified (see the compatibility range below). The SDK client
   contracts used here are identical between `0.11.2` and `0.11.4`.
 - The native directory API supports a complete page walk, a subscribed
@@ -1262,10 +1277,11 @@ Observed on this workstation:
   were inspected: the plugin screen is popped rather than left under the
   session, so the composer pill, sidebar and Command Center are the return
   paths. Open-by-ID behavior is pinned by unit tests.
-- **Compatibility range:** the manifest declares `paseo >= 0.11.4`. Only
-  0.11.4 is runtime-qualified on this workstation. The 0.11.2 SDK client
+- **Compatibility range:** the manifest then declared `paseo >= 0.11.4`. Only
+  0.11.4 was runtime-qualified on this workstation. The 0.11.2 SDK client
   contracts were inspected and are identical for the used surface, but 0.11.2
-  is not runtime-qualified.
+  was not runtime-qualified. The current manifest requires Paseo `>=0.17.4`;
+  only the current release is supported.
 - **Native client bundle:** Paseo evaluates the client bundle with
   `globalThis.eval` on Hermes. The React Native 0.81.5 Hermes compiler (HBC96)
   used by the native app rejects ES6 class syntax, so the client source is
@@ -1336,6 +1352,10 @@ Desktop steps:
 7. In an authorized controlled/disposable check, disconnect and reconnect the
    host. Confirm the rows first show stale/not-live, then a complete reconciled
    inventory with no missing or duplicated rows.
+8. Under **Settings → Sidebar → Sidebar view**, select **Kontor** (with the
+   Kontor header row on), open a row, and confirm the sidebar stays beside the
+   session at desktop width. Repeat at phone width in the drawer. Switching the
+   Kontor header row off removes the composer pill; that is expected.
 
 iPhone steps:
 
@@ -1363,6 +1383,10 @@ Evidence checklist:
       expansion and scroll position on desktop.
 - [ ] Pill, sidebar and Command Center returns preserve search, filter,
       expansion and scroll position on iPhone.
+- [ ] Kontor is selected as the sidebar view on desktop and phone; opening a
+      row keeps it beside the session at desktop width and in the phone drawer.
+- [ ] The **← Kontor** pill shows in a session opened from the view, with the
+      Kontor header row on.
 - [ ] A pending permission shows **Needs input** with an amber indicator and is
       included in the attention filter; after resolution/cancel it clears.
 - [ ] On compact layouts the full toolbar collapses on deliberate downward
