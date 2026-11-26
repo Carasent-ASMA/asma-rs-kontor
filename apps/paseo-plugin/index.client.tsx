@@ -10,7 +10,7 @@ import { contributeReturnControl } from "./client/return-control";
 import { contributePromotionCommand } from "./client/promotion-command";
 import { KontorScreen } from "./client/kontor-screen";
 import { contributePlanControl } from "./client/plan-control";
-import { contributeSidebarView } from "./client/sidebar-view";
+import { KONTOR_SIDEBAR_VIEW_ID, KontorSidebarView, openKontor } from "./client/sidebar-view";
 import { SWITCH_SHEET } from "./client/start-switch-sheet";
 import {
   disposeRetainedDirectories,
@@ -107,7 +107,15 @@ export default function contribute(client: PluginClientContext): () => void {
   ];
   const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID, summaryAttachments.available);
   const stopPlanControl = contributePlanControl(client, SESSIONS_SCREEN_ID);
-  const stopSidebarView = contributeSidebarView(client, SESSIONS_SCREEN_ID);
+  const stopSidebarView = client.addSidebarView({
+    id: KONTOR_SIDEBAR_VIEW_ID,
+    title: "Kontor",
+    description: "Start or switch: session states, search and your desks, epics and workspaces.",
+    Component: (props) => createElement(KontorSidebarView, {
+      ...props,
+      onOpenKontor: (key: string) => openKontor((input) => client.openScreen(input), SESSIONS_SCREEN_ID, key),
+    }),
+  });
   return () => {
     runCleanup("summary attachments", summaryAttachments.remove);
     runCleanup("retained directories", () => disposeRetainedDirectories());

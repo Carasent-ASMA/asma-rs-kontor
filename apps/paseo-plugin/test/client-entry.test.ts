@@ -102,6 +102,9 @@ describe("Kontor client entry", () => {
         };
       },
       addSlashCommand: () => () => undefined,
+      addSidebarView: () => () => {
+        cleaned.push("sidebar view");
+      },
       addCommandCenterItem(value: CommandContribution) {
         calls.push({ kind: "command", value });
         return () => {
@@ -168,12 +171,12 @@ describe("Kontor client entry", () => {
 
     cleanup();
     expect(stopReturnControl).toHaveBeenCalledTimes(1);
-    expect(cleaned).toEqual(["screen", "sidebar", "command", "command", "command"]);
+    expect(cleaned).toEqual(["sidebar view", "screen", "sidebar", "command", "command", "command"]);
   });
 
-  it("registers the Kontor sidebar view when the app has one and loads unchanged without it", () => {
+  it("registers one Kontor sidebar view with the SDK contract and removes it on cleanup", () => {
     const stopSidebarView = vi.fn();
-    const addSidebarView = vi.fn((_view: { id: string; title: string }) => stopSidebarView);
+    const addSidebarView = vi.fn((_view: { id: string; title: string; description?: string; Component: unknown }) => stopSidebarView);
     const client = {
       addScreen: () => () => undefined,
       addSidebarHeaderItem: () => () => undefined,
@@ -184,11 +187,11 @@ describe("Kontor client entry", () => {
 
     const cleanup = contribute(client);
     expect(addSidebarView).toHaveBeenCalledTimes(1);
-    expect(addSidebarView.mock.calls[0]![0]).toMatchObject({ id: "kontor", title: "Kontor" });
+    const view = addSidebarView.mock.calls[0]![0];
+    expect(view).toMatchObject({ id: "kontor", title: "Kontor" });
+    expect(view.description).toContain("Start or switch");
+    expect(typeof view.Component).toBe("function");
     cleanup();
     expect(stopSidebarView).toHaveBeenCalledTimes(1);
-
-    // Paseo before 0.16 has no sidebar views: the same entry loads and keeps the header row, screen and popover.
-    expect(() => contribute({ addScreen: () => () => undefined, addSidebarHeaderItem: () => () => undefined, addSlashCommand: () => () => undefined, addCommandCenterItem: () => () => undefined } as unknown as PluginClientContext)).not.toThrow();
   });
 });

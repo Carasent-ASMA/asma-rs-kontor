@@ -1,4 +1,3 @@
-import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-native", () => ({ Text: "Text", View: "View" }));
@@ -10,7 +9,7 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => (
 vi.mock("../client/recent-sessions", () => ({ recordVisit: () => {} }));
 
 import { handOffOpen, openHandOff } from "../client/session-actions";
-import { contributeSidebarView, KONTOR_SIDEBAR_VIEW_ID, openKontor, screenNavigation, sidebarHost } from "../client/sidebar-view";
+import { openKontor, screenNavigation, sidebarHost } from "../client/sidebar-view";
 
 const NAVIGATION = () => ({ openAgent: vi.fn(), openWorkspace: vi.fn(), openTerminal: vi.fn(), openProject: vi.fn() });
 const REF = <Kind extends string>(kind: Kind, hostId: string, id: string) => ({ kind, key: JSON.stringify([hostId, id]), hostId, id });
@@ -70,25 +69,5 @@ describe("Kontor sidebar view", () => {
     expect(openKontor(() => { throw new Error(""); }, "sessions", "other")).toBe("Paseo could not open Kontor.");
     // The withdrawn request opens nothing later: the screen finds no hand-off under that key.
     expect(openHandOff({ hostId: "srv_a", key, entries: [], navigation: undefined, onView: () => {} })).toMatchObject({ ok: false, reason: "stale" });
-  });
-
-  it("contributes nothing on an app without sidebar views", () => {
-    expect(() => contributeSidebarView({} as PluginClientContext, "sessions")()).not.toThrow();
-  });
-
-  it("registers one Kontor view and removes it on cleanup", () => {
-    const remove = vi.fn();
-    const addSidebarView = vi.fn((_view: { id: string; title: string }) => remove);
-    const stop = contributeSidebarView({ addSidebarView } as unknown as PluginClientContext, "sessions");
-    expect(addSidebarView).toHaveBeenCalledTimes(1);
-    expect(addSidebarView.mock.calls[0]![0]).toMatchObject({ id: "kontor", title: "Kontor" });
-    expect(KONTOR_SIDEBAR_VIEW_ID).toBe("kontor");
-    stop();
-    expect(remove).toHaveBeenCalledTimes(1);
-  });
-
-  it("survives a host that rejects the registration", () => {
-    const addSidebarView = vi.fn(() => { throw new Error("unsupported"); });
-    expect(() => contributeSidebarView({ addSidebarView } as unknown as PluginClientContext, "sessions")()).not.toThrow();
   });
 });

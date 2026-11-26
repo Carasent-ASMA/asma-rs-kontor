@@ -5,7 +5,6 @@ import {
   useHosts,
   useWorkspaces,
   type AgentRef,
-  type PluginClientContext,
   type PluginHostSummary,
   type PluginOpenScreenInput,
   type PluginSidebarViewProps,
@@ -50,23 +49,6 @@ export function screenNavigation(hostId: string, navigation: PluginSidebarViewPr
 export function openKontor(openScreen: (input: PluginOpenScreenInput) => void, screenId: string, key: string): string | null {
   try { openScreen({ screenId, params: { target: key } }); return null; }
   catch (error) { withdrawHandOff(key); return error instanceof Error && error.message ? error.message : "Paseo could not open Kontor."; }
-}
-
-/**
- * The SDK type requires `addSidebarView`; an app below 0.16 does not have it, so presence is still checked at
- * runtime. Such an app keeps Kontor's header row, screen and composer popover unchanged.
- */
-type SidebarViewHost = PluginClientContext & { addSidebarView?: PluginClientContext["addSidebarView"] };
-
-export function contributeSidebarView(client: PluginClientContext, screenId: string): () => void {
-  const host = client as SidebarViewHost;
-  if (typeof host.addSidebarView !== "function") return () => {};
-  try {
-    return host.addSidebarView({
-      id: KONTOR_SIDEBAR_VIEW_ID, title: "Kontor", description: "Start or switch: session states, search and your desks, epics and workspaces.",
-      Component: (props) => <KontorSidebarView {...props} onOpenKontor={(key) => openKontor((input) => client.openScreen(input), screenId, key)} />,
-    });
-  } catch { return () => {}; }
 }
 
 type OpenKontor = (key: string) => string | null;

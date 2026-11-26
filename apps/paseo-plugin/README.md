@@ -5,9 +5,12 @@ the KR-11 foundation of the Kontor relaunch plan (ASMA-8507): the decided
 binding hooks plus the `before("workspace.create")` placement guard. The
 navigator reads Paseo directly and works without `kontord`.
 
+Kontor supports only the current Paseo release. The manifest requires Paseo
+`>=0.17.4`; older Paseo versions are not supported or tested.
+
 ## Saved session summaries on stock Paseo
 
-Summarize & copy uses stock Paseo 0.12 agent creation, timeline and finish APIs.
+Summarize & copy uses Paseo's agent creation, timeline and finish APIs.
 It reads a bounded tail of up to 48 source history items and 24,000 message
 characters, then runs a separate, visible read-only Codex summary session. It
 never prompts the source or a destination. A working source must finish first;
@@ -66,7 +69,7 @@ Composition still requires independent review before installation.
 
 ### Native saved-summary attachments (R29)
 
-On stock Paseo 0.12, **Choose summary attachment in destination** reads a saved
+On the current Paseo release, **Choose summary attachment in destination** reads a saved
 revision and shows its exact search identifier. It never generates on Attach,
 writes a remote draft, starts a new lead or sends a turn. If no revision exists,
 use Summarize & copy first. Cancel closes this preparation without effects.
@@ -161,8 +164,8 @@ pill is the in-session return control where the composer supports it.
   state count, the matching count and an empty list say unavailable rather
   than zero, in Sessions and in the switcher. A summary is read as
   strictly as Paseo validates it: a malformed one, or one the host stops
-  reporting, shows as not reported and is never carried forward. The declared
-  Paseo floor is unchanged.
+  reporting, shows as not reported and is never carried forward. The manifest
+  requires Paseo `>=0.17.4`.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
@@ -223,7 +226,7 @@ pill is the in-session return control where the composer supports it.
   (the context, search, Task, Archived history, Group and sort).
 - **Open the existing session.** Each row shows its native agent ID and opens
   by that ID through the host's navigation API. Duplicate titles never select
-  by name. Missing sessions, older hosts without plugin navigation and host
+  by name. Missing sessions, hosts that refuse plugin navigation and host
   failures produce a recoverable message instead of opening a different
   conversation.
 - **Return entry.** Opening a session uses the host's native workspace
@@ -1227,7 +1230,7 @@ they never authorize a filesystem path or a workflow action.
 Observed on this workstation:
 
 - Paseo app and daemon/CLI `0.11.4` observed. The plugin development/SDK pin
-  is `0.11.4`; the manifest declares `paseo >= 0.11.4`. Only `0.11.4` is
+  was `0.11.4`; the manifest then declared `paseo >= 0.11.4`. Only `0.11.4` was
   runtime-qualified (see the compatibility range below). The SDK client
   contracts used here are identical between `0.11.2` and `0.11.4`.
 - The native directory API supports a complete page walk, a subscribed
@@ -1262,10 +1265,11 @@ Observed on this workstation:
   were inspected: the plugin screen is popped rather than left under the
   session, so the composer pill, sidebar and Command Center are the return
   paths. Open-by-ID behavior is pinned by unit tests.
-- **Compatibility range:** the manifest declares `paseo >= 0.11.4`. Only
-  0.11.4 is runtime-qualified on this workstation. The 0.11.2 SDK client
+- **Compatibility range:** the manifest then declared `paseo >= 0.11.4`. Only
+  0.11.4 was runtime-qualified on this workstation. The 0.11.2 SDK client
   contracts were inspected and are identical for the used surface, but 0.11.2
-  is not runtime-qualified.
+  was not runtime-qualified. The current manifest requires Paseo `>=0.17.4`;
+  only the current release is supported.
 - **Native client bundle:** Paseo evaluates the client bundle with
   `globalThis.eval` on Hermes. The React Native 0.81.5 Hermes compiler (HBC96)
   used by the native app rejects ES6 class syntax, so the client source is
