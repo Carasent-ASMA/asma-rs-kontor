@@ -979,7 +979,7 @@ describe("21 a legacy dispatch receipt outlives a Check that replaced the saved 
 describe("Archive children too: one branch review by exact ID", () => {
   const child = (id: string, parentId: string, patch: Partial<Agent> = {}) => agent(id, { labels: { "paseo.parent-agent-id": parentId }, ...patch });
   /** p has a running child c1 with its own child g, a cross-workspace child c2 and an archived child; u is unrelated. */
-  const family = () => setup([agent("p"), child("c1", "p", { status: "running", activeTurn: true }), child("c2", "p", { workspaceId: "workspace-b" }), child("g", "c1"),
+  const family = () => setup([agent("p"), child("c1", "p", { status: "running", activeTurn: turn }), child("c2", "p", { workspaceId: "workspace-b" }), child("g", "c1"),
     agent("u"), child("old", "p", { archivedAt: "2026-10-01" })]);
   const branch = (s: Setup, ids = ["p"]) => s.service.preview({ action: "archive", scope: "filtered", agentIds: ids, target, descendants: true });
   it("resolves every active descendant, nested and cross-workspace, child-first, with Keep children alive unavailable", async () => {
