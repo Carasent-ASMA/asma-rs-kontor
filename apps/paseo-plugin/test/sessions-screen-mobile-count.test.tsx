@@ -53,6 +53,7 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => (
 
 import { ClearFiltersButton, matchingCount, SessionsScreen } from "../client/sessions-screen";
 import type { DirectoryState } from "../client/session-directory";
+import { backgroundUnavailable } from "../client/session-state-counts";
 import { MobileFiltersPage } from "../client/mobile-filters";
 import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { SessionLayoutControl } from "../client/session-layout-control";
@@ -212,6 +213,15 @@ describe("matchingCount", () => {
     expect(count({ inventoryComplete: undefined })).toBe("1 matching session · partial");
     expect(count({}, false, "Reconnecting")).toBe("1 matching session · reconnecting");
   });
+
+  it("shows a count the chosen state cannot assert as unavailable, never as 0", () => {
+    const silent = ready({ entries: [sessionEntry("idle")] });
+    const unavailable = backgroundUnavailable(silent);
+    expect(matchingCount({ count: 0, state: silent, includeArchived: false, freshness: "Live", blocked: null, unavailable }))
+      .toEqual({ text: "—", label: "Matching sessions unavailable: no session in this read carries a background-work summary, so this host may not report it" });
+    const reported = ready({ entries: [sessionEntry("idle", { backgroundWork: { count: 0 } })] });
+    expect(matchingCount({ count: 0, state: reported, includeArchived: false, freshness: "Live", blocked: null, unavailable: backgroundUnavailable(reported) }).text).toBe("0 matching sessions");
+  });
 });
 
 
@@ -234,6 +244,18 @@ describe("state ratios and applied-filter readback", () => {
     open(); press("sessions-reset-view"); back();
     expect(counts().current!.text).toBe("3"); expect(summary()!.props.children).toBe("My work");
     expect(byTestID("sessions-mobile-count")).toHaveLength(0);
+  });
+
+  it("reads Background tasks back as unavailable, not 0, when no row carries a summary", () => {
+    fake.state = ready();
+    patchSessionView("host-a", { status: "background", work: "all" });
+    mount({ projectId: "prj_1" });
+    expect(counts().background!.text).toBe("—");
+    expect(summary()!.props.accessibilityLabel).toContain("Matching sessions unavailable: no session in this read carries a background-work summary");
+    expect(summary()!.props.accessibilityLabel).not.toContain("0 matching sessions");
+    const empty = walk(all().find((element) => element.props.ListEmptyComponent)!.props.ListEmptyComponent)
+      .filter((element) => element.type === "Text").map((element) => String(element.props.children));
+    expect(empty).toContain("No Background tasks shown: no session in this read carries a background-work summary, so this host may not report it.");
   });
 
   it("combines search, person, association, task, desk and epic with one membership/route universe", () => {

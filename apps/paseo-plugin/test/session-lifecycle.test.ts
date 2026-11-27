@@ -65,6 +65,26 @@ describe("current runtime and retained error history", () => {
     const running = sessionEntry("running", { status: "running" });
     const unread = sessionEntry("unread", { requiresAttention: true, attentionReason: "finished" });
     expect(sortDirectoryEntries([earlier, unread, running, current]).map((entry) => entry.id)).toEqual(["current", "running", "unread", "history"]);
+    // Running background work sorts with Running, above an unread result; a waiting heartbeat does not.
+    const background = sessionEntry("background", { backgroundWork: { count: 1 }, updatedAt: "2026-10-01T00:00:00Z" });
+    const heartbeat = sessionEntry("heartbeat", { backgroundWork: { count: 1, runningCount: 0 }, updatedAt: "2026-10-01T00:00:00Z" });
+    expect(sortDirectoryEntries([heartbeat, unread, background]).map((entry) => entry.id)).toEqual(["background", "unread", "heartbeat"]);
+  });
+
+  it("shows reported background work as Running without displacing questions or errors", () => {
+    const running = sessionEntry("bg", { status: "idle", backgroundWork: { count: 2, runningCount: 1 } });
+    expect(sessionState(running)).toBe("running");
+    expect(matchesStatus(running, "running")).toBe(true);
+    expect(matchesStatus(running, "background")).toBe(true);
+    expect(buildOrganizationTree({ entries: [running] })[0]!.aggregate).toMatchObject({ running: 1 });
+    // Paseo's own precedence: a question or an error keeps its higher state.
+    expect(sessionState(sessionEntry("asking", { pendingPermissionCount: 1, backgroundWork: { count: 1, runningCount: 1 } }))).toBe("needs_input");
+    expect(sessionState(sessionEntry("failed", { status: "error", backgroundWork: { count: 1, runningCount: 1 } }))).toBe("failed");
+    // A host without a running split reports one total, which Paseo counts as running.
+    expect(sessionState(sessionEntry("splitless", { status: "idle", backgroundWork: { count: 1 } }))).toBe("running");
+    // An absent summary is not zero reported work, and a reported zero is not running.
+    expect(sessionState(sessionEntry("unreported", { status: "idle" }))).toBe("idle");
+    expect(sessionState(sessionEntry("reported-none", { status: "idle", backgroundWork: { count: 0 } }))).toBe("idle");
   });
 
   it("does not infer archive or completion from a closed runtime or an earlier error", () => {

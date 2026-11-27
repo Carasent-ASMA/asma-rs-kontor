@@ -32,6 +32,7 @@ scenarios and light/dark appearance. Query parameters:
 - `scenario=<id>`
 - `theme=light|dark`
 - `layout=both|phone|desktop`
+- `sidebar=paseo|kontor`
 - `embed=1&pointer=coarse|fine` for a single standalone frame
 
 ## Host substitutions

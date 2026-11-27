@@ -21,6 +21,7 @@ export type HostRoute =
 
 const screens = new Map<string, Screen>();
 const sidebar: SidebarItem[] = [];
+let sidebarView: SidebarItem | null = null;
 const pills = new Map<string, Pill>();
 const listeners = new Set<() => void>();
 let version = 0;
@@ -29,6 +30,8 @@ export function subscribeRegistry(listener: () => void) { listeners.add(listener
 export function registryVersion() { return version; }
 export function contributedScreen(id: string) { return screens.get(id); }
 export function contributedSidebar(): readonly SidebarItem[] { return sidebar; }
+/** Paseo 0.16's sidebar view: one per plugin, chosen in the app's settings; the prototype shows it when contributed. */
+export function contributedSidebarView(): SidebarItem | null { return sidebarView; }
 export function pillsFor(agentId: string): Pill[] {
   return [...pills.values()].filter((pill) => pill.agentId === agentId && pill.button.visible !== false);
 }
@@ -50,6 +53,7 @@ const client = {
   addScreen(contribution: Screen) { screens.set(contribution.id, contribution); changed(); return () => { screens.delete(contribution.id); changed(); }; },
   addSidebarHeaderItem(contribution: SidebarItem) { sidebar.push(contribution); changed(); return cleanup; },
   addSidebarFooterItem: () => cleanup,
+  addSidebarView(contribution: SidebarItem) { sidebarView = contribution; changed(); return () => { sidebarView = null; changed(); }; },
   addSettingsScreen: () => cleanup,
   addWorkspacePanel: () => cleanup,
   addCommandCenterItem: () => cleanup,

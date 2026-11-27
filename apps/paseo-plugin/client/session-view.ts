@@ -1,8 +1,11 @@
 import { freshAvailability } from "../shared/session-lifecycle";
 import {
+  hasBackgroundWork,
   hasEarlierError,
   hasSessionAttention,
   isArchivedSession,
+  isSessionRunning,
+  runningBackgroundWork,
   type DirectoryEntry,
   type DirectoryState,
   type SessionStatus,
@@ -22,12 +25,14 @@ export type StatusFilter =
   | "attention"
   | "earlier_error"
   | "provider_blocked"
+  | "background"
   | "favorites";
 
 /** The nine state shortcuts, Last visited first; Current and the rarer states sit under More. */
 export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = ["recent", "activity", "running", "needs_input", "error", ALL_STATUS_FILTER, "idle", "attention", "favorites"];
 export const MORE_STATUS_FILTERS: readonly StatusFilter[] = [
   "current",
+  "background",
   "initializing",
   "closed",
   "earlier_error",
@@ -67,6 +72,7 @@ const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
   attention: "Attention",
   earlier_error: "Earlier errors",
   provider_blocked: "Provider blocked (observed)",
+  background: "Background tasks",
   favorites: "★ Favorites",
   initializing: "Starting",
   closed: "Closed",
@@ -121,6 +127,12 @@ export function matchesStatus(
       return true;
     case "favorites":
       return favorites.includes(entry.id);
+    case "running":
+      // Paseo counts reported background work as running; the native status stays on the row.
+      return isSessionRunning(entry);
+    case "background":
+      // Any reported task; such a session may also be Running, waiting for input or in error.
+      return hasBackgroundWork(entry);
     case "needs_input":
       return entry.needsInput;
     case "attention":
@@ -203,6 +215,45 @@ export function archivedLabel(entry: DirectoryEntry): string | null {
 
 export function earlierErrorLabel(entry: DirectoryEntry): string | null {
   return hasEarlierError(entry) ? `Earlier error · now ${entry.status}` : null;
+}
+
+/**
+ * Reported background work in words, or null when there is none to show. Without a
+ * running split the cue says only the total, as Paseo's own pill does; the plugin
+ * never invents a split.
+ * Reported work with no running task (a heartbeat, for example) says "waiting",
+ * so it cannot read as work in progress.
+ */
+export function backgroundWorkLabel(entry: DirectoryEntry): string | null {
+  const work = entry.backgroundWork;
+  if (work === undefined || work.count === 0) {
+    return null;
+  }
+  const total = `${work.count} background task${work.count === 1 ? "" : "s"}`;
+  if (work.runningCount === undefined) {
+    return total;
+  }
+  const running = runningBackgroundWork(entry);
+  return `${total} · ${running === 0 ? "waiting" : `${running} running`}`;
+}
+
+/**
+ * Details keeps the exact numbers and says "Not reported" for a missing summary,
+ * never a fabricated zero; the wording holds for a host and a catalog row alike.
+ * Paseo omits the running split when every task counts as running (and Paseo
+ * 0.16 never sends it); its own rule then counts the total.
+ */
+export function backgroundWorkDetail(entry: DirectoryEntry): string {
+  const work = entry.backgroundWork;
+  if (work === undefined) {
+    return "Not reported";
+  }
+  if (work.count === 0) {
+    return "None reported";
+  }
+  return work.runningCount === undefined
+    ? `${work.count} reported; Paseo counts all as running`
+    : `${work.count} reported, ${work.runningCount} running`;
 }
 
 export function sessionAvailabilityLabel(entry: DirectoryEntry): string | null {

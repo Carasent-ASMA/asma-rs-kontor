@@ -28,7 +28,8 @@ export type HostEvent = {
     | "paseo.unsupported"
     | "captured.loaded"
     | "captured.missing"
-    | "composer.pill";
+    | "composer.pill"
+    | "host.header";
   readonly detail: string;
 };
 

@@ -106,7 +106,7 @@ function startConnection(record: RetainedDirectory): void {
   record.connection = { token, promise, settled: false };
 }
 
-function claimOwner(record: RetainedDirectory): void {
+function claimOwnerFor(record: RetainedDirectory): void {
   if (ownerHostId !== null) {
     return;
   }
@@ -122,9 +122,13 @@ function claimOwner(record: RetainedDirectory): void {
   }
 }
 
-function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
+function retain(hostId: string, includeArchived: boolean, claimOwner = true): RetainedDirectory {
   const existing = retained.get(hostId);
-  if (existing) return existing;
+  if (existing) {
+    // A read-only mount may have created the record first. A later host-bearing mount still claims it.
+    if (claimOwner) claimOwnerFor(existing);
+    return existing;
+  }
   const listeners = new Set<(state: DirectoryState) => void>();
   const record: RetainedDirectory = {
     hostId,
@@ -152,7 +156,7 @@ function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
     }),
   };
   retained.set(hostId, record);
-  claimOwner(record);
+  if (claimOwner) claimOwnerFor(record);
   return record;
 }
 
@@ -244,12 +248,17 @@ export function useSessionDirectory(input: {
   /** Omit to read the shared directory as it is set, never changing another view's Archived choice. */
   readonly includeArchived?: boolean;
   readonly enabled?: boolean;
+  /**
+   * A host-bearing mount claims this runtime's installation host for the composer controls. The sidebar view
+   * sets this false: it may show another connected host, and only a host-bearing surface may own the pills.
+   */
+  readonly claimOwner?: boolean;
 }): {
   readonly state: DirectoryState;
   readonly refresh: () => void;
   readonly retry?: () => void;
 } {
-  const { hostId, hostStatus, includeArchived, enabled = true } = input;
+  const { hostId, hostStatus, includeArchived, enabled = true, claimOwner = true } = input;
   const initialArchived = includeArchived ?? false;
   const [stateForHost, setStateForHost] = useState<{
     readonly hostId: string;
@@ -265,7 +274,7 @@ export function useSessionDirectory(input: {
 
   useEffect(() => {
     if (!enabled) return;
-    const record = retain(hostId, includeArchivedRef.current ?? false);
+    const record = retain(hostId, includeArchivedRef.current ?? false, claimOwner);
     const listener = (next: DirectoryState) => setStateForHost({ hostId, state: next });
     record.listeners.add(listener);
     directoryRef.current = record;
@@ -276,7 +285,7 @@ export function useSessionDirectory(input: {
         directoryRef.current = null;
       }
     };
-  }, [hostId, enabled]);
+  }, [hostId, enabled, claimOwner]);
 
   useEffect(() => {
     const record = directoryRef.current;
