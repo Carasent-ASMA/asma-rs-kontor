@@ -168,7 +168,7 @@ export async function recordSummaryRecovery(paseo: Pick<PaseoApi, "agents">, roo
   if (input.applySha256 !== plan.beforeSha256) throw new Error(`Job ${input.job} is not the bytes its dry run reviewed (now ${plan.beforeSha256}). Nothing was changed; dry-run it again.`);
   const lockFile = `${file}.lock`;
   const lock = await open(lockFile, "wx", 0o600).catch((error: unknown) => {
-    if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new Error(`Another recovery apply holds job ${input.job} (${basename(lockFile)}). Nothing was changed; if no apply is running, remove that lock and dry-run again.`);
+    if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new Error(`Another recovery apply holds job ${input.job} (${basename(lockFile)}). Nothing was changed, and the job stays held. Nothing removes this lock automatically: a lock left by an interrupted apply is removed only by the installation runbook's stale-lock procedure, which proves from the PID the lock records that no apply owns it, removes only that file, and dry-runs the job again.`);
     throw error;
   });
   try {

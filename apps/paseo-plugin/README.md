@@ -176,9 +176,23 @@ runner opens any connection. The dry run prints the job's `beforeSha256`;
 `--apply` must name it, and a job whose bytes have changed since is refused
 unchanged, so drift stops that job. An apply holds `<job-file>.lock`, created
 exclusively, from its final read to its replace, so two applies to one job never
-both succeed; inside it the job must still be the reviewed bytes. A lock left by
-an interrupted apply refuses later applies until it is removed after checking
-that no apply runs. Before any change it keeps the job's exact original bytes at
+both succeed; inside it the job must still be the reviewed bytes. The lock
+records the apply's PID. A lock left by an interrupted apply refuses every later
+apply to that job, which stays held, and nothing removes the lock automatically:
+there is no expiry or reaping. The installation runbook's stale-lock procedure is
+its only sanctioned removal. In an exclusive recovery window for that one job,
+it keeps the exact regular lock file's bytes, hash and identity as evidence
+(never a symlink or a wildcard), and correlates the recorded PID by pid, comm
+and lstart with the interrupted apply. A live or ambiguous owner, an empty or
+invalid lock with no corroborating owner evidence, or any change holds. Age
+alone never decides, and no process is killed. Only an absent PID, or an
+original apply shown completed or dead, establishes that no apply owns the lock;
+that says nothing about the summary helper. The procedure rechecks the lock and
+removes only that file, then dry-runs the job again and applies it only with the
+fresh `beforeSha256`, under that job's existing authorization. If any condition
+cannot be established, the lock and the job stay held. No job, capture or
+receipt data is edited by hand. Before any change it keeps the job's exact
+original bytes at
 `generation-jobs/superseded/<worker id>.before-recovery.json`, written once.
 The active record is then rewritten with every value it had (including
 `promptHash` and `clientMessageId`) and only the `recovery` object added, by an
