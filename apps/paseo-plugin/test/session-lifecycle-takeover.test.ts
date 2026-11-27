@@ -20,7 +20,7 @@ import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createStateRoot, createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
 import { createSessionSummaryService } from "../server/session-summaries";
-import { stockSummaryGenerator } from "../server/stock-summary-generator";
+import { stockSummaryGenerator, summaryPlacementReady } from "../server/stock-summary-generator";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -142,7 +142,7 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const observedAt = new Date().toISOString();
   const fleetCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, promotionRoot: createRoot,
-    summaries, snapshot: async () => ({ ...SNAPSHOT, requestId: "snapshot-1", generatedAt: new Date().toISOString(), entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
+    summaries, summaryPlacement: async () => {}, snapshot: async () => ({ ...SNAPSHOT, requestId: "snapshot-1", generatedAt: new Date().toISOString(), entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
     operatorFleetDiscovery: async () => ({ choices, catalog: fleetCatalog }),
     evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
@@ -1755,6 +1755,23 @@ describe("universal takeover operation", () => {
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
   });
 
+  it("reads the designated summary workspace back before the stop and leaves the source running when it fails (N2)", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    const stop = vi.fn(async (id: string) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    // The production readback on this host's client, against a summary.json that is not there.
+    h.deps.summaryPlacement = () => summaryPlacementReady(h.client as never, join(h.root, "..", "absent-summary.json"));
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    // The unsafe effect first: the source is still running and nothing was archived or created.
+    expect(h.agents.get("agent-1")!.status).toBe("running");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(applied.message).toContain("The source was not stopped");
+  });
+
   it("refuses a running source that remains active after the stop, with no archive or create", async () => {
     const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
     h.deps.publicCli = { stop: async () => ({ ok: true }) };
@@ -1856,6 +1873,8 @@ describe("universal takeover operation", () => {
     h.client.agents.ref = (id: string) => {
       const handle = ref(id);
       return { ...handle,
+        // The host reports the helper's project; the generator reads it back against the designated placement.
+        refresh: async () => { const read = await handle.refresh(); return read && read.agent.workspaceId === "wks-summary" ? { ...read, project: { projectKey: "prj-summary" } } : read; },
         archive: async () => { if (id === "agent-1") order.push("archive"); return handle.archive(); },
         timeline: { refetch: async (options?: { projection?: string }) => options?.projection === "canonical"
           ? (id === "agent-1" ? sourcePage() : { agent: h.agents.get(id), agentId: id, entries: h.timelines.get(id) ?? [], epoch: "helper-epoch", gap: null, staleCursor: null, hasOlder: false, hasNewer: false }) as never
@@ -1868,15 +1887,23 @@ describe("universal takeover operation", () => {
         },
       } as typeof handle;
     };
-    (h.client as unknown as { agents: { create: (input: Record<string, unknown> & { agentId: string; config: { provider: string }; prompt?: string; clientMessageId: string; title: string; cwd: string; labels: Record<string, string> }) => Promise<unknown> } }).agents.create = async (input) => {
-      const [provider, model] = input.config.provider.split("/");
-      const helper = agent(input.agentId, { title: input.title, labels: input.labels, provider: provider!, model: model!, cwd: input.cwd, workspaceId: "wks-1", status: "idle", currentModeId: "default", persistence: { sessionId: `helper-${input.agentId}` } } as Partial<Agent>);
-      h.agents.set(helper.id, helper);
-      h.timelines.set(helper.id, [{ item: { type: "user_message", text: input.prompt ?? "", clientMessageId: input.clientMessageId }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:01:30Z" } as never]);
-      return { id: helper.id, ...h.client.agents.ref(helper.id) };
-    };
-    const summaryRoot = join(h.root, "..", "summaries");
-    const summaries = createSessionSummaryService(h.client as never, summaryRoot, stockSummaryGenerator(h.client as never, summaryRoot));
+    // The summary helper is created only in its designated workspace, never with a bare cwd.
+    (h.client as unknown as { agents: { create: () => Promise<never> } }).agents.create = async () => { throw new Error("A summary helper is never created by bare cwd."); };
+    const summaryWorkspace = { ...WORKSPACE, id: "wks-summary", projectId: "prj-summary", workspaceDirectory: "/fixtures/summary-helpers", projectKind: "non_git", workspaceKind: "directory" };
+    const workspaceRef = h.client.workspaces.ref;
+    h.client.workspaces.ref = ((id: string) => id !== summaryWorkspace.id ? workspaceRef(id) : {
+      refresh: async () => summaryWorkspace,
+      agents: { create: async (input: { agentId: string; config: { provider: string }; prompt?: string; clientMessageId: string; title: string; labels: Record<string, string> }) => {
+        const [provider, model] = input.config.provider.split("/");
+        const helper = agent(input.agentId, { title: input.title, labels: input.labels, provider: provider!, model: model!, cwd: summaryWorkspace.workspaceDirectory, workspaceId: summaryWorkspace.id, status: "idle", currentModeId: "default", persistence: { sessionId: `helper-${input.agentId}` } } as Partial<Agent>);
+        h.agents.set(helper.id, helper);
+        h.timelines.set(helper.id, [{ item: { type: "user_message", text: input.prompt ?? "", clientMessageId: input.clientMessageId }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:01:30Z" } as never]);
+        return { id: helper.id, ...h.client.agents.ref(helper.id) };
+      } },
+    }) as typeof h.client.workspaces.ref;
+    const summaryRoot = join(h.root, "..", "summaries"), placementFile = join(h.root, "..", "summary.json");
+    await writeFile(placementFile, JSON.stringify({ workspaceId: summaryWorkspace.id, projectId: summaryWorkspace.projectId, cwd: summaryWorkspace.workspaceDirectory }));
+    const summaries = createSessionSummaryService(h.client as never, summaryRoot, stockSummaryGenerator(h.client as never, summaryRoot, {}, placementFile));
     h.deps.summaries = summaries;
     const saveOriginal = summaries.save.bind(summaries);
     const save = vi.spyOn(summaries, "save").mockImplementation(async (id) => { order.push("save"); return saveOriginal(id); });

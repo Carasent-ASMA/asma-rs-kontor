@@ -241,7 +241,7 @@ type CreateRecord = z.infer<typeof recordSchema>;
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-async function allPages<T>(read: (cursor: string | undefined) => Promise<Page<T>>): Promise<T[]> {
+export async function allPages<T>(read: (cursor: string | undefined) => Promise<Page<T>>): Promise<T[]> {
   const rows: T[] = [], cursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < 1_000; page++) {
