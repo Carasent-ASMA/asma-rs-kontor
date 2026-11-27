@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export interface WorkspaceSourceLike {
   readonly kind?: string;
@@ -28,9 +28,10 @@ export interface PlacementBinding {
   readonly directory: string;
 }
 
+/** Whether `child` is `parent` or beneath it. Only a `..` segment leaves `parent`; a name such as `..checkout` does not. */
 export function within(child: string, parent: string): boolean {
   const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function refuse(reason: string): PlacementDecision {

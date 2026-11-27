@@ -84,10 +84,13 @@ The existing `apps/kontor-prototype` harness exposes synthetic `tokenomics` and
 
 Summarize & copy uses Paseo's agent creation, timeline and finish APIs.
 It reads a bounded tail of up to 48 source history items and 24,000 message
-characters, then runs a separate, visible read-only Codex summary session. It
-never prompts the source or a destination. A working source must finish first;
-other providers remain explicitly unsupported. Provider execution and installed
-client behavior still need release-owner readback.
+characters, then runs a separate, visible summary helper session. The helper's
+route is an available provider and model from the host catalogue with a
+supported non-dangerous mode, or the host's `summary` agent profile when one is
+configured, independently of the source provider. No read-only sandbox is
+claimed. It never prompts the source or a destination. A working source must
+finish first. Provider execution and installed client behavior still need
+release-owner readback.
 
 Kontor saves immutable revisions in its own plugin state. Each new revision
 records the exact source ID, captured history epoch/sequence range and input
@@ -103,6 +106,270 @@ capture refuses generation. Older jobs without prompt correlation remain held.
 These files
 have one plugin worker as writer; multiple workers sharing a root are not
 qualified.
+
+The helper session runs in one operator-designated workspace, named in
+`$PASEO_HOME/plugin-config/kontor/summary.json` (default
+`~/.paseo/plugin-config/kontor/summary.json`) as
+`{"workspaceId": "…", "projectId": "…", "cwd": "/absolute/directory"}`. A new
+job reads that file, and the native workspace must read back with exactly that
+id, project and directory, not archiving, as a `directory` workspace in a
+`non_git` or `directory` project, before the job is recorded. A repository or
+worktree workspace is refused, and so is a directory with another active
+workspace beneath it (by path segment: `..checkout` is a name beneath it, and
+only a `..` segment leaves it), so a helper never runs above a checkout. A missing or invalid file holds the summary path
+(containment, below): nothing is written or started. A workspace that does not
+read back that way records no job, creates no helper and keeps the capture; the
+message names the workspace id. The job records the placement
+with `owned: false` before anything is sent; a retry reads the helper back
+against the recorded placement, not a changed file. The helper is
+created through the workspace's own create, so no job makes a project or
+workspace. The helper's own readback must match too, also on retry. A helper
+whose own readback does not match right after create is kept with its
+correlation, and its output stays held; nothing is resent. Cleanup archives only
+the helper and never closes the designated workspace.
+
+A `creating` job recorded by an earlier version has no placement and may
+already have been sent with a per-job directory under its helper's key. A helper
+that does not read back does not prove that create had no effect, so the job is
+held: it is never rewritten, never re-sent under that key, and no new helper is
+started. Earlier released versions keyed the same history differently: 2d5afed8
+on `[source id, boundary, source model]`, then `[source id, boundary]` until
+agent messages were captured (d29bd08d), both over user and assistant messages
+only. Before anything is dispatched, the generator looks up every former key
+for the same source and history, also when a row under the current key exists.
+Each unfinished row found there is an earlier attempt at this history:
+`creating`, `waiting`, or `failed` without a correlated completed response
+(below). It is qualified only when a recovery is recorded in it and its helper
+does not read back by its exact id. A helper that reads back never qualifies an
+attempt, whatever its status. In Paseo 0.16.2, archived, `closed` and with no
+active turn is also what a helper reads back as after a restart repair, after a
+repeated close that returned at once following a failed one (ACP, OMP and Pi)
+and after a Claude close whose kill timed out. That readback cannot show that
+the attempt's original work has stopped (AUD-A-R6-01). An
+unqualified row is never folded, rewritten or marked: it holds every path that
+could start a helper for this history, naming that row's file. It does not withhold a summary that is already
+complete under the current key, and it does not stop the generator reading the
+correlated result of the current key's own helper: neither starts a helper.
+Once every earlier attempt is qualified, each is
+kept byte for byte under `superseded/`, named in `previousWorkers` of the one job
+this history keeps, and removed; at most one new helper and key is made. Qualified attempts are
+folded only into a complete current row or into that new job, never into an
+unfinished current row. A `complete` former row, or a `failed` one that records
+a correlated completed response, is history and is left as it is.
+An unfinished row under a key the generator does not derive here,
+for example one 2d5afed8 keyed on a model the source no longer runs, may still
+be an earlier attempt at this history. It is set aside only on evidence that it
+belongs elsewhere: its capture names another source, or another history in the
+current boundary format, or, with no capture, its helper reads back labelled for
+another source. Otherwise, and when the row cannot be read or parsed, it holds every path
+that could start a helper, naming its file, until its helper no longer reads
+back and a recovery is recorded in it. A row with no capture whose helper does
+not read back therefore holds the summaries of every source, not only its own.
+Such a row is never folded, rewritten or marked, and its `creating` state keeps
+its container held in the dry run below.
+
+A capture that cannot be read or parsed is unavailable evidence, as if the row
+had none: it places the row nowhere and proves nothing (not another source or
+history, not completion, not a safe replacement), and the checks above decide
+(RB-1). That closure fix and the merge of master at the Paseo `>=0.17.4` floor
+leave the summary-placement and containment criteria C1–C5 unchanged. X1–X3
+stay BLOCKED: automatic recovery where the helper still reads back, the healthy
+exit (A-07), and a public native quiescence capability (AUD-A-R6-01). This is
+not a full slice-A recovery pass or ASMA-8580 completion.
+
+A fresh helper with a new key replaces a held job only when an operator records
+a recovery disposition in the job,
+`"recovery": {"disposition": "retire-legacy-create", "evidence": "…", "recordedAt": "…"}`,
+naming the reconciled evidence, and its helper does not read back by its exact
+id. That applies to a legacy `creating` job, to a placed `creating` job that an
+earlier call recorded (below), to a `waiting` job and to a `failed` job without
+a correlated completed response. The recovery is the operator's record: the plugin does not
+verify its evidence, and it is not native evidence that the earlier attempt had
+no effect. Without it such a job is held with a plain message; it is never
+re-keyed because its helper does not read back. On retirement the job's exact
+bytes are kept at `generation-jobs/superseded/<worker id>.json`, written once:
+an existing archive with the same bytes is a replay, and one with other bytes
+holds the job and is never replaced. Just before it retires anything, the
+generator reads each attempt again; its bytes must be unchanged and its helper
+must still not read back, or nothing is retired.
+
+Only a job the same call wrote sends its first create. A placed `creating` job
+an earlier call recorded, with no recovery, whose helper does not read back, is
+held: its create is never sent again, not even under its own key. Paseo 0.17.4
+runs a failed startup again under the same key when nothing registered before
+the failure, so a keyed repeat is not always the replay of a retained outcome,
+and an absent helper does not show that the first request had no effect
+(AUD-A-REL-03). That includes a create the host could not confirm
+(`agent_request_outcome_unknown`), one lost before it reached the host, and a
+call that stopped at its last binding check after writing its job. Named
+residual: Paseo records neither that a runtime which failed before registration
+was released, nor a retained unknown outcome for it. Until it does, such a job
+is released only by a recorded recovery.
+
+A job whose helper reads back is never retired, `closed` or not. That helper's
+correlated reply is still read: a valid reply completes the job. A correlated
+completed response that is not four nonempty sections marks the job failed
+with its origin and answer, `"failure": {"origin": "invalid-output",
+"responseHash": "…"}`, archives its helper and lets a retry start one new
+helper: the failed job's exact bytes, with its message id, prompt hash, route
+and session, are kept first at `generation-jobs/superseded/<worker id>.json`,
+written once and read again just before (AUD-A-REL-02). A correlated provider
+error marks the job failed and archives its helper, but holds the history: an
+archived readback cannot show that the helper's work stopped (AUD-A-REL-01). A
+`failed` job without `failure`, from a provider error or recorded by an earlier
+version (including the legacy-prompt failures an earlier version replaced), is
+held with its bytes unchanged under the current key, a former key or a key
+not derived here alike. Its archived helper reads back and the recovery
+recorder refuses it, so no supported route releases it; a later turn on the
+source is a new history and proceeds. Anything else holds the job with its
+bytes unchanged. An archived helper that never replied, for example one
+archived after the generator timed out, stays held: no new helper is started,
+nothing is resent, and the capture is kept. No supported route releases such a
+job today, and the recovery recorder refuses it. Releasing it needs a host
+signal that the attempt's work has stopped, which Paseo does not provide. Earlier
+versions recorded a `closed` readback in the job as `terminal`, keeping the
+earlier bytes at `generation-jobs/superseded/<worker id>.before-terminal.json`.
+That record grants nothing now and nothing writes it: a `creating` or `waiting`
+job that carries it is held with its bytes unchanged. A helper's session is
+recorded in its job only while the helper is not archived, so reading a held
+attempt does not rewrite it. A successful Claude close also does not prove that
+the OS process exited: it logs a kill timeout and goes on. These limits belong
+to the host, and the generator does not hide them.
+A legacy helper that reads back live keeps its per-job directory check. The
+host refuses a key it holds for a different request; the generator holds that
+job with a plain message, never shows the host's text, and never escapes the
+refusal with a new key.
+
+Record a recovery with the reconcile runner, never by hand:
+
+```sh
+bun scripts/summary-container-reconcile.ts <daemon-port> <summary-state-root> \
+  record-recovery <job-file> retire-legacy-create '<evidence reference>'          # dry run
+bun scripts/summary-container-reconcile.ts <daemon-port> <summary-state-root> \
+  record-recovery <job-file> retire-legacy-create '<evidence reference>' \
+  --apply <beforeSha256 from the dry run>
+```
+
+It accepts only a `creating` or `waiting` job that records no recovery yet and
+whose helper does not read back by its exact id. A job whose helper reads back
+takes no recovery and has no supported release (see above). The evidence is any
+non-blank reference: the runner checks that it is there, not what it shows. It
+is an operator's note, not native evidence. The job
+name, disposition and evidence are checked before the
+runner opens any connection. The dry run prints the job's `beforeSha256`;
+`--apply` must name it, and a job whose bytes have changed since is refused
+unchanged, so drift stops that job. An apply holds `<job-file>.lock`, created
+exclusively, from its final read to its replace, so two applies to one job never
+both succeed; inside it the job must still be the reviewed bytes. The lock
+records the apply's PID. A lock left by an interrupted apply refuses every later
+apply to that job, which stays held, and nothing removes the lock automatically:
+there is no expiry or reaping. The installation runbook's stale-lock procedure is
+its only sanctioned removal. In an exclusive recovery window for that one job,
+it keeps the exact regular lock file's bytes, hash and identity as evidence
+(never a symlink or a wildcard), and correlates the recorded PID by pid, comm
+and lstart with the interrupted apply. A live or ambiguous owner, an empty or
+invalid lock with no corroborating owner evidence, or any change holds. Age
+alone never decides, and no process is killed. Only an absent PID, or an
+original apply shown completed or dead, establishes that no apply owns the lock;
+that says nothing about the summary helper. The procedure rechecks the lock and
+removes only that file, then dry-runs the job again and applies it only with the
+fresh `beforeSha256`, under that job's existing authorization. If any condition
+cannot be established, the lock and the job stay held. No job, capture or
+receipt data is edited by hand. Before any change it keeps the job's exact
+original bytes at
+`generation-jobs/superseded/<worker id>.before-recovery.json`, written once.
+The active record is then rewritten with every value it had (including
+`promptHash` and `clientMessageId`) and only the `recovery` object added, by an
+atomic replace; its whitespace and escape spelling may change, the archive keeps
+the original. A record the job schema does not accept is refused unchanged.
+Repeating the same evidence changes nothing. It never deletes a job, resends or
+writes to the host. It does not read the host's creation receipt or verify the
+evidence: the evidence must cite the installer's own receipt triage, and for a
+job with a placement it must show that the job's keyed create is terminal,
+because the fresh helper that replaces the job starts beside whatever that
+create did.
+
+**Takeover depends on it.** Taking over an idle session saves its handoff
+summary first. Without a valid `summary.json`, that summary cannot be generated,
+so every idle-source takeover answers "Its handoff summary could not be
+generated: …" and is not started, and Summarize & copy fails closed. For a
+running source, apply reads the designated workspace back before it stops the
+source; when that fails, the takeover is refused and the source keeps running.
+A later failure of the final summary itself, after the stop, still leaves the
+source stopped with no successor, and the takeover ends uncertain.
+
+The designated workspace is one singleton utility workspace named `SUMMARIES`
+in the `DESK • ADAM` desk project, on the directory `summaries` under that
+desk's root (by default `~/.local/share/paseo/desk-projects/ADAM/summaries`).
+It holds only summary helpers. It is not an orchestration role or seat, and a
+helper carries only its summary job and source labels. Its native ids live only
+in `summary.json`, never in source. Activation is one install step, in this
+order, before the plugin with this change is reloaded:
+
+1. Find the existing `SUMMARIES` workspace in `DESK • ADAM`, or create it
+   exactly once from that directory with the desk's explicit `projectId`. Read
+   back its id, project, title, kinds (`directory` workspace, `non_git` or
+   `directory` project) and directory. Another matching workspace, a path
+   collision or a foreign occupant stops activation; nothing existing is
+   renamed, moved or archived.
+2. Write `summary.json` with that `workspaceId`, `projectId` and `cwd`, keeping
+   the previous file (or recording that there was none), and read it back.
+3. Only then install or reload the plugin with this change. A failure in step 1
+   or 2 stops the install, so takeover never runs without a bound workspace.
+
+A row that holds every source (above) keeps every new summary, and so every
+idle-source takeover, held after the install until its own recovery is recorded.
+
+**Containment and forward recovery, not rollback.** Reinstalling an earlier
+plugin build is not a recovery of the summary path. The build installed before
+this change does not see an unfinished row under a key it does not derive and
+starts a helper beside it, and an older whole plugin would also remove any
+placement prevention installed since. The SR-03 runs recorded what such a
+downgrade does; they are evidence, not a procedure.
+
+To contain the summary path on this build, move `summary.json` aside with its
+bytes kept, `mv <paseo-home>/plugin-config/kontor/summary.json
+<paseo-home>/plugin-config/kontor/summary.json.contained`, and read back that it
+is absent. The plugin is not reloaded or disabled, so the placement guard and
+`placement.json` keep running unchanged. From then on every summary call holds
+before it writes or starts anything: no capture or job is written, no helper is
+created, archived or waited on, and nothing is sent. A complete summary whose
+prompt correlation matches is still returned, and saved as a revision as before
+if it was not saved yet; that is the only write. Saved summaries stay readable.
+Summarize & copy and idle-source takeover that need a new summary are refused,
+and a running source is not stopped. A call already running when the file moved
+stops at its last check before its create. One already waiting on its helper
+finishes reading that one helper, at most the generator's 120-second wait, and
+records that attempt's own result; it starts no other. Containment does not stop
+a helper's own work on the host, and nothing here shows that it stopped: an
+unfinished attempt stays in its row, and is read or held after recovery.
+
+To recover, install a gated forward fix, or reinstall a retained, qualified
+build of this change, with `summary.json` still aside, and read the installed
+build back. Then move the same bytes back and compare their sha256 with the
+saved file. Each held row resumes on its own path: a `waiting` row reads its
+helper's result, while a placed `creating` row whose helper does not read back
+(including one written by a call that stopped at its last check) and a row that
+holds every source stay held until their own recovery is recorded.
+Nothing is re-keyed or resent, and the workspace and existing saved summaries
+are never changed.
+
+Helpers created before this change made one project and workspace per job
+under `generation-jobs/<helper id>`. Nothing closes those automatically.
+`bun scripts/summary-container-reconcile.ts <daemon-port> [summary-state-root]`
+is a read-only dry run on `127.0.0.1:<daemon-port>`; the port must be a decimal
+integer from 1 to 65535. It lists each container with its proof: job state,
+confirmed helper archive, a saved revision of the job's own capture (same
+source, complete history boundary, cutoff and sections, not the input hash
+alone), the helper's own readback bound to that exact workspace and project,
+occupants and terminals. A matching directory only finds occupants; it never
+proves ownership, so a second workspace on the same directory is held. Only
+when every proof holds does a row name the supported
+`paseo workspace archive <workspace-id>` command. Jobs that record a designated
+placement (`owned: false`), waiting, creating, failed and unknown jobs, foreign
+occupants and open terminals are always held. Running the
+commands is a separate, gated operator step. An archived container leaves its
+per-job project: `paseo project delete` would delete it, so it is not proposed.
 
 Copy rereads the exact saved pin. Copy again uses that revision without
 regeneration. A failed read or clipboard write keeps the saved revision visible.

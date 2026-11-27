@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluatePlacement, type WorkspaceCreateLike } from "../server/placement";
+import { evaluatePlacement, within, type WorkspaceCreateLike } from "../server/placement";
 
 const rules = {
   paseoWorktreesRoot: "/Users/test/.paseo/worktrees",
@@ -198,5 +198,18 @@ describe("evaluatePlacement", () => {
         binding,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
+  });
+});
+
+describe("within", () => {
+  it("treats only a .. segment as leaving the parent; ..checkout is a name inside it (AUD-R3-04)", () => {
+    expect(within("/x/..checkout", "/x")).toBe(true);
+    expect(within("/x/..checkout/repo", "/x")).toBe(true);
+    expect(within("/x", "/x")).toBe(true);
+    expect(within("/x/y", "/x")).toBe(true);
+    expect(within("/x/..", "/x")).toBe(false);
+    expect(within("/x/../y", "/x")).toBe(false);
+    expect(within("/xy", "/x")).toBe(false);
+    expect(within("/", "/x")).toBe(false);
   });
 });

@@ -13,6 +13,7 @@ import { sourceCatalog } from "./read-sources";
 import { canonicalBindingProblem, placement, promotionBindingFor, transferPromotion } from "./session-canonical";
 import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, type SeatCreateSpec } from "./session-create";
 import { createSessionSummaryService, summaryStateRoot } from "./session-summaries";
+import { summaryPlacementReady } from "./stock-summary-generator";
 import {
   BINDING_KEY, configuredAccountCatalogFromFleet, explicitTakeoverRoute, explicitTakeoverRouteSchema, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute,
   routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, sourceFeatureValues, takeoverAdapter, takeoverPinnedMatches,
@@ -655,6 +656,8 @@ export type TakeoverDeps = {
   create: Pick<ReturnType<typeof createSessionCreateService>, "createSeat" | "check" | "preflight" | "record">;
   /** The provider-independent saved-summary service; it captures context without prompting the source. */
   summaries: Pick<ReturnType<typeof createSessionSummaryService>, "save">;
+  /** The designated summary workspace readback a new summary needs; run before a running source is stopped, so a failure leaves it running. */
+  summaryPlacement: () => Promise<void>;
   /** The host provider snapshot session creation reads; explicit model choices are validated against it. */
   snapshot: (input: { cwd: string }) => Promise<ProviderRouteSnapshot>;
   /** Durable promotion records, shared with the New-session writer. */
@@ -1392,6 +1395,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
   async function stopAndRefresh(record: TakeoverRecord, reviewed: Pinned): Promise<{ record: TakeoverRecord; pinned: Pinned; spec: SeatCreateSpec } | TakeoverOutcome> {
     const agentId = record.review.agentId, named = { requestId: reviewed.spec.requestId, agentId: null, title: reviewed.spec.title };
     if (!deps.publicCli) return outcome(record, "refused", "stop", `${RUNNING_STOP_GAP} Nothing was archived or created.`, named, "review");
+    try { await deps.summaryPlacement(); }
+    catch (error) { return outcome(record, "refused", "stop", `The final summary cannot be placed: ${errorText(error)} The source was not stopped; nothing was archived or created.`, named, "review"); }
     const stopped = await deps.publicCli.stop(agentId);
     let after: Agent | null | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -1678,21 +1683,25 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(probeSessionAvailability, (input, { paseo }) => createLifecycleService(paseo, root).probe(input.agentIds));
   server.handle(readSessionDispositions, (input, { paseo }) => createLifecycleService(paseo, root).dispositions(input.agentIds));
   server.handle(readProviderRefusal, (input, { paseo }) => createLifecycleService(paseo, root).providerRefusal(input.agentId));
-  const takeover = (paseo: PaseoApi) => {
-    const client = asTakeoverClient(paseo), config = readConfig();
-    const publicCli = createPaseoPublicCli(config), completeSchedules = createCompleteScheduleReader(config);
-    return createTakeoverService(client, root, {
-      config, create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), promotionRoot: createStateRoot(), operatorFleetDiscovery: readOperatorFleetDiscovery,
-      summaries: createSessionSummaryService(paseo, summaryStateRoot()),
-      snapshot: (input) => paseo.providers.snapshot({ cwd: input.cwd }),
-      evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
-      publicCli, completeSchedules,
-      background: createBackgroundReader({ exact: async (id) => (await client.agents.ref(id).refresh())?.agent ?? null, revision: lifecycleRevision,
-        route: (provider) => verifiedVendorRoute(paseo, provider), stateRoot: join(root, "background-v1") }),
-      continuity: (agentId, requestId) => readTakeoverContinuity(client, root, agentId, requestId, { completeSchedules }),
-    });
-  };
+  const takeover = (paseo: PaseoApi) => createTakeoverService(asTakeoverClient(paseo), root, installedTakeoverDeps(paseo, root));
   server.handle(reviewTakeover, (input, { paseo }) => takeover(paseo).review(input));
   server.handle(applyTakeover, (input, { paseo }) => takeover(paseo).apply(input));
   server.handle(checkTakeover, (input, { paseo }) => takeover(paseo).check(input.reviewId));
+}
+
+/** The installed takeover's dependencies, built from the host and the selected config. */
+export function installedTakeoverDeps(paseo: PaseoApi, root: string): TakeoverDeps {
+  const client = asTakeoverClient(paseo), config = readConfig();
+  const publicCli = createPaseoPublicCli(config), completeSchedules = createCompleteScheduleReader(config);
+  return {
+    config, create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), promotionRoot: createStateRoot(), operatorFleetDiscovery: readOperatorFleetDiscovery,
+    summaries: createSessionSummaryService(paseo, summaryStateRoot()),
+    summaryPlacement: () => summaryPlacementReady(paseo),
+    snapshot: (input) => paseo.providers.snapshot({ cwd: input.cwd }),
+    evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
+    publicCli, completeSchedules,
+    background: createBackgroundReader({ exact: async (id) => (await client.agents.ref(id).refresh())?.agent ?? null, revision: lifecycleRevision,
+      route: (provider) => verifiedVendorRoute(paseo, provider), stateRoot: join(root, "background-v1") }),
+    continuity: (agentId, requestId) => readTakeoverContinuity(client, root, agentId, requestId, { completeSchedules }),
+  };
 }
