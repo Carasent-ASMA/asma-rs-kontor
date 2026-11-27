@@ -23,6 +23,11 @@ Configure the host-owned `$PASEO_HOME/plugin-config/kontor/tokenomics.json`:
 
 The root must be absolute. `KONTOR_PLUGIN_TOKENOMICS_ROOT`, when present, takes
 precedence; invalid configuration fails visibly. Clients cannot supply paths.
+The configured native read RPC reports `sourceKind` as `environment`, `config`,
+`unconfigured` or `invalid`. Older responses and direct harness roots have no
+attested category. This identifies selection precedence, not the root itself;
+installed verification also binds the configuration, current report revision
+and released source to the completed reload.
 The reader accepts `data.json` (`consumption/data@2`, at most 32 MiB) and the
 optional private `_stats/live.js` (at most 16 MiB). The latter must contain only
 `window.ASMA_LIVE = <JSON object>;`; no JavaScript runs. Reads require regular

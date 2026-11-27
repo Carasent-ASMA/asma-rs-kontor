@@ -34,13 +34,13 @@ export function parseLiveAssignment(raw: string): TokenomicsLive {
   return tokenomicsLiveSchema.parse(JSON.parse(match[1]!));
 }
 const configSchema = z.object({ root: z.string().refine(isAbsolute) }).strict();
-async function configuredRoot(): Promise<string | null> {
-  if (process.env.KONTOR_PLUGIN_TOKENOMICS_ROOT !== undefined) return configSchema.parse({ root: process.env.KONTOR_PLUGIN_TOKENOMICS_ROOT }).root;
+async function configuredRoot(): Promise<{ root: string | null; sourceKind: NonNullable<TokenomicsView["sourceKind"]> }> {
+  if (process.env.KONTOR_PLUGIN_TOKENOMICS_ROOT !== undefined) return { root: configSchema.parse({ root: process.env.KONTOR_PLUGIN_TOKENOMICS_ROOT }).root, sourceKind: "environment" };
   const path = join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "tokenomics.json");
-  try { return configSchema.parse(JSON.parse(await readReportFile(path, CONFIG_MAX_BYTES))).root; }
-  catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null; throw error; }
+  try { return { root: configSchema.parse(JSON.parse(await readReportFile(path, CONFIG_MAX_BYTES))).root, sourceKind: "config" }; }
+  catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { root: null, sourceKind: "unconfigured" }; throw error; }
 }
-export type ReportSnapshot = { data: TokenomicsData | null; live: TokenomicsLive; revision: string | null; diagnostics: string[]; readAt: string };
+export type ReportSnapshot = { data: TokenomicsData | null; live: TokenomicsLive; revision: string | null; diagnostics: string[]; readAt: string; sourceKind?: TokenomicsView["sourceKind"] };
 export async function readTokenomicsSnapshot(root: string | null, now = new Date()): Promise<ReportSnapshot> {
   const result: ReportSnapshot = { data: null, live: tokenomicsLiveSchema.parse({}), revision: null, diagnostics: [], readAt: now.toISOString() };
   if (!root) { result.diagnostics.push("Tokenomics source is not configured on this host."); return result; }
@@ -73,7 +73,7 @@ export async function readTokenomicsSnapshot(root: string | null, now = new Date
 
 export function tokenomicsView(snapshot: ReportSnapshot, input: TokenomicsQuery): TokenomicsView {
   const q = tokenomicsQuerySchema.parse(input), d = snapshot.data;
-  const empty: TokenomicsView = { status: "unavailable", readAt: snapshot.readAt, generated: null, revision: snapshot.revision, diagnostics: snapshot.diagnostics, notices: [], query: q, options: {}, tiles: [], tables: [], notes: [] };
+  const empty: TokenomicsView = { status: "unavailable", readAt: snapshot.readAt, generated: null, revision: snapshot.revision, sourceKind: snapshot.sourceKind, diagnostics: snapshot.diagnostics, notices: [], query: q, options: {}, tiles: [], tables: [], notes: [] };
   if (!d) return empty;
   if (q.compare === "previous") q.compare = d.revs.at(-2)?.id ?? null;
   if (q.rev === null) q.rev = d.revs.at(-1)?.id ?? null;
@@ -90,7 +90,7 @@ export function tokenomicsView(snapshot: ReportSnapshot, input: TokenomicsQuery)
 }
 
 export function contributeTokenomics(server: PluginServerContext): void {
-  const read = async () => { try { return await readTokenomicsSnapshot(await configuredRoot()); } catch { return { data: null, live: tokenomicsLiveSchema.parse({}), revision: null, diagnostics: ["Tokenomics host configuration is invalid or unreadable."], readAt: new Date().toISOString() }; } };
+  const read = async (): Promise<ReportSnapshot> => { try { const source = await configuredRoot(); return { ...await readTokenomicsSnapshot(source.root), sourceKind: source.sourceKind }; } catch { return { data: null, live: tokenomicsLiveSchema.parse({}), revision: null, sourceKind: "invalid", diagnostics: ["Tokenomics host configuration is invalid or unreadable."], readAt: new Date().toISOString() }; } };
   server.handle(readTokenomics, async (input) => tokenomicsView(await read(), input));
   server.handle(exportTokenomics, async (input) => tokenomicsCsvExport(await read(), input));
 }
