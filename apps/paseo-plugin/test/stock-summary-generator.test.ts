@@ -1170,6 +1170,35 @@ describe("summary helper placement and lifecycle (ASMA-8580)", () => {
     expect(h.created).toHaveLength(0);
   });
 
+  it("treats a truncated capture beside an unfinished row as unavailable evidence: a complete summary still returns, a new dispatch holds, bytes unchanged (RB-1)", async () => {
+    const capture = await currentCapture();
+    const truncated = async (h: Awaited<ReturnType<typeof harness>>) => {
+      const row = await unmappedRow(h, null);
+      const file = row.file.replace(/\.json$/, ".capture.json"), text = JSON.stringify(capture).slice(0, 60);
+      await writeFile(file, text);
+      return { ...row, capture: file, captureText: text };
+    };
+    const outcome = (call: Promise<{ sections: unknown }>) => call.then(result => result.sections, (error: Error) => String(error));
+    // An unrelated complete current summary is still returned, with no raw parse error and no further helper.
+    const done = await harness();
+    expect((await done.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    const beside = await truncated(done);
+    const returned = await outcome(done.generator().generate(SOURCE));
+    expect(done.created).toHaveLength(1);
+    expect(returned).toEqual(SECTIONS);
+    // A new dispatch with no attribution for that row still holds: no helper, no send. The raw effects come first.
+    const fresh = await harness();
+    const row = await truncated(fresh);
+    const held = await outcome(fresh.generator().generate(SOURCE));
+    expect(fresh.created).toHaveLength(0);
+    expect(fresh.counts().sends).toBe(0);
+    for (const kept of [beside, row]) {
+      expect(await readFile(kept.file, "utf8")).toBe(kept.text);
+      expect(await readFile(kept.capture, "utf8")).toBe(kept.captureText);
+    }
+    expect(held).toContain(UNMAPPED);
+  });
+
   it.each([
     ["a genuinely different history of this source", (capture: Record<string, any>) => ({ ...capture, historyBoundary: { ...capture.historyBoundary, toSeq: 6, snapshotHash: sha("an earlier history") } })],
     ["another source", (capture: Record<string, any>) => ({ ...capture, sourceAgentId: "00000000-0000-4000-8000-000000000002" })],

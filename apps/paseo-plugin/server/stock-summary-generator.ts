@@ -283,7 +283,9 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string, host: HostC
       let row: Awaited<ReturnType<typeof readJobFile>>;
       try { row = await readJobFile(join(jobs, name)); } catch { unqualified.push(held); continue; }
       if (!row || !unfinished(row.job)) continue;
-      const stored = await readFile(join(jobs, name.replace(/\.json$/, ".capture.json")), "utf8").then(text => JSON.parse(text) as { sourceAgentId?: unknown; historyBoundary?: unknown } | null, () => null);
+      // A capture that cannot be read or parsed is unavailable evidence, as if there were none (RB-1): it places the row
+      // nowhere and proves nothing, and the checks below decide.
+      const stored = await readFile(join(jobs, name.replace(/\.json$/, ".capture.json")), "utf8").then(text => JSON.parse(text) as { sourceAgentId?: unknown; historyBoundary?: unknown } | null).catch(() => null);
       const boundary = summaryHistoryBoundarySchema.safeParse(stored?.historyBoundary);
       if (stored && (stored.sourceAgentId !== agentId ? typeof stored.sourceAgentId === "string" : boundary.success && !sameBoundary(boundary.data, historyBoundary))) continue;
       const helper = await paseo.agents.ref(row.job.workerId).refresh();
