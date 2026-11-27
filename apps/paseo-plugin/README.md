@@ -89,12 +89,21 @@ for example one 2d5afed8 keyed on a model the source no longer runs, may still
 be an earlier attempt at this history. It is set aside only on evidence that it
 belongs elsewhere: its capture names another source, or another history in the
 current boundary format, or, with no capture, its helper reads back labelled for
-another source. Otherwise, and when the row cannot be read, it holds every path
+another source. Otherwise, and when the row cannot be read or parsed, it holds every path
 that could start a helper, naming its file, until its helper no longer reads
 back and a recovery is recorded in it. A row with no capture whose helper does
 not read back therefore holds the summaries of every source, not only its own.
 Such a row is never folded, rewritten or marked, and its `creating` state keeps
 its container held in the dry run below.
+
+A capture that cannot be read or parsed is unavailable evidence, as if the row
+had none: it places the row nowhere and proves nothing (not another source or
+history, not completion, not a safe replacement), and the checks above decide
+(RB-1). That closure fix and the merge of master at the Paseo `>=0.17.4` floor
+leave the summary-placement and containment criteria C1–C5 unchanged. X1–X3
+stay BLOCKED: automatic recovery where the helper still reads back, the healthy
+exit (A-07), and a public native quiescence capability (AUD-A-R6-01). This is
+not a full slice-A recovery pass or ASMA-8580 completion.
 
 A fresh helper with a new key replaces a held job only when an operator records
 a recovery disposition in the job,
