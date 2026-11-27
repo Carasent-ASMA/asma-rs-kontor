@@ -60,8 +60,14 @@ held pull requests draft.
 Read the decision router at
 `{{ project.decision_authorities.decision_records_root }}` before an
 architectural change. Accepted decisions govern their scope; a deviation
-requires an explicitly superseding record. Platform or engineering-effect
-decisions are accepted only by the named authority in the project block.
+requires an explicitly superseding record. Platform decision records are accepted
+only by the named authority in the project block. Local decisions follow the
+project's declared epic, service and repository authority; record the confirmed
+owner and delegated scope in the register at
+`{{ project.decision_authorities.decision_records_root }}` or in the owning
+plan. Where the project has no confirmed delegation for this owner and scope,
+nothing is delegated: if another team or discipline would have to change code,
+a contract or enforced behaviour when this is reverted, it is a record.
 
 ## Planning and investigation
 
