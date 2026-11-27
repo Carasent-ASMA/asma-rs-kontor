@@ -36,6 +36,8 @@ import { useSessionDirectory } from "./use-session-directory";
 import { useStartSwitchArchive } from "./start-switch-archive";
 import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
 import { BulkArchiveDialog, useArchiveSelection } from "./bulk-archive";
+import { ArchiveChildrenDialog } from "./archive-children";
+import { SwipeToArchive } from "./swipe-archive";
 import type { LeadSource } from "./new-lead-source";
 import { useSessionOperations } from "./session-operations";
 import { SelectionBar, SelectionHeader } from "./session-selection";
@@ -283,7 +285,8 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   // Selection covers every known match, shown or not, and keeps its exact IDs when the state or search changes.
   const matches = switchList(entries, status, query, clock.now, recent.record, preferences.favorites, true).rows.filter((entry) => entry.archivedAt === null).map((entry) => entry.id);
   const selection = useArchiveSelection(hostId, matches);
-  const [bulkOpen, setBulkOpen] = useState(false);
+  // "run": Archive children too confirmed the review, so the dialog archives it on open.
+  const [bulkOpen, setBulkOpen] = useState<false | "review" | "run">(false);
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const ops = useSessionOperations({ hostId, online: hostStatus === "online", colors, compact, entries, opened,
     newLead: (source, revision) => startNew({ entry: source, summary: revision }), onOpenTakeover, onTakeoverStart: () => selection.clear() });
@@ -297,7 +300,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const select = (entry: DirectoryEntry) => { if (entry.archivedAt === null && !bulkOpen) selection.toggle(entry.id); };
   const archiveSelected = () => {
     if (archive.disabled || !selection.selected.length) return;
-    archive.lifecycle.clear(); setBulkOpen(true); void archive.lifecycle.prepare("archive", "filtered", [...selection.selected], true);
+    archive.lifecycle.clear(); setBulkOpen("review"); void archive.lifecycle.prepare("archive", "filtered", [...selection.selected], true);
   };
   const chronological = status === "recent" || status === "activity";
   const layout = chronological ? "flat" : presentation.layout;
@@ -333,11 +336,14 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     ];
   };
   const row = (entry: DirectoryEntry, testID?: string) => {
-    const inner = <DenseSessionRow key={entry.id} testID={testID} entry={entry} colors={colors} clock={clock} opened={opened.get(entry.id) ?? null}
+    const dense = <DenseSessionRow key={entry.id} testID={testID} entry={entry} colors={colors} clock={clock} opened={opened.get(entry.id) ?? null}
       current={entry.id === currentId} totals={totals.get(entry.id) ?? null} onSelectStart={entry.archivedAt === null ? () => select(entry) : undefined}
       mode={selection.selecting ? { kind: "select", selected: selection.selected.includes(entry.id), unavailable: entry.archivedAt !== null ? "Archived sessions are not selected." : null }
         : { kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={actionsFor(entry)} /> }}
       onPress={() => selection.selecting ? select(entry) : onOpen(entry)} />;
+    // On a phone a deliberate leftward swipe is the row menu's Archive; selection and an unavailable Archive leave the row still.
+    const inner = compact ? <SwipeToArchive key={entry.id} colors={colors} onArchive={() => { void archive.onArchive(entry); }}
+      enabled={!selection.selecting && entry.archivedAt === null && !archive.disabled && !archive.held(entry)}>{dense}</SwipeToArchive> : dense;
     if (!nativeGated || nativeHostScrolls) return inner;
     return <View key={entry.id} testID={testID ? `${testID}-gate` : `session-row-gate-${entry.id}`}
       ref={(node) => { if (node) pulseGate.register(entry.id, node); else pulseGate.forget(entry.id); }}
@@ -457,7 +463,9 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     {ops.layer}
     {detailsEntry ? <SwitchDetails entry={detailsEntry} colors={colors} clock={clock} opened={opened.get(detailsEntry.id) ?? null} totals={totals.get(detailsEntry.id) ?? null}
       stale={freshness !== "Live"} onClose={() => setDetailsId(null)} /> : null}
-    {bulkOpen ? <BulkArchiveDialog lifecycle={archive.lifecycle} colors={colors} compact={compact} onFinished={(summary) => toast.show(summary)} onClose={(archived) => {
+    {archive.family ? <ArchiveChildrenDialog entry={archive.family} lifecycle={archive.lifecycle} colors={colors} online={hostStatus === "online"} onClose={archive.closeFamily}
+      onArchive={(review) => { archive.confirmFamily(review); setBulkOpen("run"); }} /> : null}
+    {bulkOpen ? <BulkArchiveDialog lifecycle={archive.lifecycle} colors={colors} compact={compact} autoRun={bulkOpen === "run"} onFinished={(summary) => toast.show(summary)} onClose={(archived) => {
       // Archived sessions leave the selection; a blocked one stays selected for another review.
       selection.remove(archived); setBulkOpen(false);
     }} /> : null}

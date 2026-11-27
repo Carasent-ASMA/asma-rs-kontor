@@ -55,6 +55,20 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
     } catch (failure) { if (generation.current !== view) return null; fail(failure); return text(failure); }
     finally { done(view); }
   };
+  /** One host review of `id` and its active descendants, child-first; it becomes the review `run` archives. Resolves to
+   *  that review, failure text, or null when ignored. Nothing is archived here. */
+  const branch = async (id: string): Promise<LifecycleReview | string | null> => {
+    if (active.current) return null;
+    active.current = true; cancel.current = false; setBusy(true); setError(null); setAction("archive"); setBatch(null);
+    const view = generation.current;
+    try {
+      const result = await preview({ action: "archive", scope: "filtered", agentIds: [id], target: DEFAULT_RECOVERY_TARGET, descendants: true });
+      if (generation.current !== view) return null;
+      setReview(result); setSelected(result.rows.map((row) => row.id));
+      return result;
+    } catch (failure) { if (generation.current !== view) return null; fail(failure); return text(failure); }
+    finally { done(view); }
+  };
   /**
    * Reads one archive's own review (its exact owner ref), or the latest without a ref. Resolves to the review read,
    * failure text, or null when ignored, from an earlier generation, or none is recorded. An owner read that fails or
@@ -134,7 +148,7 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
     } catch (failure) { if (generation.current === view) fail(failure); }
     finally { done(view); }
   };
-  return { review, action, error, busy, running, batch, selected, setSelected, prepare, restore, run, stop, reconcile,
+  return { review, action, error, busy, running, batch, selected, setSelected, prepare, branch, restore, run, stop, reconcile,
     clear: () => { if (active.current) return; cancel.current = true; setReview(null); setSelected([]); setBatch(null); setAction("archive"); } };
 }
 

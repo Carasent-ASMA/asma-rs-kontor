@@ -1,9 +1,9 @@
 import type { FixtureSession } from "../fixtures/sessions";
 import { logHostEvent } from "./event-log";
-import { ARCHIVE_BATCH_LIMIT, archiveOrder, RESUME_REMOVED, unresolvedArchive, type LifecycleRow, type LifecycleReview, type SessionAvailability } from "../../../paseo-plugin/shared/session-lifecycle";
+import { ARCHIVE_BATCH_LIMIT, archiveOrder, KEEP_CHILDREN_UNAVAILABLE, RESUME_REMOVED, unresolvedArchive, type LifecycleRow, type LifecycleReview, type SessionAvailability } from "../../../paseo-plugin/shared/session-lifecycle";
 
 type Target = { provider: string; model: string; effort: string };
-type Preview = { action: "archive"; scope: "host" | "filtered"; agentIds: string[]; target: Target };
+type Preview = { action: "archive"; scope: "host" | "filtered"; agentIds: string[]; target: Target; descendants?: true };
 const limitation = "SIMULATED host. Archive only; no real session, account, file or history is affected.";
 const parent = (a: FixtureSession["agent"]) => a.parentAgentId ?? a.labels["paseo.parent-agent-id"] ?? null;
 const fingerprint = (row: FixtureSession) => JSON.stringify([row.agent.id, row.agent.createdAt, row.agent.provider, row.agent.cwd, row.agent.workspaceId, row.agent.persistence, parent(row.agent)]);
@@ -19,6 +19,15 @@ function lifecycleRow(row: FixtureSession, all: FixtureSession[], input: Preview
     nativeStatus: a.status, fingerprint: fingerprint(row), category, eligible, reason, children, outcome: "pending", message: null };
 }
 type Review = LifecycleReview;
+/** The parent and every active descendant from one inventory, as the live host's branch review; more than one batch is refused whole. */
+function branch(rootId: string, all: FixtureSession[]): string[] {
+  const ids = [rootId];
+  for (let index = 0; index < ids.length; index++) {
+    for (const { agent } of all) if (!agent.archivedAt && parent(agent) === ids[index] && !ids.includes(agent.id)) ids.push(agent.id);
+    if (ids.length > ARCHIVE_BATCH_LIMIT) throw new Error(`This session has more than ${ARCHIVE_BATCH_LIMIT - 1} active child sessions, so they cannot be reviewed in one archive. Nothing was archived.`);
+  }
+  return ids;
+}
 
 /** Fixture-only RPC adapter; schema validation remains the real SDK's job in the export. */
 export function fixtureLifecycle(get: () => FixtureSession[], update: (id: string, patch: Partial<FixtureSession["agent"]>, note: string) => void) {
@@ -40,11 +49,15 @@ export function fixtureLifecycle(get: () => FixtureSession[], update: (id: strin
       if (request.action !== "archive") throw new Error(RESUME_REMOVED);
       if ((request.scope !== "filtered" || request.agentIds.length < 1 || request.agentIds.length > ARCHIVE_BATCH_LIMIT))
         throw new Error(`Archive requires 1–${ARCHIVE_BATCH_LIMIT} explicitly selected session IDs in filtered scope.`);
+      if (request.descendants && request.agentIds.length !== 1) throw new Error("A branch archive names exactly one parent session.");
+      // A branch review selects the parent's active descendants too, so a parent whose children are all reviewed is eligible.
+      const selected = { ...request, agentIds: request.descendants ? branch(request.agentIds[0]!, all) : request.agentIds };
       const review: Review = { id: crypto.randomUUID(), action: request.action, scope: request.scope, target: request.target, createdAt: new Date().toISOString(), limitation,
-        rows: all.filter(({ agent }) => request.scope === "host" ? !agent.archivedAt : request.agentIds.includes(agent.id)).map((row) => {
-          const result = lifecycleRow(row, all, request), read = availability(row.agent.id);
+        rows: all.filter(({ agent }) => request.scope === "host" ? !agent.archivedAt : selected.agentIds.includes(agent.id)).map((row) => {
+          const result = lifecycleRow(row, all, selected), read = availability(row.agent.id);
           return { ...result, availability: read, ...(read.state !== "readable" ? { eligible: false, reason: read.reason, category: "unknown" as const } : {}) };
-        }) };
+        }),
+        ...(request.descendants ? { keepChildren: { available: false as const, reason: KEEP_CHILDREN_UNAVAILABLE } } : {}) };
       review.rows = archiveOrder(review.rows);
       reviews.set(review.id, review); latest = review.id; logHostEvent("simulated.review", `${review.id}: ${request.action}, ${request.scope}`); return structuredClone(review);
     }

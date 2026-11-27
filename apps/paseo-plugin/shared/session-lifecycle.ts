@@ -64,11 +64,17 @@ export const lifecycleReviewSchema = z.object({
   target: recoveryTargetSchema, rows: z.array(lifecycleRowSchema), limitation: z.string(),
   // Derived only by the latest read; never saved. A latest.json pointer alone would lose an earlier unresolved archive.
   unresolved: z.array(unresolvedRefSchema).max(100).optional(),
+  /** A branch preview's answer for Keep children alive. No Paseo host offers a parent-only archive, so it is never available. */
+  keepChildren: z.object({ available: z.literal(false), reason: z.string() }).strict().optional(),
 });
 export type LifecycleReview = z.infer<typeof lifecycleReviewSchema>;
 export const previewLifecycle = defineRpc({ name: "sessions.lifecycle-preview", input: z.object({
   action: z.literal("archive"), scope: z.enum(["filtered", "host"]), agentIds: z.array(id).max(10_000), target: recoveryTargetSchema,
+  /** One parent ID: the review adds its active descendants from the same complete inventory. */
+  descendants: z.literal(true).optional(),
 }).strict(), output: lifecycleReviewSchema });
+/** Native archive cascades to children it reads after the parent stops, so a child started after this review can be archived with it. */
+export const KEEP_CHILDREN_UNAVAILABLE = "Not available on this Paseo host: it cannot archive a parent alone. A child started after this review could still be archived with it, so its work cannot be promised to stay running.";
 export const executeLifecycleItem = defineRpc({ name: "sessions.lifecycle-execute-item", input: z.object({ reviewId: z.string().uuid(), agentId: id }).strict(), output: lifecycleRowSchema });
 export const reconcileLifecycleItem = defineRpc({ name: "sessions.lifecycle-reconcile-item", input: z.object({ reviewId: z.string().uuid(), agentId: id }).strict(), output: lifecycleRowSchema });
 export const readLifecycleReview = defineRpc({ name: "sessions.lifecycle-review", input: z.object({ reviewId: z.string().uuid().optional() }).strict(), output: lifecycleReviewSchema.nullable() });
