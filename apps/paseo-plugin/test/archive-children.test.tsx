@@ -17,7 +17,8 @@ import { Action } from "../client/page-controls";
 import { SwipeToArchive, archivesOnRelease, claimsSwipe } from "../client/swipe-archive";
 import { branchDispositions } from "../client/start-switch-archive";
 import { withLocalDispositions } from "../client/use-session-availability";
-import type { useSessionLifecycle } from "../client/use-session-lifecycle";
+import { useSessionLifecycle } from "../client/use-session-lifecycle";
+import { useRpc } from "@getpaseo/plugin/client";
 import { DEFAULT_RECOVERY_TARGET, KEEP_CHILDREN_UNAVAILABLE, type LifecycleReview, type LifecycleRow } from "../shared/session-lifecycle";
 import { fixtureLifecycle } from "../../kontor-prototype/src/host/session-lifecycle";
 import { recoverySessions } from "../../kontor-prototype/src/fixtures/recovery";
@@ -231,6 +232,99 @@ describe("Archive with children dialog", () => {
     (byId(late.tree, "archive-children-cancel")!.props.onPress as () => void)();
     finish(review()); await pending; await settle();
     expect(late.props.onArchive).not.toHaveBeenCalled();
+  });
+  /** The dialog on the actual useSessionLifecycle over a synthetic preview RPC; `host.online` is read on every render. */
+  const actual = async (preview: ReturnType<typeof vi.fn>) => {
+    vi.mocked(useRpc).mockImplementation(((contract: { name: string }) => contract.name === "sessions.lifecycle-preview" ? preview : vi.fn()) as never);
+    const host = { online: true }, onArchive = vi.fn(), onClose = vi.fn(); let error: string | null = null;
+    const render = () => walk(harness.current.render(() => {
+      const lifecycle = useSessionLifecycle("host-a", () => {}); error = lifecycle.error;
+      return ArchiveChildrenDialog({ entry, colors, online: host.online, lifecycle, onClose, onArchive });
+    }));
+    render(); await settle(); render(); await settle();
+    return { host, onArchive, onClose, render, tree: render(), error: () => error };
+  };
+  const press = (element: Element) => (element.props.onPress as () => Promise<void> | undefined)();
+  const INTERRUPTED = "The host's availability changed while Archive children too was checking these sessions. Nothing was archived.";
+  it("leaves both choices unavailable after a failed fresh read, sends no third read and never hands over (AUD-9118-04)", async () => {
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockRejectedValueOnce(new Error("Incomplete native inventory.")).mockResolvedValue(review());
+    const s = await actual(preview);
+    expect(confirm(s.tree).props.disabled).toBe(false);
+    await press(confirm(s.tree)); await settle();
+    const tree = s.render(), primary = confirm(tree), option = keep(tree);
+    expect(s.error()).toBe("Incomplete native inventory.");
+    await press(primary); (option.props.onPress as () => unknown)(); await settle(); s.render();
+    expect(s.onArchive).not.toHaveBeenCalled(); expect(preview).toHaveBeenCalledTimes(2);
+    expect(primary.props).toMatchObject({ disabled: true, hint: unreviewed.failed.why });
+    expect(option.props.disabled).toBe(true);
+    expect(byId(tree, "archive-children-row-c1")).toBeUndefined();
+  });
+  it("never hands over a fresh read started online once the host goes offline (AUD-9118-05)", async () => {
+    let finish!: (value: LifecycleReview) => void;
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockReturnValueOnce(new Promise<LifecycleReview>((resolve) => { finish = resolve; }));
+    const s = await actual(preview);
+    const pending = press(confirm(s.tree));
+    s.host.online = false; const tree = s.render();
+    expect(confirm(tree).props).toMatchObject({ disabled: true, hint: unreviewed.offline.why });
+    finish(review()); await pending; await settle(); s.render();
+    expect(s.onArchive).not.toHaveBeenCalled(); expect(preview).toHaveBeenCalledTimes(2);
+  });
+  it("ends the displayed review once Archive children too is chosen: while the fresh read is open, no child is listed and nothing can be chosen", async () => {
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockReturnValueOnce(new Promise<never>(() => {}));
+    const s = await actual(preview);
+    expect(byId(s.tree, "archive-children-row-c1")).toBeDefined();
+    void press(confirm(s.tree));
+    const tree = s.render();
+    expect(byId(tree, "archive-children-row-c1")).toBeUndefined(); expect(texts(tree)).toContain(unreviewed.loading.why);
+    expect(confirm(tree).props.disabled).toBe(true);
+    await press(confirm(tree)); await settle();
+    expect(preview).toHaveBeenCalledTimes(2); expect(s.onArchive).not.toHaveBeenCalled();
+  });
+  it("never hands over a fresh read when the host went offline and back online during it, and asks for a fresh review", async () => {
+    let finish!: (value: LifecycleReview) => void;
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockReturnValueOnce(new Promise<LifecycleReview>((resolve) => { finish = resolve; }));
+    const s = await actual(preview);
+    const pending = press(confirm(s.tree));
+    s.host.online = false; s.render(); s.host.online = true; s.render();
+    finish(review()); await pending; await settle();
+    const tree = s.render();
+    expect(s.onArchive).not.toHaveBeenCalled();
+    expect(confirm(tree).props).toMatchObject({ disabled: true, hint: unreviewed.failed.why });
+    expect(byId(tree, "archive-children-refusal")!.props.children).toBe(INTERRUPTED);
+    await press(confirm(tree)); await settle();
+    expect(preview).toHaveBeenCalledTimes(2); expect(s.onArchive).not.toHaveBeenCalled();
+  });
+  it.each(["cancel", "escape"] as const)("never hands over a fresh read that settles after %s", async (exit) => {
+    let finish!: (value: LifecycleReview) => void;
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockReturnValueOnce(new Promise<LifecycleReview>((resolve) => { finish = resolve; }));
+    const s = await actual(preview);
+    const pending = press(confirm(s.tree));
+    const tree = s.render();
+    if (exit === "cancel") (byId(tree, "archive-children-cancel")!.props.onPress as () => void)(); else escape(tree);
+    finish(review()); await pending; await settle();
+    expect(s.onClose).toHaveBeenCalledOnce(); expect(preview).toHaveBeenCalledTimes(2); expect(s.onArchive).not.toHaveBeenCalled();
+  });
+  it("hands an unchanged fresh read over exactly once, child first (control)", async () => {
+    const fresh = review(undefined, "00000000-0000-4000-8000-00000000000b");
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockResolvedValueOnce(fresh);
+    const s = await actual(preview);
+    await press(confirm(s.tree)); await settle();
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(s.onArchive).toHaveBeenCalledExactlyOnceWith(fresh);
+    expect((s.onArchive.mock.calls[0]![0] as LifecycleReview).rows.map((value) => value.id)).toEqual(["g", "c1", "c2", "p"]);
+  });
+  it("shows a changed fresh read for a new choice and archives nothing until it is chosen", async () => {
+    const changed = review([row("late"), row("g"), row("c1", ["g"]), row("c2"), row("p", ["c1", "c2", "late"])], "00000000-0000-4000-8000-00000000000c");
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockResolvedValue(changed);
+    const s = await actual(preview);
+    await press(confirm(s.tree)); await settle();
+    let tree = s.render();
+    expect(s.onArchive).not.toHaveBeenCalled();
+    expect(byId(tree, "archive-children-row-late")).toBeDefined();
+    expect(byId(tree, "archive-children-refusal")!.props.children).toBe(BRANCH_CHANGED);
+    expect(confirm(tree).props).toMatchObject({ disabled: false, hint: null });
+    await press(confirm(tree)); await settle(); tree = s.render();
+    expect(preview).toHaveBeenCalledTimes(3); expect(s.onArchive).toHaveBeenCalledExactlyOnceWith(changed);
   });
   it("shows a host read failure and keeps Archive children too unavailable", async () => {
     const s = await ready({ branch: vi.fn(async () => "Incomplete native inventory; no lifecycle action is allowed."), error: "Incomplete native inventory; no lifecycle action is allowed." });

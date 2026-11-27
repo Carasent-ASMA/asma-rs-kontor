@@ -92,8 +92,10 @@ window.fixture={archiveMode:'confirmed',hostStatus:'online',hostListeners:new Se
   if(name==='sessions.navigator-capabilities'){const no={supported:false,reason:'Not offered by this fixture host.'};return {usageTotals:no,summaries:no,draftAttach:no,takeover:no,takeoverBulk:no,takeoverRoute:no};}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:'wks-adhoc',message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
   if(name==='sessions.lifecycle-preview'){
-   // branchMode 'hold' leaves a branch review unanswered; 'fail' refuses it as an incomplete inventory would.
+   // branchMode 'hold' leaves a branch review unanswered; 'fail' refuses it as an incomplete inventory would; 'hold-next'
+   // holds only the next branch review until window.fixture.releaseBranch(), then answers it unchanged.
    if(input.descendants&&window.fixture.branchMode==='hold')return new Promise(()=>{});
+   if(input.descendants&&window.fixture.branchMode==='hold-next'){window.fixture.branchMode=null;await new Promise(resolve=>{window.fixture.releaseBranch=resolve;});}
    if(input.descendants&&window.fixture.branchMode==='fail')throw new Error('Incomplete native inventory; no lifecycle action is allowed.');
    const blocked=window.fixture.archiveMode==='blocked',root=input.agentIds[0];
    // A single review refuses a parent with active children; a branch review lists them child-first, then the parent.
@@ -203,6 +205,8 @@ const lifecycleCalls = page => page.evaluate(() => window.fixture.calls.filter(c
   .map(call => call.name.slice(19) + ':' + (call.input.agentId ?? call.input.agentIds.join(',') + (call.input.descendants ? '+descendants' : ''))));
 // The host limitation the dialog shows for Keep children alive before any review arrives, read from its single source.
 const KEEP_UNAVAILABLE = fs.readFileSync(path.join(plugin, 'shared/session-lifecycle.ts'), 'utf8').match(/KEEP_CHILDREN_UNAVAILABLE = "([^"]+)"/)[1];
+// What the dialog says when the host's availability changed during the fresh read, read from its single source.
+const INTERRUPTED = fs.readFileSync(path.join(plugin, 'client/archive-children.tsx'), 'utf8').match(/const INTERRUPTED = "([^"]+)"/)[1];
 const untouched = page => page.evaluate(() => ({ opens: window.fixture.opens.length, screens: window.fixture.screens.length, closes: window.fixture.closes }));
 // This host lists no Codex provider and no saved default is read, so a lead names its model explicitly.
 async function chooseModel(page) {
@@ -368,6 +372,35 @@ async function run(name, test) {
         assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 });
         assert.deepEqual(errors, []);
         return { state, lifecycle: await lifecycleCalls(page), scope: 'touch through Chromium CDP; synthetic host and modal; no phone or assistive-technology proof' };
+      } finally { await context.close(); }
+    });
+    // The host goes offline while the fresh read is open: the read settles unchanged afterwards and nothing is handed over.
+    for (const width of [320, 390]) await run(`swipe-family-offline-during-confirm-${width}`, async () => {
+      const { page, context } = await pageFor(width, 'light', '&family=1'); const errors = []; page.on('pageerror', error => errors.push(error.message));
+      const dialog = page.getByTestId('archive-children-dialog'), archive = dialog.getByTestId('archive-children-confirm');
+      try {
+        await showAll(page); await page.getByRole('textbox', { name: 'Find a session', exact: true }).fill('Family'); await page.getByTestId('session-row-fam-parent').waitFor();
+        await swipe(page, 'fam-parent', -150); await expect(dialog.getByTestId('archive-children-row-fam-child')).toContainText('Family worker');
+        await page.evaluate(() => { window.fixture.branchMode = 'hold-next'; });
+        await archive.click(); await page.waitForFunction(() => typeof window.fixture.releaseBranch === 'function');
+        assert.equal(await dialog.getByTestId('archive-children-row-fam-child').count(), 0, 'choosing ends the displayed review');
+        await page.evaluate(() => window.fixture.setHost('offline'));
+        await expect(dialog).toContainText('The host is offline. Nothing can be archived until it reconnects.');
+        await expect(archive).toHaveAttribute('aria-disabled', 'true');
+        await page.evaluate(() => window.fixture.releaseBranch()); await page.waitForTimeout(400);
+        await page.evaluate(() => window.fixture.setHost('online'));
+        await expect(dialog.getByTestId('archive-children-refusal')).toHaveText(INTERRUPTED);
+        await expect(archive).toHaveAttribute('aria-disabled', 'true');
+        await archive.click({ force: true }); await page.waitForTimeout(300);
+        assert.deepEqual(await lifecycleCalls(page), ['preview:fam-parent', 'preview:fam-parent+descendants', 'preview:fam-parent+descendants'], 'the fresh read settles; nothing is archived or read again');
+        assert.equal(await page.getByTestId('bulk-archive-close').count(), 0, 'no archive batch opens');
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await page.screenshot({ path: path.join(output, `swipe-family-offline-during-confirm-${width}.png`) });
+        await dialog.getByTestId('archive-children-cancel').click(); await dialog.waitFor({ state: 'detached' });
+        await expect(page.getByTestId('session-row-fam-parent')).toHaveCount(1); await expect(page.getByTestId('session-row-fam-child')).toHaveCount(1);
+        assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 });
+        assert.deepEqual(errors, []);
+        return { lifecycle: await lifecycleCalls(page), scope: 'touch through Chromium CDP; synthetic host and modal; no phone or assistive-technology proof' };
       } finally { await context.close(); }
     });
     for (const width of [320,390,1440]) for (const theme of ['light','dark']) await run(`statuses-${width}-${theme}`,async()=>{

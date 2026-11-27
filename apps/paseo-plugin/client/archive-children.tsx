@@ -12,6 +12,7 @@ export const BRANCH_CHANGED = "The child sessions changed since this review. Not
 const READING = "Reading this session's child sessions on the host…";
 const UNREAD = "The host did not list this session's child sessions, so nothing can be archived here. Close this and archive the session again.";
 const OFFLINE = "The host is offline. Nothing can be archived until it reconnects.";
+const INTERRUPTED = "The host's availability changed while Archive children too was checking these sessions. Nothing was archived.";
 
 /** The reviewed parent's descendants top-down for reading, each with its depth; the review itself stays child-first. */
 export function branchChildren(review: LifecycleReview, parentId: string): { row: LifecycleRow; depth: number }[] {
@@ -46,6 +47,10 @@ export function branchChanged(before: LifecycleReview, after: LifecycleReview): 
  * refuses any change before the existing batch archives it child-first. Both choices show from the first frame: while the
  * branch is loading, unread or the host is offline, Archive children too stays disabled, and Keep children alive is always
  * visible and unavailable with the host's reason. Cancel, Escape or the host's close changes nothing.
+ *
+ * Confirming ends the displayed review: it stays only as the snapshot the fresh read must match. A failed fresh read
+ * therefore leaves both choices unavailable until the session is archived again, and a changed one is shown for a new
+ * choice. A fresh read hands over only in the view it started in: dismissal or any host availability change ends it.
  */
 export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClose, onArchive }: {
   entry: DirectoryEntry; lifecycle: ReturnType<typeof useSessionLifecycle>; colors: Colors; online: boolean;
@@ -54,7 +59,8 @@ export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClos
   onArchive: (review: LifecycleReview) => void;
 }) {
   const [reviewed, setReviewed] = useState<LifecycleReview | null>(null), [refusal, setRefusal] = useState<string | null>(null);
-  const closed = useRef(false);
+  const closed = useRef(false), view = useRef({ online, generation: 0 });
+  if (view.current.online !== online) view.current = { online, generation: view.current.generation + 1 };
   const read = (then: (review: LifecycleReview) => void) => lifecycle.branch(entry.id).then((result) => {
     if (closed.current) return;
     if (result === null) setRefusal("Another archive action is running. Close this and try again when it finishes.");
@@ -64,9 +70,11 @@ export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClos
   const close = () => { closed.current = true; onClose(); };
   const confirm = () => {
     if (!reviewed || problem) return;
-    setRefusal(null);
+    const snapshot = reviewed, started = view.current.generation;
+    setReviewed(null); setRefusal(null);
     return read((fresh) => {
-      const change = branchChanged(reviewed, fresh) ? BRANCH_CHANGED : branchProblem(fresh, entry.id);
+      if (view.current.generation !== started) { setRefusal(INTERRUPTED); return; }
+      const change = branchChanged(snapshot, fresh) ? BRANCH_CHANGED : branchProblem(fresh, entry.id);
       if (change) { setReviewed(fresh); setRefusal(change); return; }
       closed.current = true; onArchive(fresh);
     });

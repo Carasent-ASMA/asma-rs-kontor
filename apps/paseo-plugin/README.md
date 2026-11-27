@@ -381,8 +381,12 @@ route in the form's notes and where its rows would be.
   anything.
   - **Archive children too** re-reads that exact branch in one host review. Any
     change to its sessions, identities or child sets refuses with nothing
-    archived. Otherwise the existing batch archives it children first, with its
-    receipts. Archive stops active work, so running children are stopped.
+    archived and shows the new list for a fresh choice. If that re-read fails,
+    or the host goes offline before it answers, nothing is archived and both
+    choices stay disabled until the session is archived again; closing the
+    confirmation first also archives nothing. Otherwise the existing batch
+    archives it children first, with its receipts. Archive stops active work,
+    so running children are stopped.
   - **Keep children alive** stays visible and unavailable. Paseo 0.17.4 and
     0.18.0 archive a parent's children in a cascade read after the parent stops,
     so a child started after the review could still be archived. No
