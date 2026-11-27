@@ -6,7 +6,6 @@ import {
 } from "../shared/session-questions";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
-type Request = Agent["pendingPermissions"][number];
 
 /** One host list read, page-walked when the host reports more. No second inventory is kept. */
 export type SessionQuestionsClient = Pick<PaseoApi, "agents">;
@@ -52,11 +51,11 @@ export function pendingQuestionItems(agents: readonly Agent[]): SessionQuestionI
     const recommendation = recommendPermission(request as PermissionRequestLike);
     return {
       agentId: agent.id,
-      agentTitle: agent.title ?? agent.id,
+      agentTitle: agent.title?.trim() || agent.id,
       agentStatus: agent.status,
       requestId: request.id,
       kind: request.kind,
-      title: request.title ?? request.name,
+      title: request.title?.trim() || request.name?.trim() || request.kind,
       label: recommendation.label,
       response: recommendation.response,
       hash: questionRequestHash(request as PermissionRequestLike),
