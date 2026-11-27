@@ -326,6 +326,83 @@ describe("Archive with children dialog", () => {
     await press(confirm(tree)); await settle(); tree = s.render();
     expect(preview).toHaveBeenCalledTimes(3); expect(s.onArchive).toHaveBeenCalledExactlyOnceWith(changed);
   });
+  // AUD-9118-06: a host press handler can still hold an earlier render's callback; it confirms only its own shown review and view.
+  it("never lets an earlier enabled callback start a confirm after the view goes offline (AUD-9118-06 entry race)", async () => {
+    const preview = vi.fn().mockResolvedValue(review());
+    const s = await actual(preview), queued = confirm(s.tree);
+    s.host.online = false; const offline = s.render();
+    expect(confirm(offline).props.disabled).toBe(true);
+    await press(queued); await settle(); s.render();
+    expect(s.onArchive).not.toHaveBeenCalled();
+    expect(preview).toHaveBeenCalledTimes(1);
+  });
+  it("never lets an earlier callback reuse a review whose confirm failed (AUD-9118-06 stale callback)", async () => {
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockRejectedValueOnce(new Error("unread confirm")).mockResolvedValue(review());
+    const s = await actual(preview), queued = confirm(s.tree);
+    await press(queued); await settle(); const failed = s.render();
+    expect(s.error()).toBe("unread confirm"); expect(confirm(failed).props.disabled).toBe(true);
+    await press(queued); await settle(); s.render();
+    expect(s.onArchive).not.toHaveBeenCalled();
+    expect(preview).toHaveBeenCalledTimes(2);
+  });
+  it("never lets a callback from a replaced review confirm, while the shown review's own callback still can", async () => {
+    const changed = review([row("late"), row("g"), row("c1", ["g"]), row("c2"), row("p", ["c1", "c2", "late"])], "00000000-0000-4000-8000-00000000000c");
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockResolvedValue(changed);
+    const s = await actual(preview), queued = confirm(s.tree);
+    await press(queued); await settle(); const shown = s.render();
+    expect(byId(shown, "archive-children-row-late")).toBeDefined();
+    await press(queued); await settle(); s.render();
+    expect(preview).toHaveBeenCalledTimes(2); expect(s.onArchive).not.toHaveBeenCalled();
+    await press(confirm(shown)); await settle();
+    expect(preview).toHaveBeenCalledTimes(3); expect(s.onArchive).toHaveBeenCalledExactlyOnceWith(changed);
+  });
+  it.each(["cancel", "escape"] as const)("never lets an earlier callback read or archive after %s", async (exit) => {
+    const preview = vi.fn().mockResolvedValue(review());
+    const s = await actual(preview), queued = confirm(s.tree);
+    if (exit === "cancel") (byId(s.tree, "archive-children-cancel")!.props.onPress as () => void)(); else escape(s.tree);
+    await press(queued); await settle();
+    expect(s.onClose).toHaveBeenCalledOnce(); expect(preview).toHaveBeenCalledTimes(1); expect(s.onArchive).not.toHaveBeenCalled();
+  });
+  it("never hands over through several availability flaps during one confirm", async () => {
+    let finish!: (value: LifecycleReview) => void;
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockReturnValueOnce(new Promise<LifecycleReview>((resolve) => { finish = resolve; }));
+    const s = await actual(preview), pending = press(confirm(s.tree));
+    for (const online of [false, true, false, true]) { s.host.online = online; s.render(); }
+    finish(review()); await pending; await settle(); const tree = s.render();
+    await press(confirm(tree)); expect(s.onArchive).not.toHaveBeenCalled(); expect(preview).toHaveBeenCalledTimes(2);
+    expect(confirm(tree).props.disabled).toBe(true);
+  });
+  it("requires a fresh review after a changed review's second confirm fails", async () => {
+    const changed = review([row("late"), row("g"), row("c1", ["g"]), row("c2"), row("p", ["c1", "c2", "late"])]);
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockResolvedValueOnce(changed).mockRejectedValueOnce(new Error("second confirm unread"));
+    const s = await actual(preview); await press(confirm(s.tree)); await settle(); let tree = s.render();
+    expect(byId(tree, "archive-children-row-late")).toBeDefined(); expect(confirm(tree).props.disabled).toBe(false);
+    await press(confirm(tree)); await settle(); tree = s.render();
+    expect(confirm(tree).props.disabled).toBe(true); await press(confirm(tree));
+    expect(s.onArchive).not.toHaveBeenCalled(); expect(preview).toHaveBeenCalledTimes(3);
+  });
+  it.each(["cancel", "escape"] as const)("discards a late result when %s ends the second confirm", async (exit) => {
+    const changed = review([row("late"), row("g"), row("c1", ["g"]), row("c2"), row("p", ["c1", "c2", "late"])]);
+    let finish!: (value: LifecycleReview) => void;
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockResolvedValueOnce(changed).mockReturnValueOnce(new Promise<LifecycleReview>((resolve) => { finish = resolve; }));
+    const s = await actual(preview); await press(confirm(s.tree)); await settle(); const changedTree = s.render();
+    const pending = press(confirm(changedTree)), tree = s.render();
+    if (exit === "cancel") (byId(tree, "archive-children-cancel")!.props.onPress as () => void)(); else escape(tree);
+    finish(changed); await pending; await settle(); s.render();
+    expect(s.onArchive).not.toHaveBeenCalled(); expect(s.onClose).toHaveBeenCalledOnce(); expect(preview).toHaveBeenCalledTimes(3);
+  });
+  it("recovers from an interrupted confirm by closing and reopening for a fresh choice (control)", async () => {
+    let finish!: (value: LifecycleReview) => void;
+    const preview = vi.fn().mockResolvedValueOnce(review()).mockReturnValueOnce(new Promise<LifecycleReview>((resolve) => { finish = resolve; })).mockResolvedValue(review());
+    const s = await actual(preview), pending = press(confirm(s.tree));
+    s.host.online = false; s.render(); s.host.online = true; s.render(); finish(review()); await pending; await settle();
+    const interrupted = s.render(); expect(confirm(interrupted).props.disabled).toBe(true);
+    expect(texts(interrupted)).toContain(unreviewed.failed.why);
+    (byId(interrupted, "archive-children-cancel")!.props.onPress as () => void)(); expect(s.onClose).toHaveBeenCalledOnce();
+    harness.fresh(); const reopened = await actual(preview); expect(confirm(reopened.tree).props.disabled).toBe(false);
+    await press(confirm(reopened.tree)); await settle();
+    expect(s.onArchive).not.toHaveBeenCalled(); expect(reopened.onArchive).toHaveBeenCalledOnce(); expect(preview).toHaveBeenCalledTimes(4);
+  });
   it("shows a host read failure and keeps Archive children too unavailable", async () => {
     const s = await ready({ branch: vi.fn(async () => "Incomplete native inventory; no lifecycle action is allowed."), error: "Incomplete native inventory; no lifecycle action is allowed." });
     expect(confirm(s.tree).props.disabled).toBe(true);

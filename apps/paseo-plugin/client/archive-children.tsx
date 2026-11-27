@@ -51,6 +51,8 @@ export function branchChanged(before: LifecycleReview, after: LifecycleReview): 
  * Confirming ends the displayed review: it stays only as the snapshot the fresh read must match. A failed fresh read
  * therefore leaves both choices unavailable until the session is archived again, and a changed one is shown for a new
  * choice. A fresh read hands over only in the view it started in: dismissal or any host availability change ends it.
+ * A press confirms only for the review shown and the view it was drawn in, read from refs at entry, because a host
+ * press handler can still hold an earlier render's callback; confirming consumes that review before the first await.
  */
 export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClose, onArchive }: {
   entry: DirectoryEntry; lifecycle: ReturnType<typeof useSessionLifecycle>; colors: Colors; online: boolean;
@@ -59,23 +61,27 @@ export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClos
   onArchive: (review: LifecycleReview) => void;
 }) {
   const [reviewed, setReviewed] = useState<LifecycleReview | null>(null), [refusal, setRefusal] = useState<string | null>(null);
-  const closed = useRef(false), view = useRef({ online, generation: 0 });
+  // `shown` is the one review this dialog may still confirm; `view` advances on every host availability change.
+  const closed = useRef(false), shown = useRef<LifecycleReview | null>(null), view = useRef({ online, generation: 0 });
   if (view.current.online !== online) view.current = { online, generation: view.current.generation + 1 };
+  const origin = view.current.generation;
+  const show = (review: LifecycleReview | null) => { shown.current = review; setReviewed(review); };
   const read = (then: (review: LifecycleReview) => void) => lifecycle.branch(entry.id).then((result) => {
     if (closed.current) return;
     if (result === null) setRefusal("Another archive action is running. Close this and try again when it finishes.");
     else if (typeof result !== "string") then(result);
   });
-  useEffect(() => { void read(setReviewed); }, []);
-  const close = () => { closed.current = true; onClose(); };
+  useEffect(() => { void read(show); }, []);
+  const close = () => { closed.current = true; shown.current = null; onClose(); };
   const confirm = () => {
-    if (!reviewed || problem) return;
-    const snapshot = reviewed, started = view.current.generation;
-    setReviewed(null); setRefusal(null);
+    // This render's review must still be the one shown, in this render's view (so still online), before anything is sent.
+    if (!reviewed || problem || shown.current !== reviewed || view.current.generation !== origin) return;
+    const snapshot = reviewed;
+    show(null); setRefusal(null);
     return read((fresh) => {
-      if (view.current.generation !== started) { setRefusal(INTERRUPTED); return; }
+      if (view.current.generation !== origin) { setRefusal(INTERRUPTED); return; }
       const change = branchChanged(snapshot, fresh) ? BRANCH_CHANGED : branchProblem(fresh, entry.id);
-      if (change) { setReviewed(fresh); setRefusal(change); return; }
+      if (change) { show(fresh); setRefusal(change); return; }
       closed.current = true; onArchive(fresh);
     });
   };
