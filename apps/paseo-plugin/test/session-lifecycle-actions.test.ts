@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult } from "@getpaseo/client";
 import { createLifecycleService, lifecycleRevision, lifecycleRow, type LifecycleClient } from "../server/session-lifecycle";
-import { DEFAULT_RECOVERY_TARGET as target, RESUME_REMOVED, previewLifecycle, executeLifecycleItem, unresolvedArchive, type LifecycleReview } from "../shared/session-lifecycle";
+import { DEFAULT_RECOVERY_TARGET as target, KEEP_CHILDREN_UNAVAILABLE, RESUME_REMOVED, previewLifecycle, executeLifecycleItem, unresolvedArchive, type LifecycleReview } from "../shared/session-lifecycle";
 import { hasSessionAttention, toDirectoryEntry } from "../client/session-directory";
 import { matchesStatus } from "../client/session-view";
 import { openSessionById } from "../client/session-actions";
@@ -973,5 +973,44 @@ describe("21 a legacy dispatch receipt outlives a Check that replaced the saved 
     expect(await s.service.reconcile(review.id, "a")).toEqual(settled);
     expect(await s.service.execute(review.id, "a")).toEqual(settled);
     await kept(s, c, null);
+  });
+});
+
+describe("Archive children too: one branch review by exact ID", () => {
+  const child = (id: string, parentId: string, patch: Partial<Agent> = {}) => agent(id, { labels: { "paseo.parent-agent-id": parentId }, ...patch });
+  /** p has a running child c1 with its own child g, a cross-workspace child c2 and an archived child; u is unrelated. */
+  const family = () => setup([agent("p"), child("c1", "p", { status: "running", activeTurn: true }), child("c2", "p", { workspaceId: "workspace-b" }), child("g", "c1"),
+    agent("u"), child("old", "p", { archivedAt: "2026-10-01" })]);
+  const branch = (s: Setup, ids = ["p"]) => s.service.preview({ action: "archive", scope: "filtered", agentIds: ids, target, descendants: true });
+  it("resolves every active descendant, nested and cross-workspace, child-first, with Keep children alive unavailable", async () => {
+    const s = await family(), review = await branch(s);
+    expect(review.rows.map((row) => row.id)).toEqual(["g", "c1", "c2", "p"]);
+    expect(review.rows.every((row) => row.eligible && row.outcome === "pending")).toBe(true);
+    expect(review.rows.find((row) => row.id === "c1")).toMatchObject({ nativeStatus: "running", availability: { state: "readable" } });
+    expect(review.keepChildren).toEqual({ available: false, reason: KEEP_CHILDREN_UNAVAILABLE });
+    expect((await s.preview("archive", ["p"])).keepChildren).toBeUndefined();
+    expect(s.archive).not.toHaveBeenCalled();
+    expect(await s.service.read(review.id)).toMatchObject({ id: review.id, rows: review.rows });
+  });
+  it("archives a reviewed branch, its running child included, children first with a receipt for each", async () => {
+    const s = await family(), review = await branch(s);
+    for (const row of review.rows) expect((await s.service.execute(review.id, row.id)).outcome).toBe("archived");
+    expect(s.archive.mock.calls.map(([id]) => id)).toEqual(["g", "c1", "c2", "p"]);
+    expect((await s.service.read(review.id))!.rows.map((row) => [row.id, row.outcome, row.runtime])).toEqual([["g", "archived", "closed"], ["c1", "archived", "closed"], ["c2", "archived", "closed"], ["p", "archived", "closed"]]);
+    expect(s.records.get("u")!.archivedAt).toBeNull();
+  });
+  it("blocks the parent without archiving it when a child appears after the review", async () => {
+    const s = await family(), review = await branch(s);
+    s.records.set("late", child("late", "p"));
+    for (const row of review.rows) await s.service.execute(review.id, row.id);
+    expect(s.archive.mock.calls.map(([id]) => id)).toEqual(["g", "c1", "c2"]);
+    expect((await s.service.read(review.id))!.rows.find((row) => row.id === "p")).toMatchObject({ outcome: "blocked" });
+    expect(s.records.get("p")!.archivedAt).toBeNull();
+  });
+  it("refuses a branch over one batch, or one naming several parents, before any review or archive", async () => {
+    const s = await setup([agent("p"), ...Array.from({ length: 50 }, (_, n) => child(`c${n}`, "p"))]), before = await rootFiles(s.root);
+    await expect(branch(s)).rejects.toThrow("more than 49 active child sessions");
+    await expect(branch(s, ["p", "c1"])).rejects.toThrow("exactly one parent");
+    expect(await rootFiles(s.root)).toEqual(before); expect(s.archive).not.toHaveBeenCalled();
   });
 });

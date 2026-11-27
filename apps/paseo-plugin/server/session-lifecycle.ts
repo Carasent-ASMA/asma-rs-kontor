@@ -28,7 +28,7 @@ import { createCompleteScheduleReader, type CompleteScheduleReader } from "./pas
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import {
-  TAKEOVER_LIMIT, RESUME_REMOVED, ARCHIVE_BATCH_LIMIT, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, unresolvedArchive,
+  TAKEOVER_LIMIT, RESUME_REMOVED, ARCHIVE_BATCH_LIMIT, KEEP_CHILDREN_UNAVAILABLE, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, unresolvedArchive,
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
   TAKEOVER_EXTERNAL_BOUNDARIES, TAKEOVER_LIMITS, TAKEOVER_PROMPT, takeoverBriefRefSchema, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type TakeoverOutcome, type TakeoverReview, type TakeoverReviewInput, type UnresolvedRef,
@@ -155,9 +155,18 @@ function active(agent?: Agent): boolean {
 function archivedMembership(agent?: Agent): boolean {
   return !!agent?.archivedAt && !active(agent);
 }
-function childrenOf(agent: Agent, inventory: Agent[]): Agent[] {
+function childrenOf(agent: Pick<Agent, "id">, inventory: Agent[]): Agent[] {
   // Block every managed child, even one the native cascade would detach today.
   return inventory.filter((child) => child.archivedAt == null && parent(child) === agent.id);
+}
+/** The parent and every active descendant, by exact ID from one complete inventory; more than one batch is refused, never cut. */
+function branch(rootId: string, inventory: Agent[]): string[] {
+  const ids = [rootId];
+  for (let index = 0; index < ids.length; index++) {
+    for (const child of childrenOf({ id: ids[index]! }, inventory)) if (!ids.includes(child.id)) ids.push(child.id);
+    if (ids.length > ARCHIVE_BATCH_LIMIT) throw new Error(`This session has more than ${ARCHIVE_BATCH_LIMIT - 1} active child sessions, so they cannot be reviewed in one archive. Nothing was archived.`);
+  }
+  return ids;
 }
 /** One archive review row. Resume was removed from Kontor; its receipts stay readable but are never classified again. */
 export function lifecycleRow(agent: Agent, inventory: Agent[]): LifecycleRow {
@@ -259,11 +268,12 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     if (refs.length > UNRESOLVED_LIMIT) throw new Error(`More than ${UNRESOLVED_LIMIT} archives are not confirmed (${refs.length} found). The list cannot be shown exactly; no fence was changed.`);
     return refs;
   }
-  async function preview(input: { action: "archive"; scope: LifecycleReview["scope"]; agentIds: string[]; target: RecoveryTarget }): Promise<LifecycleReview> {
+  async function preview(input: { action: "archive"; scope: LifecycleReview["scope"]; agentIds: string[]; target: RecoveryTarget; descendants?: true }): Promise<LifecycleReview> {
     // Resume was removed with its toolbar: a request naming it is refused before any read or write.
     if (input.action !== "archive") throw new Error(RESUME_REMOVED);
     if (input.scope !== "filtered" || input.agentIds.length < 1 || input.agentIds.length > ARCHIVE_BATCH_LIMIT) throw new Error(`Archive requires 1–${ARCHIVE_BATCH_LIMIT} explicitly selected session IDs in filtered scope.`);
-    const all = await inventory(client), ids = new Set(input.agentIds);
+    if (input.descendants && input.agentIds.length !== 1) throw new Error("A branch archive names exactly one parent session.");
+    const all = await inventory(client), ids = new Set(input.descendants ? branch(input.agentIds[0]!, all) : input.agentIds);
     const rows: LifecycleRow[] = [];
     for (const id of ids) {
       const observed = await observe(id), listed = all.find((agent) => agent.id === id);
@@ -282,7 +292,8 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       if (archivedMembership(observed.agent)) row.eligible = true;
       rows.push(row);
     }
-    const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows: archiveOrder(rows), limitation: TAKEOVER_LIMIT };
+    const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows: archiveOrder(rows), limitation: TAKEOVER_LIMIT,
+      ...(input.descendants ? { keepChildren: { available: false as const, reason: KEEP_CHILDREN_UNAVAILABLE } } : {}) };
     await save(review); return review;
   }
   /** An exact read. A provider-refusal read is fenced: its attempt is durable before the read and its outcome is recorded
