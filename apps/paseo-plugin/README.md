@@ -1922,11 +1922,14 @@ placement switch).
 
 A desk caller (an epic lead in `DESK • ADAM`, for example) cannot create a
 workspace in an epic project through a guarded route while placement is
-enforced. The paths that remain are the session-create service and the
-operator in the app, both of which send no caller, and MCP `create_workspace`,
-which the hook does not see. Guarded desk-to-epic delegation needs an
-authoritative assignment source the hook can read, such as an ASMA-8530 route
-identity that carries the lead's confirmed epic.
+enforced and, without a Kontor binding, not in its own project either (B-5).
+The supported creations that remain send no caller: the session-create
+service, which resolves the configured project and directory, and the operator
+in the app. MCP `create_workspace`, which the hook does not see, is a
+detect-only residual, not a supported way around the refusal. Guarded
+desk-to-epic delegation needs an authoritative assignment source the hook can
+read, such as an ASMA-8530 route identity that carries the lead's confirmed
+epic.
 
 What Paseo would need to provide before these routes could be prevented:
 authoritative caller provenance and the resolved target project and workspace
