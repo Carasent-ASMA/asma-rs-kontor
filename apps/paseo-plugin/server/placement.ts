@@ -28,6 +28,15 @@ export interface PlacementBinding {
   readonly directory: string;
 }
 
+/**
+ * Where one workflow creation may land: one of these native projects and exactly this directory. A scope without a
+ * directory still holds the request to its projects, but it names no target and so admits nothing.
+ */
+export interface PlacementScope {
+  readonly projects: readonly string[];
+  readonly directory?: string;
+}
+
 /** Whether `child` is `parent` or beneath it. Only a `..` segment leaves `parent`; a name such as `..checkout` does not. */
 export function within(child: string, parent: string): boolean {
   const rel = relative(parent, child);
@@ -48,16 +57,15 @@ function refuse(reason: string): PlacementDecision {
  * Paseo's own `~/.paseo/worktrees` root (the fallback project from the
  * QNR-P1-06 misplacement).
  *
- * A `binding` of `null` marks a Paseo-direct seat, which Kontor never binds:
- * only the binding-free checks apply. A resolved binding adds the native
- * project and canonical worktree checks. The binding is resolved read-only
- * before this check. The exact native readback and every write stay with
+ * The scope is resolved read-only before this check, from the caller's own
+ * native placement or a Kontor binding. There is no unscoped pass: an empty
+ * scope refuses. The exact native readback and every write stay with
  * `kontord`; the plugin holds no Kontor credential.
  */
 export function evaluatePlacement(
   request: WorkspaceCreateLike,
   rules: PlacementRules,
-  binding: PlacementBinding | null,
+  scope: PlacementScope,
 ): PlacementDecision {
   const source = request.source;
   if (!source || typeof source !== "object") {
@@ -86,18 +94,21 @@ export function evaluatePlacement(
   ) {
     return refuse("the path is outside the configured Kontor placement roots");
   }
-  if (binding === null) {
-    return { allowed: true };
+  const projects = scope.projects.map((project) => project.trim()).filter(Boolean);
+  const directory = scope.directory?.trim();
+  if (directory !== undefined && !isAbsolute(directory)) {
+    return refuse("the seat's binding names no absolute canonical directory");
   }
-  const permittedProject = binding.projectId.trim();
-  const permittedDirectory = binding.directory.trim();
-  if (!permittedProject || !permittedDirectory || !isAbsolute(permittedDirectory)) {
-    return refuse("the seat's binding names no native project and canonical directory");
-  }
-  if (projectId !== permittedProject) {
+  if (!projects.includes(projectId)) {
     return refuse("the request targets a project outside the seat's binding");
   }
-  if (resolved !== resolve(permittedDirectory)) {
+  // A project is not evidence of the target (B-5): only a scope that names the checkout admits a creation.
+  if (directory === undefined) {
+    return refuse(
+      "no qualified evidence names the target checkout; a matching project is not enough. Have the owning workflow reconcile the seat's assigned target and binding; copying binding labels does not prove assignment.",
+    );
+  }
+  if (resolved !== resolve(directory)) {
     return refuse("the request targets a directory outside the seat's canonical worktree");
   }
   return { allowed: true };

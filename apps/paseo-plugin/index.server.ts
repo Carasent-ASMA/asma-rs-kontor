@@ -1,7 +1,7 @@
 import { contributeProceduralTakeover } from "./server/procedural-takeover";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { contributeVendorUsage } from "./server/vendor-usage";
-import { contribute } from "./server/hooks";
+import { contribute, contributePlacement } from "./server/hooks";
 import { readFloor, reportFloor } from "./server/floor";
 import { organizationSettings } from "./shared/organization";
 import { keyboardSettings } from "./shared/keyboard";
@@ -37,12 +37,14 @@ export default function plugin(server: PluginServerContext): () => void {
   });
   const stopSources = contributeReadSources(server, settings, sourceCatalog);
   contributeResponsibility(server);
-  // The operator's floor.json is read once per worker start; off registers none of the three hooks.
+  // The operator's floor.json is read once per worker start; off registers neither seat hook.
   const floor = readFloor();
   reportFloor(floor);
   // Registered whatever the floor; the floor is only reported, as whether new agents get kontor-observer.
   const stopStatus = contributeKontorStatus(server, floor.enabled);
   const stopCatalog = contributeWorkCatalog(server);
   const stopHooks = floor.enabled ? contribute(server) : () => {};
-  return () => { stopSources(); stopStatus(); stopCatalog(); stopHooks(); };
+  // Registered whatever the floor; each creation reads placement.json, and absent follows the floor.
+  const stopPlacement = contributePlacement(server, floor.enabled);
+  return () => { stopSources(); stopStatus(); stopCatalog(); stopHooks(); stopPlacement(); };
 }

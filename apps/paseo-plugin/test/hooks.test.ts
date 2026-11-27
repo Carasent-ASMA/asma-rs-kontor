@@ -3,12 +3,19 @@ import type {
   PluginHookContext,
   PluginServerContext,
 } from "@getpaseo/plugin/server";
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KontorPluginConfig } from "../server/config";
 import {
   addKontorAgentConfig,
   contribute,
+  contributePlacement,
+  detectPlacement,
   guardWorkspaceCreate,
+  PLACEMENT_DETECTED_EVENT,
+  PLACEMENT_MODE_EVENT,
   KONTOR_MCP_SERVER_NAME,
   KONTOR_SYSTEM_PROMPT_LINE,
   SEAT_ENV,
@@ -48,18 +55,39 @@ function config(overrides: Partial<KontorPluginConfig> = {}): KontorPluginConfig
 
 type LabelResult = Record<string, string> | "error" | "never";
 type WorkspaceSnapshot = {
+  /** Overrides the id the daemon reads back; defaults to the requested id. */
+  id?: string;
   projectId: string | null;
   workspaceDirectory: string | null;
+  projectDisplayName?: string;
+  projectCustomName?: string | null;
+  projectKind?: string;
+  projectRootPath?: string;
+  archivingAt?: string | null;
 };
 type WorkspaceResult = WorkspaceSnapshot | "error" | "never" | null;
 
+/** The caller's own workspace by default: a plain directory workspace in the seat's epic project. */
+const CALLER_WORKSPACE: WorkspaceSnapshot = {
+  projectId: PROJECT,
+  workspaceDirectory: CANONICAL,
+  projectDisplayName: "ESW • ASMA-8507",
+};
+
+/**
+ * A daemon whose agents read back with their own id, labels and workspace. A
+ * caller runs in `kontor.workspace_id` when its labels name one, else in
+ * `callerWorkspace` (`wks_caller` by default).
+ */
 function context(
   labels: LabelResult,
   workspaces: Record<string, WorkspaceResult> = {},
+  options: { callerWorkspace?: string; readsAs?: string; projects?: { projectId: string; projectDisplayName: string; projectCustomName?: string | null }[] | "error" } = {},
 ): Context {
+  const all: Record<string, WorkspaceResult> = { wks_caller: CALLER_WORKSPACE, ...workspaces };
   const paseo = {
     agents: {
-      ref: () => ({
+      ref: (agentId: string) => ({
         current: () => null,
         refresh: () => {
           if (labels === "error") {
@@ -68,7 +96,8 @@ function context(
           if (labels === "never") {
             return new Promise(() => {});
           }
-          return Promise.resolve({ agent: { labels } });
+          const workspaceId = options.callerWorkspace ?? labels["kontor.workspace_id"] ?? "wks_caller";
+          return Promise.resolve({ agent: { id: options.readsAs ?? agentId, labels, workspaceId } });
         },
       }),
     },
@@ -76,16 +105,22 @@ function context(
       ref: (workspaceId: string) => ({
         current: () => null,
         refresh: () => {
-          const workspace = workspaces[workspaceId];
+          const workspace = all[workspaceId];
           if (workspace === "error") {
             return Promise.reject(new Error("daemon unavailable"));
           }
           if (workspace === "never") {
             return new Promise(() => {});
           }
-          return Promise.resolve(workspace ?? null);
+          return Promise.resolve(workspace ? { id: workspaceId, ...workspace } : null);
         },
       }),
+    },
+    projects: {
+      list: () =>
+        options.projects === "error"
+          ? Promise.reject(new Error("daemon unavailable"))
+          : Promise.resolve({ projects: options.projects ?? [] }),
     },
   };
   return {
@@ -377,10 +412,45 @@ describe("workspace.create hook", () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest(),
-        seatContext(seatLabels(), {}),
+        seatContext(seatLabels(), { wks_seat: { projectId: PROJECT, workspaceDirectory: "/Users/test/elsewhere", projectDisplayName: "ESW • ASMA-8507" } }),
         config(),
       ),
     ).rejects.toThrow("placement binding could not be resolved");
+  });
+
+  describe("a Kontor binding holds only with a native checkout readback that matches its worktree label (AUD-B-01)", () => {
+    const readsBack = (workspaceDirectory?: string | null): Record<string, WorkspaceResult> => ({
+      wks_seat: {
+        projectId: PROJECT,
+        projectDisplayName: "ESW • ASMA-8507",
+        ...(workspaceDirectory === undefined ? {} : { workspaceDirectory }),
+      } as WorkspaceSnapshot,
+    });
+    const routes = [
+      ["a bound caller", (workspaces: Record<string, WorkspaceResult>) => guardWorkspaceCreate(workspaceRequest(), seatContext(seatLabels(), workspaces), config())],
+      [
+        "a bound initial agent with no caller",
+        (workspaces: Record<string, WorkspaceResult>) =>
+          guardWorkspaceCreate(
+            workspaceRequest({ callerAgentId: undefined, agent: { config: { provider: "claude", cwd: CANONICAL }, labels: seatLabels() } }),
+            context({}, workspaces),
+            config(),
+          ),
+      ],
+    ] as const;
+    for (const [route, create] of routes) {
+      it(`${route}: a workspace that reads back with no checkout directory resolves no binding`, async () => {
+        for (const missing of [undefined, null, "", "  "]) {
+          await expect(create(readsBack(missing))).rejects.toThrow("placement binding could not be resolved");
+        }
+      });
+
+      it(`${route}: a matching checkout is allowed and a different one refused`, async () => {
+        await expect(create(readsBack(CANONICAL))).resolves.toBeUndefined();
+        await expect(create(readsBack(`${CANONICAL}/`))).resolves.toBeUndefined();
+        await expect(create(readsBack("/Users/test/elsewhere"))).rejects.toThrow("placement binding could not be resolved");
+      });
+    }
   });
 
   it("refuses a request whose initial agent carries Kontor labels", async () => {
@@ -474,13 +544,149 @@ describe("workspace.create hook", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("allows a Paseo-direct-only caller creating an explicit directory placement", async () => {
-    await expect(
-      guardWorkspaceCreate(workspaceRequest(), context(paseoDirectLabels()), config()),
-    ).resolves.toBeUndefined();
+  describe("a guarded workflow creation needs qualified evidence of its target checkout (B-5, AUD-B-R9-01)", () => {
+    const SIBLING = "/Users/test/carasent/asma-modules/.worktrees/asma-8508-review/asma-rs-kontor";
+    const NO_EVIDENCE = "no qualified evidence names the target checkout";
+    const roots = () => config({ placementRoots: ["/Users/test/carasent/asma-modules"] });
+    /** The guard as the host runs it: the creation (one synthetic dispatch) follows only when the guard returns. */
+    async function run(request: WorkspaceRequestWithCaller, ctx: Context, cfg = roots()) {
+      const raw = JSON.stringify(request);
+      let dispatched = 0;
+      let error = "";
+      try {
+        await guardWorkspaceCreate(request, ctx, cfg);
+        dispatched++;
+      } catch (cause) {
+        error = String(cause);
+      }
+      return { dispatched, error, unchanged: JSON.stringify(request) === raw };
+    }
+
+    // AUD's four witnesses (b5-witnesses): each is in the right project, and none carries evidence naming its target.
+    it.each<[string, Record<string, string>, WorkspaceSnapshot, boolean]>([
+      ["a Paseo-direct caller asking for a sibling review checkout", paseoDirectLabels(), CALLER_WORKSPACE, false],
+      ["an unbound caller whose initial agent claims workflow work", {}, { ...CALLER_WORKSPACE, projectDisplayName: "generic repository" }, true],
+      ["a Paseo-direct caller whose workspace reads back with no checkout", paseoDirectLabels(), { ...CALLER_WORKSPACE, workspaceDirectory: null }, false],
+      ["a Paseo-direct caller whose workspace reads back with a blank checkout", paseoDirectLabels(), { ...CALLER_WORKSPACE, workspaceDirectory: "" }, false],
+    ])("refuses %s before the creation, the request and the caller's workspace unchanged", async (_name, labels, workspace, initial) => {
+      const snapshot = JSON.stringify(workspace);
+      const request = workspaceRequest({
+        source: { kind: "directory", path: SIBLING, projectId: PROJECT },
+        ...(initial ? { agent: { config: { provider: "codex", cwd: SIBLING }, labels: paseoDirectLabels() } } : {}),
+      } as never);
+      const result = await run(request, context(labels, { wks_caller: workspace }));
+      expect(result.dispatched).toBe(0);
+      expect(result.unchanged).toBe(true);
+      expect(JSON.stringify(workspace)).toBe(snapshot);
+      expect(result.error).toContain(NO_EVIDENCE);
+    });
+
+    it("refuses an unbound workflow caller's own checkout too: the caller's directory is not evidence of the new workspace's target", async () => {
+      for (const labels of [paseoDirectLabels(), {}]) {
+        const result = await run(workspaceRequest(), context(labels));
+        expect(result.dispatched).toBe(0);
+        expect(result.error).toContain(NO_EVIDENCE);
+      }
+    });
+
+    it("refuses when a bound caller's target evidence is missing or unreadable, never falling back to its project", async () => {
+      // The seat runs in the workspace its binding names, so a failed read refuses at the caller; a readback without
+      // its checkout refuses at the binding.
+      const cases: [WorkspaceResult, string][] = [
+        [{ projectId: PROJECT, workspaceDirectory: null }, "placement binding could not be resolved"],
+        [{ projectId: PROJECT, workspaceDirectory: "" }, "placement binding could not be resolved"],
+        ["error", "could not be read"],
+        ["never", "could not be read"],
+      ];
+      for (const [workspace, reason] of cases) {
+        const result = await run(workspaceRequest(), seatContext(seatLabels(), { wks_seat: workspace }));
+        expect(result.dispatched).toBe(0);
+        expect(result.error).toContain(reason);
+      }
+    });
+
+    it("keeps a qualified binding's exact checkout allowed and refuses its sibling (AUD B5-qualified-control)", async () => {
+      expect(await run(workspaceRequest(), seatContext(), config())).toMatchObject({ dispatched: 1, error: "", unchanged: true });
+      const sibling = await run(workspaceRequest({ source: { kind: "directory", path: SIBLING, projectId: PROJECT } }), seatContext(), config());
+      expect(sibling.dispatched).toBe(0);
+      expect(sibling.error).toContain("directory outside the seat's canonical worktree");
+      // The initial-agent route: a caller-less request whose initial agent carries a binding reaches exactly its checkout.
+      const bound = { config: { provider: "claude", cwd: "/tmp" }, labels: seatLabels() };
+      const seat = context({}, { wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL } });
+      expect(await run(workspaceRequest({ callerAgentId: undefined, agent: bound } as never), seat, config())).toMatchObject({ dispatched: 1, error: "" });
+    });
+
+    it("keeps a genuine operator creation allowed: no caller and no workflow claim (AUD B5-operator-control)", async () => {
+      const request = { source: { kind: "directory", path: SIBLING, projectId: PROJECT } } as never;
+      expect(await run(request, context("error"), config())).toMatchObject({ dispatched: 1, error: "", unchanged: true });
+    });
+
+    describe("an initial agent's binding, read back natively, is the target evidence for an unbound caller in that project (AUD-B-R10-01)", () => {
+      const OTHER_PROJECT = "prj_other_repository";
+      const BOUND: WorkspaceSnapshot = { projectId: PROJECT, workspaceDirectory: CANONICAL };
+      const CALLERS: [string, Record<string, string>][] = [["an unlabelled", {}], ["a Paseo-direct", paseoDirectLabels()]];
+      /** The caller runs outside the target, in a generic repository project: its own directory is never the evidence. */
+      const callerIn = (projectId = PROJECT): WorkspaceSnapshot => ({ projectId, workspaceDirectory: "/fixture/parent-checkout", projectDisplayName: "generic repository" });
+      const mixed = (path = CANONICAL, projectId = PROJECT, labels = seatLabels()) =>
+        workspaceRequest({ source: { kind: "directory", path, projectId }, agent: { config: { provider: "claude", cwd: path }, labels } } as never);
+      async function mixedRun(callerLabels: Record<string, string>, request: WorkspaceRequestWithCaller, caller: WorkspaceSnapshot, bound: WorkspaceResult) {
+        const originals = JSON.stringify({ caller, bound });
+        const result = await run(request, context(callerLabels, { wks_caller: caller, wks_seat: bound }), config());
+        return { ...result, originalsUnchanged: JSON.stringify({ caller, bound }) === originals };
+      }
+
+      it.each(CALLERS)("allows %s unbound caller into the exact checkout its initial agent's binding names: one dispatch, originals unchanged", async (_name, labels) => {
+        expect(await mixedRun(labels, mixed(), callerIn(), BOUND)).toMatchObject({ dispatched: 1, error: "", unchanged: true, originalsUnchanged: true });
+      });
+
+      // An unresolved binding supplies no target, so the caller's project-only scope refuses first (B-5).
+      it.each<[string, () => [WorkspaceRequestWithCaller, WorkspaceSnapshot, WorkspaceResult], string]>([
+        ["the binding is in another project than the caller's", () => [mixed(), callerIn(OTHER_PROJECT), BOUND], "project outside the seat's binding"],
+        ["the request names the caller's project, not the binding's", () => [mixed(CANONICAL, OTHER_PROJECT), callerIn(OTHER_PROJECT), BOUND], "project outside the seat's binding"],
+        ["the binding names a sibling, not the requested directory", () => [mixed(SIBLING), callerIn(), BOUND], "directory outside the seat's canonical worktree"],
+        ["the binding's workspace cannot be read", () => [mixed(), callerIn(), "error"], NO_EVIDENCE],
+        ["the binding's workspace never answers", () => [mixed(), callerIn(), "never"], NO_EVIDENCE],
+        ["the binding's workspace reads back with no checkout", () => [mixed(), callerIn(), { projectId: PROJECT, workspaceDirectory: null }], NO_EVIDENCE],
+        ["the binding's label is not what its workspace reads back", () => [mixed(), callerIn(), { projectId: PROJECT, workspaceDirectory: SIBLING }], NO_EVIDENCE],
+        ["neither side carries a binding (B-5)", () => [mixed(CANONICAL, PROJECT, paseoDirectLabels()), callerIn(), BOUND], NO_EVIDENCE],
+      ])("refuses an unbound caller's request when %s: nothing dispatched, originals unchanged", async (_name, build, reason) => {
+        for (const [, labels] of CALLERS) {
+          const [request, caller, bound] = build();
+          const result = await mixedRun(labels, request, caller, bound);
+          expect(result.dispatched).toBe(0);
+          expect(result.unchanged && result.originalsUnchanged).toBe(true);
+          expect(result.error).toContain(reason);
+        }
+      });
+
+      it("never lets an initial agent's binding replace a bound caller's own checkout", async () => {
+        const OTHER = "/Users/test/carasent/asma-modules/.worktrees/asma-8509/asma-rs-kontor";
+        const ctx = context(seatLabels(), { wks_seat: BOUND, wks_other: { projectId: PROJECT, workspaceDirectory: OTHER } });
+        const result = await run(mixed(OTHER, PROJECT, seatLabels({ "kontor.workspace_id": "wks_other", "kontor.worktree": OTHER })), ctx, config());
+        expect(result.dispatched).toBe(0);
+        expect(result.error).toContain("directory outside the seat's canonical worktree");
+      });
+
+      // B2-1, an open residual: this pins today's behaviour so that a change to it is seen. It is not a regression
+      // witness. The initial agent's binding is client-reported, so labels copied from a registered sibling workspace
+      // name a checkout that reads back natively; the readback proves the directory exists, not that the requester is
+      // assigned to it, and the host then registers one more workspace there. An archiving workspace still reads back.
+      it.each<[string, WorkspaceSnapshot]>([
+        ["a registered sibling workspace", { projectId: PROJECT, workspaceDirectory: SIBLING }],
+        ["an archiving sibling workspace", { projectId: PROJECT, workspaceDirectory: SIBLING, archivingAt: "2026-11-27T00:00:00.000Z" }],
+      ])("pins the copied-binding residual: an unbound caller's initial agent carrying %s's labels dispatches once, the request unchanged (B2-1)", async (_name, sibling) => {
+        const copied = seatLabels({ "kontor.seat_binding_id": "seat-sibling", "kontor.workspace_id": "wks_sibling", "kontor.worktree": SIBLING });
+        for (const [, labels] of CALLERS) {
+          const original = JSON.stringify(sibling);
+          const result = await run(mixed(SIBLING, PROJECT, copied), context(labels, { wks_caller: callerIn(), wks_sibling: sibling }), config());
+          expect(result).toMatchObject({ dispatched: 1, error: "", unchanged: true });
+          expect(JSON.stringify(sibling)).toBe(original);
+        }
+      });
+    });
   });
 
-  it("allows a Paseo-direct-only initial agent creating an explicit directory placement", async () => {
+  it("refuses a Paseo-direct-only initial agent with no caller (missing caller)", async () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest({
@@ -493,7 +699,7 @@ describe("workspace.create hook", () => {
         context({}),
         config(),
       ),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("must name its calling agent");
   });
 
   it("refuses a Paseo-direct-only seat creating a directory without an explicit project", async () => {
@@ -579,7 +785,7 @@ describe("workspace.create hook", () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest(),
-        seatContext(seatLabels(), {}),
+        seatContext(seatLabels(), { wks_seat: { projectId: PROJECT, workspaceDirectory: "/Users/test/elsewhere", projectDisplayName: "ESW • ASMA-8507" } }),
         config(),
       ),
     ).rejects.toThrow("placement binding could not be resolved");
@@ -589,7 +795,7 @@ describe("workspace.create hook", () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest(),
-        seatContext(seatLabels({ orchestration: "paseo-direct" }), {}),
+        seatContext(seatLabels({ orchestration: "paseo-direct" }), { wks_seat: { projectId: PROJECT, workspaceDirectory: "/Users/test/elsewhere", projectDisplayName: "ESW • ASMA-8507" } }),
         config(),
       ),
     ).rejects.toThrow("placement binding could not be resolved");
@@ -621,25 +827,296 @@ describe("workspace.create hook", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("leaves an unlabelled agent alone", async () => {
+  it("leaves an unlabelled agent in a project that is neither a desk nor an epic unguarded (unclassified)", async () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest({
           source: { kind: "worktree", cwd: "/tmp", projectId: "prj_1" },
         }),
-        context({}),
+        context({}, { wks_caller: { projectId: "prj_repo", workspaceDirectory: "/tmp/repo", projectDisplayName: "asma-modules" } }),
         config(),
       ),
     ).resolves.toBeUndefined();
+    // A project that only carries a key in its name is neither a desk nor an epic project.
+    for (const projectDisplayName of ["TICKETS • ASMA-8507", "asma-rs-kontor • ASMA-8507"]) {
+      await expect(
+        guardWorkspaceCreate(
+          workspaceRequest({ source: { kind: "directory", path: "/tmp/elsewhere", projectId: "prj_1" } }),
+          context({}, { wks_caller: { projectId: "prj_lookalike", workspaceDirectory: "/tmp/repo", projectDisplayName } }),
+          config(),
+        ),
+      ).resolves.toBeUndefined();
+    }
   });
 
-  it("fails open when the caller labels cannot be read and the request has no seat labels", async () => {
+  it("refuses when the caller cannot be read back, whatever its labels", async () => {
+    for (const ctx of [
+      context("error"),
+      context("never"),
+      context({}, { wks_caller: null }),
+      context({}, { wks_caller: "error" }),
+      context({}, { wks_caller: { ...CALLER_WORKSPACE, archivingAt: "2026-11-25T00:00:00Z" } }),
+      context({}, {}, { callerWorkspace: "" }),
+    ]) {
+      await expect(
+        guardWorkspaceCreate(workspaceRequest({ source: { kind: "worktree", cwd: "/tmp", projectId: "prj_1" } }), ctx, config()),
+      ).rejects.toThrow("calling agent's own workspace and project could not be read");
+    }
+  });
+});
+
+describe("workspace.create hook: caller identity and scope (ASMA-8580)", () => {
+  const OTHER = { kind: "directory", path: "/Users/test/carasent/asma-modules/.worktrees/asma-other/x", projectId: "prj_other" } as const;
+  const DESK = { projectId: "prj_desk", workspaceDirectory: "/Users/test/.local/share/paseo/desk-projects/ADAM", projectDisplayName: "DESK • ADAM" };
+  const ESW = [
+    { projectId: "prj_esw_8507", projectDisplayName: "ESW • ASMA-8507" },
+    { projectId: "prj_esw_9000", projectDisplayName: "ESW • ASMA-9000" },
+  ];
+
+  it("(a) holds a caller with its labels removed to its own epic project", async () => {
+    await expect(guardWorkspaceCreate(workspaceRequest({ source: OTHER }), context({}), config())).rejects.toThrow(
+      "project outside the seat's binding",
+    );
+    // In its own project it still names no evidence of its target checkout, so it is refused there too (B-5).
+    await expect(guardWorkspaceCreate(workspaceRequest(), context({}), config())).rejects.toThrow("no qualified evidence names the target checkout");
+  });
+
+  it("(a) holds an unlabelled desk lead to its desk project", async () => {
+    const ctx = context({}, { wks_caller: DESK }, { projects: ESW });
+    await expect(guardWorkspaceCreate(workspaceRequest({ source: { ...OTHER, projectId: "prj_esw_8507" } }), ctx, config())).rejects.toThrow(
+      "project outside",
+    );
+    await expect(
+      guardWorkspaceCreate(workspaceRequest({ source: { kind: "directory", path: DESK.workspaceDirectory, projectId: "prj_desk" } }), ctx, config()),
+    ).rejects.toThrow("no qualified evidence names the target checkout");
+  });
+
+  it("(b) refuses a workflow caller that names no target project or uses a worktree source", async () => {
+    await expect(
+      guardWorkspaceCreate(workspaceRequest({ source: { kind: "directory", path: CANONICAL } }), context({}), config()),
+    ).rejects.toThrow("explicit projectId");
+    await expect(
+      guardWorkspaceCreate(workspaceRequest({ source: { kind: "worktree", cwd: CANONICAL } }), context({}), config()),
+    ).rejects.toThrow("worktree creation is outside it");
+    await expect(guardWorkspaceCreate(workspaceRequest({ source: undefined }), context({}), config())).rejects.toThrow(
+      "no workspace source",
+    );
+  });
+
+  it("(c) keeps genuine operator creation working, and cannot tell a caller-less automated request from it (LSA-B-02 residual)", async () => {
+    // An operator in the app sends no caller and no initial agent; an SDK script with no caller sends the same,
+    // or an initial agent with no workflow claim. Both are unclassified (provenance unknown) and left unguarded.
+    const free: Record<string, string>[] = [{}, { "kontor.summary.source": "a", "kontor.summary.job": "j", workflow: "free" }];
+    for (const agent of [undefined, ...free.map((labels) => ({ config: { provider: "claude", cwd: "/tmp" }, labels }))]) {
+      await expect(
+        guardWorkspaceCreate(workspaceRequest({ callerAgentId: undefined, agent, source: { kind: "worktree", cwd: "/tmp" } }), context("error"), config()),
+      ).resolves.toBeUndefined();
+    }
+  });
+
+  it("(d) gives a mislabelled caller no authority from its labels", async () => {
+    // A Kontor binding naming another seat's workspace is refused before it is read, even when that binding would resolve.
+    const bindingElsewhere = context(
+      seatLabels({ "kontor.worktree": OTHER.path }),
+      { wks_seat: { projectId: "prj_other", workspaceDirectory: OTHER.path } },
+      { callerWorkspace: "wks_caller" },
+    );
+    await expect(guardWorkspaceCreate(workspaceRequest({ source: OTHER }), bindingElsewhere, config())).rejects.toThrow(
+      "names a workspace the caller does not run in",
+    );
+    // An epic label on an epic-project caller selects nothing.
+    await expect(
+      guardWorkspaceCreate(workspaceRequest({ source: { ...OTHER, projectId: "prj_esw_9000" } }), context(paseoDirectLabels({ epic: "ASMA-9000" }), {}, { projects: ESW }), config()),
+    ).rejects.toThrow("project outside");
+    // A desk-like project label on an operator agent does not make it a desk lead.
     await expect(
       guardWorkspaceCreate(
-        workspaceRequest({
-          source: { kind: "worktree", cwd: "/tmp", projectId: "prj_1" },
-        }),
-        context("error"),
+        workspaceRequest({ source: { ...OTHER, projectId: "prj_esw_9000" } }),
+        context({ orchestration: "paseo", epic: "ASMA-9000", project: "DESK • ADAM" }, { wks_caller: { projectId: "prj_repo", workspaceDirectory: "/tmp/repo", projectDisplayName: "asma-modules" } }, { projects: ESW }),
+        config(),
+      ),
+    ).rejects.toThrow("project outside");
+  });
+
+  it("never widens a desk caller's scope from its labels: an epic label, its key or a project name is not an assignment (LSA-B-01)", async () => {
+    // The same authoritative desk caller and binding, whatever epic label it carries, gains no epic project.
+    const desk = (labels: Record<string, string>) => context(labels, { wks_caller: DESK }, { projects: ESW });
+    const into = (projectId: string) => workspaceRequest({ source: { ...OTHER, projectId } });
+    const variants: Record<string, string>[] = [
+      { role: "TPM", epic: "ASMA-8507" },
+      { role: "TPM", epic: "ASMA-9000" },
+      { role: "LSA", epic: "ASMA-8507", task: "ASMA-8507", orchestration: "paseo-direct" },
+      // A wrong-role caller in the desk that copies a lead's labels.
+      { role: "SWE", epic: "ASMA-8507", orchestration: "paseo-direct", workflow: "kontor" },
+      {},
+    ];
+    for (const labels of variants) {
+      for (const projectId of ["prj_esw_8507", "prj_esw_9000"]) {
+        await expect(guardWorkspaceCreate(into(projectId), desk(labels), config())).rejects.toThrow("project outside");
+      }
+      await expect(
+        guardWorkspaceCreate(workspaceRequest({ source: { kind: "directory", path: DESK.workspaceDirectory, projectId: "prj_desk" } }), desk(labels), config()),
+      ).rejects.toThrow("no qualified evidence names the target checkout");
+    }
+  });
+
+  it("leaves a known workflow seat in a misplaced legacy project unguarded once its labels are removed (LSA-B-02 residual)", async () => {
+    // A review seat in a project rooted at its own review worktree: neither a desk nor an epic project.
+    const legacy = { projectId: "prj_legacy", workspaceDirectory: "/Users/test/.cache/asma-8507-review-a/asma-rs-kontor", projectDisplayName: "asma-rs-kontor" };
+    const elsewhere = workspaceRequest({ source: { ...OTHER, projectId: "prj_esw_9000" } });
+    const sameLegacyProject = workspaceRequest({ source: { kind: "directory", path: legacy.workspaceDirectory, projectId: "prj_legacy" } });
+    // While its labels remain it is held to its own (misplaced) project, and refused there too without evidence of its
+    // target (B-5); the guard cannot move it to its intended epic project.
+    await expect(guardWorkspaceCreate(elsewhere, context(paseoDirectLabels({ epic: "ASMA-8507" }), { wks_caller: legacy }), config())).rejects.toThrow("project outside");
+    await expect(guardWorkspaceCreate(sameLegacyProject, context(paseoDirectLabels({ epic: "ASMA-8507" }), { wks_caller: legacy }), config())).rejects.toThrow("no qualified evidence names the target checkout");
+    // With its labels removed nothing on the host distinguishes it from an unmarked agent: unsupported, not prevented.
+    await expect(guardWorkspaceCreate(elsewhere, context({}, { wks_caller: legacy }), config())).resolves.toBeUndefined();
+    await expect(
+      guardWorkspaceCreate(elsewhere, context({ epic: "", task: "", orchestration: "", workflow: "" }, { wks_caller: legacy }), config()),
+    ).resolves.toBeUndefined();
+  });
+
+  it("reads a renamed desk by its custom name", async () => {
+    const renamedDesk = { ...DESK, projectDisplayName: "asma-modules", projectCustomName: "DESK • ADAM" };
+    await expect(guardWorkspaceCreate(workspaceRequest({ source: OTHER }), context({}, { wks_caller: renamedDesk }), config())).rejects.toThrow(
+      "project outside",
+    );
+  });
+
+  it("refuses a caller readback that names another agent, another workspace or an archiving one", async () => {
+    // A caller that reads back reaches the placement check (refused there only for want of target evidence); each of
+    // these is refused at the readback instead.
+    await expect(guardWorkspaceCreate(workspaceRequest(), context({}), config())).rejects.toThrow("no qualified evidence names the target checkout");
+    await expect(guardWorkspaceCreate(workspaceRequest(), context({}, {}, { readsAs: "agent-other" }), config())).rejects.toThrow(
+      "could not be read",
+    );
+    await expect(
+      guardWorkspaceCreate(workspaceRequest(), context({}, { wks_caller: { ...CALLER_WORKSPACE, id: "wks_other" } }), config()),
+    ).rejects.toThrow("could not be read");
+    await expect(
+      guardWorkspaceCreate(workspaceRequest(), context({}, { wks_caller: { ...CALLER_WORKSPACE, archivingAt: "2026-11-25T00:00:00Z" } }), config()),
+    ).rejects.toThrow("could not be read");
+  });
+
+  it("holds a Kontor-bound caller and a bound initial agent to the canonical directory, not only the project", async () => {
+    const sibling = { kind: "directory", path: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/other", projectId: PROJECT } as const;
+    await expect(guardWorkspaceCreate(workspaceRequest({ source: sibling }), seatContext(), config())).rejects.toThrow(
+      "directory outside the seat's canonical worktree",
+    );
+    const boundAgent = { config: { provider: "claude", cwd: "/tmp" }, labels: seatLabels() };
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({ callerAgentId: undefined, agent: boundAgent, source: sibling } as never),
+        context({}, { wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL } }),
+        config(),
+      ),
+    ).rejects.toThrow("directory outside the seat's canonical worktree");
+  });
+
+  it("enforces every current and retained workflow marker on an operator-placed caller", async () => {
+    const operatorPlaced = { wks_caller: { projectId: "prj_repo", workspaceDirectory: "/tmp/repo", projectDisplayName: "asma-modules" } };
+    const marked: Record<string, string>[] = [
+      { orchestration: "paseo" },
+      { orchestration: "kontor" },
+      { orchestration: "paseo-direct" },
+      { orchestration: "kontor-governed" },
+      { workflow: "kontor" },
+      { "kontor.agent-run": "run-1", "kontor.workspace_id": "wks_caller", "kontor.worktree": "/tmp/repo" },
+    ];
+    for (const labels of marked) {
+      await expect(guardWorkspaceCreate(workspaceRequest({ source: OTHER }), context(labels, operatorPlaced), config())).rejects.toThrow(
+        "Kontor workspace guard refused",
+      );
+    }
+    const unmarked: Record<string, string>[] = [{ workflow: "free" }, { "kontor.summary.source": "a" }, { orchestration: "none" }];
+    for (const labels of unmarked) {
+      await expect(guardWorkspaceCreate(workspaceRequest({ source: OTHER }), context(labels, operatorPlaced), config())).resolves.toBeUndefined();
+    }
+  });
+
+  it("scopes a caller by its initial agent's workflow claim", async () => {
+    const operatorPlaced = { wks_caller: { projectId: "prj_repo", workspaceDirectory: "/tmp/repo", projectDisplayName: "asma-modules" } };
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({ source: OTHER, agent: { config: { provider: "claude", cwd: "/tmp" }, labels: { orchestration: "paseo", workflow: "kontor" } } }),
+        context({}, operatorPlaced),
+        config(),
+      ),
+    ).rejects.toThrow("project outside");
+  });
+
+  it("takes the scope of a borrowed caller id: the caller is client-reported, so another live agent's id gets that agent's scope (residual)", async () => {
+    // Agent A runs in ESW • ASMA-8507 and agent B in ESW • ASMA-9000, each bound to its own checkout. The 0.17.4 CLI sends
+    // whatever PASEO_AGENT_ID holds, and the daemon only checks that the agent exists; the hook can read only the agent
+    // the id names.
+    const B_CHECKOUT = "/Users/test/epics/ASMA-9000/task-b";
+    const seats: Record<string, Record<string, string>> = {
+      "agent-a": seatLabels({ "kontor.workspace_id": "wks_a", "kontor.worktree": "/Users/test/epics/ASMA-8507/task-a" }),
+      "agent-b": seatLabels({ "kontor.workspace_id": "wks_b", "kontor.worktree": B_CHECKOUT }),
+      "agent-c": paseoDirectLabels(),
+    };
+    const base = context({}, {
+      wks_a: { projectId: "prj_esw_8507", workspaceDirectory: "/Users/test/epics/ASMA-8507/task-a", projectDisplayName: "ESW • ASMA-8507" },
+      wks_b: { projectId: "prj_esw_9000", workspaceDirectory: B_CHECKOUT, projectDisplayName: "ESW • ASMA-9000" },
+      wks_c: { projectId: "prj_esw_9000", workspaceDirectory: "/Users/test/epics/ASMA-9000/task-c", projectDisplayName: "ESW • ASMA-9000" },
+    });
+    const runsIn: Record<string, string> = { "agent-a": "wks_a", "agent-b": "wks_b", "agent-c": "wks_c" };
+    const daemon = {
+      ...base,
+      paseo: {
+        ...(base.paseo as object),
+        agents: { ref: (agentId: string) => ({ current: () => null, refresh: () => Promise.resolve({ agent: { id: agentId, labels: seats[agentId], workspaceId: runsIn[agentId] } }) }) },
+      },
+    } as unknown as Context;
+    const intoB = { kind: "directory", path: B_CHECKOUT, projectId: "prj_esw_9000" } as const;
+    await expect(guardWorkspaceCreate(workspaceRequest({ callerAgentId: "agent-a", source: intoB }), daemon, config())).rejects.toThrow("project outside");
+    await expect(guardWorkspaceCreate(workspaceRequest({ callerAgentId: "agent-b", source: intoB }), daemon, config())).resolves.toBeUndefined();
+    // An unbound agent's id carries no target evidence, so borrowing it admits nothing (B-5).
+    await expect(guardWorkspaceCreate(workspaceRequest({ callerAgentId: "agent-c", source: intoB }), daemon, config())).rejects.toThrow(
+      "no qualified evidence names the target checkout",
+    );
+  });
+
+  it("refuses a valid project id outside the caller's project (the 0.16.2 payload, top-level callerAgentId)", async () => {
+    const payload = {
+      callerAgentId: "agent-tpm",
+      source: { kind: "directory", path: OTHER.path, projectId: "prj_other" },
+      title: "SWE",
+      background: true,
+    } as unknown as WorkspaceRequestWithCaller;
+    await expect(guardWorkspaceCreate(payload, context(paseoDirectLabels()), config())).rejects.toThrow("project outside");
+  });
+
+  it("refuses a workflow caller's Paseo worktree-root directory and a worktree route", async () => {
+    await expect(
+      guardWorkspaceCreate(workspaceRequest({ source: { kind: "directory", path: "/Users/test/.paseo/worktrees/x/asma-1", projectId: PROJECT } }), context({}), config()),
+    ).rejects.toThrow("Paseo's own worktree root");
+    await expect(
+      guardWorkspaceCreate(workspaceRequest({ source: { kind: "worktree", cwd: CANONICAL, projectId: PROJECT } } as never), context({}), config()),
+    ).rejects.toThrow("worktree creation is outside it");
+  });
+});
+
+describe("workspace.create hook: Paseo 0.17.4 CLI requests carry no initial agent", () => {
+  // `paseo workspace create` sends its source, title, background and the resolved caller (cli workspace/create.js:115-120).
+  // `paseo run --new-workspace` sends only its source and the caller (run.js:405-409); its labels go to the agent it
+  // creates afterwards (run.js:510-523), and the local source it builds has no projectId (run.js:61-75,
+  // workspace/create.js:12-27).
+  const runSource = { kind: "directory", path: "/Users/test/carasent/asma-modules/.worktrees/asma-other/x" } as const;
+
+  it("leaves `run --new-workspace` with no caller unguarded, whatever labels the run carries", async () => {
+    await expect(guardWorkspaceCreate({ source: runSource } as never, context("error"), config())).resolves.toBeUndefined();
+  });
+
+  it("refuses a workflow caller's `run --new-workspace` for its missing projectId, not for the run's labels", async () => {
+    await expect(
+      guardWorkspaceCreate({ source: runSource, callerAgentId: "agent-1" } as never, context(paseoDirectLabels()), config()),
+    ).rejects.toThrow("explicit projectId");
+    // An unlabelled caller outside any desk or epic project is not scoped: the run's labels never reach the guard.
+    await expect(
+      guardWorkspaceCreate(
+        { source: runSource, callerAgentId: "agent-1" } as never,
+        context({}, { wks_caller: { projectId: "prj_repo", workspaceDirectory: "/tmp/repo", projectDisplayName: "asma-modules" } }),
         config(),
       ),
     ).resolves.toBeUndefined();
@@ -647,7 +1124,7 @@ describe("workspace.create hook", () => {
 });
 
 describe("contribute", () => {
-  it("registers the three decided hooks", () => {
+  it("registers the two floor hooks; placement is registered on its own", () => {
     const registered: string[] = [];
     const settings: string[] = [];
     const server = {
@@ -667,7 +1144,7 @@ describe("contribute", () => {
     const cleanup = contribute(server, config());
 
     expect(settings).toEqual([]);
-    expect(registered).toEqual(["agent.create", "agent.session_open", "workspace.create"]);
+    expect(registered).toEqual(["agent.create", "agent.session_open"]);
     expect(cleanup()).toBeUndefined();
   });
 
@@ -694,5 +1171,150 @@ describe("contribute", () => {
     })) as AgentCreateRequest;
     expect(result.config.mcpServers).toEqual(request.config.mcpServers);
     expect(result.config.systemPrompt).toContain(KONTOR_SYSTEM_PROMPT_LINE);
+  });
+});
+
+describe("placement switch and detector (ASMA-8580)", () => {
+  let dir: string;
+  let file: string;
+  let lines: { info: unknown[]; errors: unknown[] };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "kontor-placement-"));
+    file = join(dir, "placement.json");
+    lines = { info: [], errors: [] };
+    vi.spyOn(console, "log").mockImplementation((line) => void lines.info.push(JSON.parse(String(line))));
+    vi.spyOn(console, "error").mockImplementation((line) => void lines.errors.push(JSON.parse(String(line))));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A workflow caller (its own epic project) naming another project: refused only when enforced. */
+  const misplaced = () => ({ request: workspaceRequest({ source: { kind: "directory", path: "/Users/test/elsewhere", projectId: "prj_other" } }) });
+  function register(floorEnabled: boolean) {
+    const before = new Map<string, (input: unknown, ctx: Context) => Promise<unknown>>();
+    const on = new Map<string, (event: unknown, ctx: Context) => Promise<void>>();
+    const stopped: string[] = [];
+    const server = {
+      before: (name: string, handler: never) => (before.set(name, handler), () => stopped.push(`before:${name}`)),
+      on: (name: string, handler: never) => (on.set(name, handler), () => stopped.push(`on:${name}`)),
+    } as unknown as PluginServerContext;
+    const stop = contributePlacement(server, floorEnabled, config(), file);
+    return { before, on, stop, stopped };
+  }
+  const mode = (placement: string, reason: string) => ({ event: PLACEMENT_MODE_EVENT, placement, reason, file });
+
+  it("follows the floor when placement.json is absent: with the floor off the guard leaves every creation untouched", async () => {
+    const off = register(false);
+    await expect(off.before.get("workspace.create")!(misplaced(), context({}))).resolves.toEqual(misplaced().request);
+    const on = register(true);
+    await expect(on.before.get("workspace.create")!(misplaced(), context({}))).rejects.toThrow("project outside");
+    expect(lines.info).toEqual([mode("off", "not-configured"), mode("enforced", "not-configured")]);
+  });
+
+  it("enforces on an explicit on with the floor off, and an explicit off wins over the floor", async () => {
+    writeFileSync(file, '{"placement":"on"}');
+    await expect(register(false).before.get("workspace.create")!(misplaced(), context({}))).rejects.toThrow("project outside");
+    writeFileSync(file, '{"placement":"off"}');
+    await expect(register(true).before.get("workspace.create")!(misplaced(), context({}))).resolves.toBeDefined();
+  });
+
+  it("refuses a `..<name>` directory under Paseo's worktree root on the enforced route, and passes it when off (AUD-R3-04)", async () => {
+    const dotted = (path: string) => ({ request: workspaceRequest({ source: { kind: "directory", path, projectId: PROJECT } }) });
+    writeFileSync(file, '{"placement":"on"}');
+    const guard = register(false).before.get("workspace.create")!;
+    for (const path of ["/Users/test/.paseo/worktrees/..evil", "/Users/test/.paseo/worktrees/..evil/repo"]) {
+      await expect(guard(dotted(path), context({}))).rejects.toThrow("Paseo's own worktree root");
+    }
+    // A `..<name>` sibling of the root is outside it: it passes the root check and is refused only for want of target
+    // evidence (B-5).
+    await expect(guard(dotted("/Users/test/.paseo/..worktrees-sibling"), context({}))).rejects.toThrow("no qualified evidence names the target checkout");
+    writeFileSync(file, '{"placement":"off"}');
+    await expect(guard(dotted("/Users/test/.paseo/worktrees/..evil"), context({}))).resolves.toEqual(dotted("/Users/test/.paseo/worktrees/..evil").request);
+  });
+
+  it("refuses a sibling checkout through the registered hook with placement on and the floor off: the request and switch file unchanged (AUD B5-switch-proof)", async () => {
+    writeFileSync(file, '{"placement":"on"}');
+    const switchBytes = readFileSync(file);
+    const guard = register(false).before.get("workspace.create")!;
+    const input = { request: workspaceRequest({ source: { kind: "directory", path: "/Users/test/carasent/asma-modules/.worktrees/asma-8508-review/asma-rs-kontor", projectId: PROJECT } }) };
+    const raw = JSON.stringify(input);
+    let dispatched = 0;
+    const error = await guard(input, context(paseoDirectLabels())).then(() => void dispatched++, (cause: unknown) => String(cause));
+    expect(dispatched).toBe(0);
+    expect(JSON.stringify(input)).toBe(raw);
+    expect(readFileSync(file).equals(switchBytes)).toBe(true);
+    expect(error).toContain("no qualified evidence names the target checkout");
+    expect(lines.info).toEqual([mode("enforced", "explicit-on")]);
+  });
+
+  it("enforces a present file that does not conform", async () => {
+    writeFileSync(file, '{"placement":"of"}');
+    await expect(register(false).before.get("workspace.create")!(misplaced(), context({}))).rejects.toThrow("project outside");
+    expect(lines.info[0]).toMatchObject({ placement: "enforced", reason: "invalid", error: expect.stringContaining("placement") });
+  });
+
+  it("reads the switch on every creation and logs the mode line only when it changes; it never writes the file", async () => {
+    const { before } = register(false);
+    const guard = before.get("workspace.create")!;
+    await expect(guard(misplaced(), context({}))).resolves.toBeDefined();
+    writeFileSync(file, '{"placement":"on"}');
+    const written = statSync(file);
+    await expect(guard(misplaced(), context({}))).rejects.toThrow("project outside");
+    await expect(guard(misplaced(), context({}))).rejects.toThrow("project outside");
+    writeFileSync(file, '{"placement":"off"}');
+    await expect(guard(misplaced(), context({}))).resolves.toBeDefined();
+    rmSync(file);
+    await expect(guard(misplaced(), context({}))).resolves.toBeDefined();
+    expect(lines.info).toEqual([mode("off", "not-configured"), mode("enforced", "explicit-on"), mode("off", "explicit-off"), mode("off", "not-configured")]);
+    expect(written.mtimeMs).toBeGreaterThan(0);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("stops both registrations", () => {
+    const { stop, stopped } = register(false);
+    stop();
+    expect(stopped).toEqual(["before:workspace.create", "on:workspace.created"]);
+  });
+
+  it("detects a git project rooted at a linked worktree or a Paseo worktree-root directory, and nothing else", async () => {
+    const tree = (name: string, git: string | "dir") => {
+      const root = join(dir, name);
+      mkdirSync(root, { recursive: true });
+      if (git === "dir") mkdirSync(join(root, ".git"));
+      else writeFileSync(join(root, ".git"), git);
+      return root;
+    };
+    const linked = tree("linked", "gitdir: /repo/.git/modules/kontor/worktrees/asma-1\n");
+    const main = tree("main", "dir");
+    const submodule = tree("submodule", "gitdir: ../../.git/modules/kontor\n");
+    const ws = (projectKind: string, projectRootPath: string, workspaceDirectory = projectRootPath) =>
+      context({}, { wks_new: { projectId: "prj_new", projectKind, projectRootPath, workspaceDirectory } });
+    await expect(detectPlacement("wks_new", ws("git", linked), config())).resolves.toEqual({
+      event: PLACEMENT_DETECTED_EVENT, kind: "project-at-linked-worktree", workspaceId: "wks_new", projectId: "prj_new", projectRootPath: linked, workspaceDirectory: linked,
+    });
+    await expect(detectPlacement("wks_new", ws("git", main), config())).resolves.toBeNull();
+    await expect(detectPlacement("wks_new", ws("git", submodule), config())).resolves.toBeNull();
+    await expect(detectPlacement("wks_new", ws("non_git", linked), config())).resolves.toBeNull();
+    await expect(detectPlacement("wks_new", ws("git", main, "/Users/test/.paseo/worktrees/x/asma-1"), config())).resolves.toMatchObject({ kind: "paseo-worktree-root" });
+    await expect(detectPlacement("wks_new", ws("git", main, "/Users/test/.paseo/worktrees/..x"), config())).resolves.toMatchObject({ kind: "paseo-worktree-root" });
+    await expect(detectPlacement("wks_new", context({}, { wks_new: "error" }), config())).resolves.toBeNull();
+  });
+
+  it("logs a detection only when enforced and reads nothing when off", async () => {
+    const linked = join(dir, "linked");
+    mkdirSync(linked);
+    writeFileSync(join(linked, ".git"), "gitdir: /repo/.git/worktrees/asma-1");
+    const reads: string[] = [];
+    const ctx = context({}, { wks_new: { projectId: "prj_new", projectKind: "git", projectRootPath: linked, workspaceDirectory: linked } });
+    const watched = { ...ctx, paseo: { ...ctx.paseo, workspaces: { ref: (id: string) => (reads.push(id), ctx.paseo.workspaces.ref(id)) } } } as unknown as Context;
+    const event = { workspace: { id: "wks_new", projectId: "prj_new", cwd: linked, name: null, archivedAt: null } };
+    await register(false).on.get("workspace.created")!(event, watched);
+    expect(reads).toEqual([]);
+    expect(lines.errors).toEqual([]);
+    await register(true).on.get("workspace.created")!(event, watched);
+    expect(reads).toEqual(["wks_new"]);
+    expect(lines.errors).toEqual([expect.objectContaining({ event: PLACEMENT_DETECTED_EVENT, kind: "project-at-linked-worktree" })]);
   });
 });

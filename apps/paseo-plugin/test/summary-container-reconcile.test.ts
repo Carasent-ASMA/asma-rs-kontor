@@ -343,12 +343,15 @@ describe("summary recovery recording (ASMA-8580 round 2, item 3)", () => {
 
   it("serialises concurrent applies to one job: one records its disposition, the other is refused, and the recorded bytes survive (A-05)", async () => {
     const h = await held();
-    let release!: () => void;
+    let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
     let reads = 0;
-    const paseo = { agents: { ref: () => ({ refresh: async () => { if (reads++ === 0) await gate; return null; } }) } };
+    const paseo = { agents: { ref: () => ({ refresh: async () => { if (reads++ === 0) { entered(); await gate; } return null; } }) } };
     const apply = (evidence: string) => recordSummaryRecovery(paseo as never, h.root, { job: NAME, disposition: "retire-legacy-create", evidence, applySha256: sha(h.text), now: () => "2026-11-25T08:00:00Z" });
     const paused = apply("evidence A");
+    // B starts only once A waits at the gate, so the gate is A's whichever read would have finished first.
+    await waiting;
     expect(await apply("evidence B")).toMatchObject({ applied: true });
     const recorded = await readFile(h.file, "utf8");
     release();

@@ -159,7 +159,8 @@ describe("kontord status probe", () => {
     expect(entry).toContain("const stopStatus = contributeKontorStatus(server, floor.enabled);");
     expect(entry).toContain("const stopCatalog = contributeWorkCatalog(server);");
     expect(entry).toContain("const stopHooks = floor.enabled ? contribute(server) : () => {};");
-    expect(entry).toContain("return () => { stopSources(); stopStatus(); stopCatalog(); stopHooks(); };");
+    expect(entry).toContain("const stopPlacement = contributePlacement(server, floor.enabled);");
+    expect(entry).toContain("return () => { stopSources(); stopStatus(); stopCatalog(); stopHooks(); stopPlacement(); };");
   });
 });
 

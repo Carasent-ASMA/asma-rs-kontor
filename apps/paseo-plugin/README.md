@@ -1695,10 +1695,13 @@ Evidence checklist:
 | --- | --- |
 | `before("agent.create")` | Adds one stable system-prompt line and the `kontor-observer` MCP server at **observer** authority. A server already named `kontor` is preserved, so Kontor-composed seats are untouched. |
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` from the keys Kontor actually writes (`kontor.seat_binding_id`, `kontor.role_slot_id`, or `kontor.agent-run`), or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`. The key is rewritten on every open, so an old seat never survives a resume. It never blocks the open. |
-| `before("workspace.create")` | Refuses a guarded seat's explicit workspace creation outside Kontor placement. A seat with any `kontor.*` label gets full binding enforcement: its bound project and canonical worktree. A Paseo-direct-only seat (`orchestration=paseo-direct` without `kontor.*`) gets only the checks that do not need a binding. Both the initial agent's labels and the caller carried on the request (`agent.callerAgentId`) are checked. Interactive and unlabelled sessions are unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
+| `before("workspace.create")` | Placement guard. Scope comes from the client-reported caller (`callerAgentId`, top-level in 0.16.2 or on the initial agent), read back natively: its own workspace and project. The 0.17.4 CLI copies that id from its own `PASEO_AGENT_ID`, and the daemon passes it on unchanged and checks only that the agent exists, so a process that sets another live agent's id gets that agent's scope (the borrowed-caller residual below). A caller in a desk or epic project, or one whose labels or whose initial agent's labels claim workflow work, is held to its own project. Only an SDK request carries an initial agent: the 0.17.4 CLI sends none on `workspace.create`, so a CLI request is classified by its caller alone. Nothing widens that: no source the hook can read proves a desk caller's assignment to an epic (an `epic` label, a key's syntax or a project's name is not one), so a desk caller cannot place into an epic project through a guarded route. A caller with a Kontor binding is held to that binding, which must name the workspace it runs in, and a binding holds only when the bound workspace reads back with a checkout directory equal to `kontor.worktree`. A caller without a binding is held to its project and refused there too: no source the hook can read names its target checkout, and a matching project is not evidence of it, so a guarded workflow creation needs a Kontor binding that names its target checkout, read back natively: the caller's own, or the requested initial agent's, in which case an unbound caller's project must still match (B-5, AUD-B-R10-01). That binding is client-reported: its readback proves the checkout exists, not that the requester is assigned to it (the copied-binding row below). Without one it is a refused capability; the caller's own directory is not that evidence. For a caller in a desk or epic project the scope comes from that native placement, so removing its labels does not remove it; a caller anywhere else is in scope only through a workflow claim on its own labels or on the requested initial agent's labels: its request becomes unguarded only when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies (the residual below). Labels alone never widen a scope beyond the caller's project. An unreadable caller is refused. With no caller, a Kontor binding on the initial agent is enforced and any other workflow claim is refused. A request with no caller and no workflow claim, and a request from a caller outside any desk or epic project when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies, are unclassified: the host gives no provenance that tells them from an operator's request, so they are left unguarded, which is an unsupported case, not operator work. Every scope also requires a directory source (no worktree creation) with an explicit `projectId` and an absolute path outside Paseo's own worktree root and, when placement roots are configured, inside one of them. |
+| `on("workspace.created")` | Placement detection. Reads the created workspace and logs one `kontor.placement.detected` line when it is a git project rooted at a linked worktree or a directory under Paseo's own worktree root. It never archives, renames or moves anything. |
 
-The plugin registers these three hooks unless the operator turns the floor off
-with `floor.json` (see [Installation mode](#installation-mode-floorjson)).
+The plugin registers the first two hooks unless the operator turns the floor
+off with `floor.json` (see [Installation mode](#installation-mode-floorjson)).
+The placement guard and detection are registered whatever the floor, and each
+creation reads `placement.json` (see [Placement switch](#placement-switch-placementjson)).
 
 The hooks add no menu and no agent-creation path. The navigator adds the
 Kontor screen, sidebar row, the **Open Kontor** and **Back to Kontor** Command
@@ -1710,12 +1713,30 @@ A seat with any `kontor.*` label may register an existing directory only inside
 its own binding: the native project its own workspace belongs to and the
 canonical worktree named by its `kontor.worktree` label. The binding is read
 from the seat's `kontor.workspace_id` and `kontor.worktree` labels plus a
-read-only Paseo workspace read.
+read-only Paseo workspace read. That read must return the workspace's project
+and a checkout directory equal to `kontor.worktree`. A workspace that reads back
+without a checkout directory resolves no binding, and the seat is refused: the
+label never stands in for the native readback.
 
-Kontor never binds a Paseo-direct seat (`orchestration=paseo-direct` without a
-`kontor.*` label). The guard still owns that seat, but applies only the checks
-that need no binding. A seat that carries both label sets gets the full binding
-enforcement.
+Kontor never binds a Paseo-direct seat (`orchestration=paseo` or
+`paseo-direct` without a `kontor.*` label). The guard holds that seat to its own
+native project, read back from the caller. It admits the creation only when
+the request's initial agent carries a Kontor binding that reads back natively
+and names the requested checkout in that project (AUD-B-R10-01). Otherwise it
+refuses: no other source the hook can read names the seat's target checkout,
+and a matching project is not evidence of it (B-5). A guarded workspace creation
+by an unbound Paseo-direct caller without that binding is therefore a refused
+capability. The missing evidence is a qualified Kontor binding, on the caller or
+on the requested initial agent: one issued for that checkout by the owning
+assignment of the seat it labels, and read back natively with that checkout. The
+remedy is for the owning workflow to reconcile the seat's assigned target and its
+qualified binding. The native readback validates the named checkout; it does not
+authenticate an owning assignment. Labels copied from another workspace do not
+establish assignment authority, even though this route can accept them (B2-1,
+the copied-binding row below). The caller's own directory is not that evidence, since it
+need not be the checkout the new workspace is for. An unguarded route is not a
+supported way around the refusal. A seat that carries both label sets gets the
+full binding enforcement.
 
 Every guarded seat is refused for:
 
@@ -1723,7 +1744,9 @@ Every guarded seat is refused for:
 - a directory without an explicit `projectId` (Paseo would infer a project);
 - a relative directory path;
 - a directory inside Paseo's own `~/.paseo/worktrees` root;
-- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured.
+- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured;
+- a target checkout no Kontor binding names, the caller's or the requested
+  initial agent's: an unbound seat is refused in its own project too (B-5).
 
 A seat with a `kontor.*` label is additionally refused for:
 
@@ -1883,8 +1906,8 @@ All values are optional and read from the daemon environment:
 
 ### Installation mode (floor.json)
 
-The three hooks above are the floor. An operator can install the navigator
-without them by writing `$PASEO_HOME/plugin-config/kontor/floor.json` (default
+The two seat hooks above (`agent.create` and `agent.session_open`) are the
+floor. An operator can install the navigator without them by writing `$PASEO_HOME/plugin-config/kontor/floor.json` (default
 `~/.paseo/plugin-config/kontor/floor.json`) with owner-only permissions, then
 installing or reloading the plugin:
 
@@ -1916,16 +1939,17 @@ changes it. The daemon environment is not read for this switch.
 - A file that is present but cannot be opened, read or closed also keeps the
   floor on, with the diagnostic. A failed close counts even when the bytes read
   say off.
-- When the file is off, none of `agent.create`, `agent.session_open` or
-  `workspace.create` is registered. New agents get no system-prompt line and no
-  `kontor-observer` server, opened sessions get no `KONTOR_SEAT`, and workspace
-  creation is not guarded. The navigator, settings and read-only pages work as
+- When the file is off, neither `agent.create` nor `agent.session_open` is
+  registered. New agents get no system-prompt line and no `kontor-observer`
+  server, and opened sessions get no `KONTOR_SEAT`. Workspace creation is
+  guarded only when `placement.json` says on; absent, it follows the floor, so
+  off leaves it unguarded. The navigator, settings and read-only pages work as
   before, and existing sessions, workspaces and labels are not changed. An agent
   created while the floor was on keeps the `kontor-observer` server and prompt
   line stored in its config, so its session still starts with them when it is
   reopened while off; it just gets no `KONTOR_SEAT`.
 - Off wins over `KONTOR_PLUGIN_MCP`. `KONTOR_PLUGIN_MCP=off` alone still keeps
-  all three hooks.
+  both seat hooks.
 - The mode line goes to stdout and the invalid-value diagnostic to stderr. Each
   is one JSON line, `{"event":"kontor.floor.mode","floor":"enabled"|"disabled",
   "reason":…,"file":…}` and `{"event":"kontor.floor.invalid","floor":"enabled",
@@ -1938,6 +1962,146 @@ changes it. The daemon environment is not read for this switch.
   Rolling back to one with the file in place is not a way to keep the floor
   off. To stop the hooks on such a release, disable the plugin
   (`paseo plugin disable kontor`); its settings and native sessions stay.
+
+### Placement switch (placement.json)
+
+`$PASEO_HOME/plugin-config/kontor/placement.json` turns the placement guard and
+detection on or off without touching the floor. Unlike `floor.json`, it is read
+on every workspace creation, so a change takes effect on the next creation with
+no reload. The plugin never writes it.
+
+| `placement.json` | Placement | Worker log |
+| --- | --- | --- |
+| absent | follows the floor read at start | mode line, reason `not-configured` |
+| exactly `{"placement":"on"}` | enforced | mode line, reason `explicit-on` |
+| exactly `{"placement":"off"}` | **off** | mode line, reason `explicit-off` |
+| anything else | enforced | mode line, reason `invalid`, with the error |
+
+The value rules are the same as `floor.json`'s. The mode line,
+`{"event":"kontor.placement.mode","placement":"enforced"|"off","reason":…,"file":…}`,
+goes to stdout once at start and again whenever the mode changes. When off, every
+creation is left untouched and nothing is detected.
+
+The guard and the detector run in the kontor plugin worker, and the host calls
+them only while that worker is loaded (Paseo 0.17.4
+`server/plugins/runtime.js:470-481`, 84b8336a). A stop or reload
+(`:243-252`), an exit (`:1217-1226`) or a failed start (`:203-218`) leaves it
+out of the running set. Until it is loaded again, every creation is unguarded
+and undetected, whatever `placement.json` says, and the worker writes no mode
+line about it. The plugin status shows it: `paseo plugin ls --json` reports
+kontor `failed` instead of `running` (`plugins/index.js:15-19`, 18f7841c), and
+the host adds its own stop, exit or load-failure line to the plugin log. Monitor
+that status; the mode line alone does not show it.
+
+The hook is registered whatever the floor and the switch, so the host waits for
+this worker's answer on every workspace creation, even with placement off. A
+worker that does not answer within the host's 30 s request timeout fails that
+creation (`runtime.js:16`, `:150-158`, `:682-704`). A worker that is stopped or
+exits fails the creations it has not answered yet (`:249`, `:1224`). Any hook
+failure fails the creation (`:503-508`).
+
+Activation, with the floor off:
+
+1. Install this build with `placement.json` absent. Placement follows the floor,
+   so the guard leaves every creation untouched; the hook coupling above still
+   applies. Read back `paseo plugin ls --json`, with kontor `running`, and the
+   worker's mode line: `placement: "off"`, reason `not-configured`, with the
+   expected file.
+2. Write `{"placement":"on"}` with owner-only permissions. Read back the
+   mode line, `placement: "enforced"`, reason `explicit-on`, and kontor still
+   `running`. The next creation is guarded while the worker stays loaded.
+3. Rollback: write `{"placement":"off"}` (or remove the file while the floor is
+   off). The next creation is untouched; no reload or reinstall.
+
+`scripts/placement-qualification.mjs` runs each route before (absent), after
+(on) and on rollback (off) against a disposable daemon in a temporary home on a
+free port, with synthetic desk and epic projects and agents that never get a
+prompt. With placement on, it also drives the stock summary helper's creation
+call for two jobs, with the generator's own fields and per-job `cwd` but no
+prompt, so no model turn runs. Each job must still be created; the project and
+workspace each one adds are recorded as the open summary-route gap below, not
+as correct placement. It records the candidate head and base, the installed
+plugin, the Paseo release and the app archive hash, archives every agent and
+workspace it made, stops the daemon and removes the home.
+
+It runs only inside a no-live-provider envelope, which it builds itself and
+checks before it starts anything (macOS, `sandbox-exec`):
+
+- Every child gets an explicit environment: an isolated OS `HOME`, XDG roots
+  and `TMPDIR` in a new directory, and nothing else from the caller's
+  environment. Provider config roots and executable overrides (for example
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_COMMAND`) are therefore unset and fall
+  back under that `HOME` and `PATH`. The isolated daemon config holds no
+  provider setting.
+- `PATH` is a directory of stubs, then the system directories only. Each
+  provider executable the installed Paseo can launch has a stub that answers
+  `--version` and refuses anything else. `security`, which the Claude usage
+  source bundled with Paseo 0.17 uses to read the Keychain, is always refused.
+  Every stub call is logged in the report.
+- A sandbox refuses every connection that is not loopback.
+
+If any part is missing, it refuses with "the no-live-provider envelope is not
+in place" and starts nothing. `--paseo <cli>` names the Paseo CLI to qualify;
+`--envelope-only` checks the envelope and stops.
+
+The harness builds and checks its stubs from the same lists, so a name dropped
+from them would pass that check. The required set, traced in Paseo 0.17.4 as
+the 13 provider executables and `security`, is therefore pinned separately in
+`test/placement-qualification-envelope.test.ts`, which fails when the lists,
+the stub builder or the check no longer cover it. It also pins, in the
+harness's active code, the stub template (a provider answers `--version` alone;
+every other call is logged and refused), the environment allow-list, and the
+environment, `HOME`, sandbox-witness and network checks. Not covered: an exit
+by other means (an alias of `process.exit`, a signal, a hang), a change to
+`faults` itself, and the `boxEnv` and `sandbox` builders, which the outer run
+and the checks share.
+
+Before the floor, or `placement.json`, is turned on for the live host:
+
+- this build is installed, `paseo plugin ls --json` shows kontor `running`, and
+  its placement mode line reads back from the expected file;
+- the qualification passes at the installed build and Paseo release;
+- a read-only census compares every live seat's native placement with its
+  confirmed assignment: every workflow seat reads back with its own workspace
+  and project, every seat with a Kontor binding runs in the workspace its
+  `kontor.workspace_id` names, and legacy-misplaced and unclassified seats are
+  counted separately. A valid project id is not proof of the intended project,
+  and no readback mismatch is not no placement gap;
+- desk and epic projects keep their exact names (`DESK • <name>`,
+  `ESW • <KEY>`), and each epic key names one project;
+- the summary-route gap `ASMA-8580-summary-placement-pending` is recorded as
+  open. Its owner is the TPM who owns the activation plan. It is reviewed by
+  2026-12-02 (Europe/Oslo).
+  - Effect: the stock summary helper creates each job by `cwd` import, a route
+    this build neither guards nor detects, so summary jobs can keep adding one
+    project and one workspace each while placement is enforced.
+  - Scope: `placement.json` only, with the floor off. It may be turned on
+    without a summary-placement fix only after all four of these:
+    1. this build's own gates pass (exact-head QA and AUD, its independent
+       review, merge, installation, the census and the tested rollback);
+    2. the qualification above passes at the installed build and Paseo
+       release, including its summary case;
+    3. the census and its dispositions are complete;
+    4. the gap is recorded with its owner, review date and counts.
+  - Lifted only by all of this (the decision's words): "A separately gated
+    and installed summary-placement fix binds the approved SUMMARIES utility
+    under DESK • ADAM and repeated installed summary jobs add no project and
+    no per-job workspace. Saved summaries and correlation remain intact, and
+    only owned helper sessions are archived."
+  - Not lifted by any of: "A source merge alone", "A local-only fixture pass",
+    "A status/terminal cache", "The passage of the review date", "Renaming or
+    hiding the generated containers".
+  - Monitoring: the installer evidence keeps the before and after native
+    inventory and explicit coverage counts. No new scheduler is added, and no
+    detector is claimed to cover summary imports;
+- the detect-only routes below are accepted as residuals.
+
+Turning `placement.json` on does not stop all unwanted workspace creation: it
+prevents only the routes marked prevent below.
+
+The floor's seat hooks have their own conditions, which this switch does not
+cover. Turning the floor on with `placement.json` absent also enforces
+placement.
 
 ## Tests
 
@@ -2012,8 +2176,8 @@ start of the toolbar row or in the compact count row, no RPC or toast on hide, p
 new archive or read error, continuous presence through in-flight and failed reads,
 reopening when the same notice returns after a completed read without it, focus
 moves, Escape and touch targets. `test/server-entry.test.ts` starts
-the server entry for each file state and checks which hooks it registers: none
-when off, the same settings and RPCs as when on, `KONTOR_PLUGIN_MCP` precedence,
+the server entry for each file state and checks which hooks it registers: only
+the placement guard when off, the same settings and RPCs as when on, `KONTOR_PLUGIN_MCP` precedence,
 that `KONTOR_PLUGIN_FLOOR` has no effect, one read per start, and that the file
 is never changed.
 
@@ -2051,25 +2215,83 @@ progress, not confirmed archive membership. Classifying a session solely from
 its parent requires a supported exact-workspace archive observation; the plugin
 cannot supply that from list omission or recover rows the host omits.
 
-The guard covers an explicit `workspace.create` request whose initial agent
-carries Kontor labels, and the caller carried as `agent.callerAgentId` on
-that request. Paths that carry neither a labelled
-agent nor a caller still bypass the guard:
+Placement routes on installed Paseo 0.17.4 (`app.asar` 74294de5…, read, and
+the qualification above, which ran on it). Rows first classified on 0.16.2 were
+traced again on 0.17.4; rows marked "0.17.4 trace" are new, and their 0.16.2
+behaviour is not verified. Citations are to the server's `dist/server/server`
+files, with the first eight characters of each file's SHA-256.
 
-- the Paseo MCP `create_workspace` tool does not run the `workspace.create`
-  hook at all; `create_workspace` in the tool host calls the provisioning
-  service directly (`packages/server/src/server/agent/tools/paseo-tools.ts`
-  and `bootstrap.ts`), so the plugin never runs for that path.
-- `paseo run --new-workspace` creates the workspace before it creates the
-  agent, with no agent and no caller on the `workspace.create` request.
-- `paseo workspace create` creates a workspace with no agent and no caller.
+The guard runs only where the host runs `workspace.create.before`.
+`workspace.created` is emitted only when a new workspace record is made
+(`workspace-provisioning-service.js:134-213`, 0d343734), so the detector sees
+new records only, and reports only the two kinds below. A workspace that comes
+back from archive, by path or by id, emits no event and is not seen.
 
-The same three paths remain in Paseo 0.11.4. Until Paseo supplies a caller on
-every workspace creation and routes the MCP tool through the hook, a labelled
-seat can still bypass the guard with the MCP `create_workspace` tool or either
-CLI path. That residual is recorded in the
-ASMA-8507 evidence with the widened upstream action; G-20 is not closed by the
-hook alone.
+| Route | Class | Evidence |
+| --- | --- | --- |
+| `paseo workspace create` (local) from an agent | prevent, for a seat running the CLI in its own environment | The CLI sends `callerAgentId` from `PASEO_AGENT_ID` when that agent is on the target daemon (`cli/dist/utils/caller-agent.js:4-15`, 8e7e12c2; `cli/dist/commands/workspace/create.js:114-120`, e9ff4a33); the id is client-reported (see the borrowed-caller row). Qualification cases. |
+| `paseo workspace create --isolation worktree` from an agent | prevent | Worktree creation is refused for any workflow scope; qualification case. |
+| `paseo run --new-workspace` from an agent | prevent when the caller is scoped: refused for the missing `projectId` | The request carries the caller and a directory source with no `projectId` (`cli/dist/commands/agent/run.js:61-75`, `:405-409`, 9266ac26; `cli/dist/commands/workspace/create.js:12-27`), so a caller held to a project is refused for the missing project. The run's labels go only to the agent it creates afterwards (`run.js:455-468`, `:510-523`) and never reach the guard, so a caller that is not scoped (unlabelled, outside any desk or epic project) is unguarded whatever labels the run carries. Qualification case. |
+| `paseo workspace create` / `run --new-workspace` with no caller | unclassified, unguarded (unsupported), whatever labels a run carries | The 0.17.4 CLI sends no initial agent (`workspace/create.js:115-120`, `run.js:405-409`), so the guard sees no caller and no claim. With no `projectId` the daemon finds or creates a project for the directory (`workspace-provisioning-service.js:137-140`, 0d343734). No caller and no claim looks the same from an operator and from an automated client. Qualification case (c), and the no-caller `run --new-workspace` case: created, with the workflow labels on its agent. |
+| A caller id borrowed from another live agent (`PASEO_AGENT_ID` set to that agent's id) | scoped to the borrowed agent (unsupported residual) | The CLI copies the id from its environment (`caller-agent.js:4-15`), and the daemon passes it to the hook unchanged and checks only that the agent exists (`session.js:5621-5631`, `:5654-5657`, `:5670`, 7c0988e2). The request gets that agent's scope. Unit test. |
+| An initial agent's binding copied from a registered workspace (SDK `workspaces.create` whose initial agent carries another workspace's `kontor.workspace_id` and `kontor.worktree`, from an unbound caller in that workspace's project or with no caller) | admitted at that checkout (open residual, B2-1) | The binding is client-reported: the guard reads the initial agent's labels from the request and resolves them by native readback alone (`server/placement-binding.ts`). A client can copy a registered sibling workspace's labels; the readback proves only that the directory exists, not that the requester is assigned to it. This route can then register another workspace at that checkout, a sibling seat's included: the daemon makes a new record without deduplicating by path (`workspace-provisioning-service.js:141-166`, 0d343734). A matching readback is neither deduplication nor requester authorization, and copying labels is not a remedy for missing target evidence. On 0.17.4 an archiving workspace still reads back; an archived one, or one in an archived project, does not (`workspace-directory.js:55-57`, `:104`, `:121`, 326c8e5f). Unit test (residual pin). |
+| A desk caller placing into an epic project (CLI, `run --new-workspace` or SDK with a caller) | refused (blocked capability) | No source the hook can read proves the assignment; the supported paths are below. Qualification case. |
+| A workflow seat in a misplaced legacy project (neither desk nor epic) | held to that project while a workflow claim remains on the caller or the requested initial agent; unguarded only when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies (unsupported) | The host keeps no label-independent provenance for it. Qualification cases. |
+| SDK `workspaces.create` with a labelled initial agent and no caller | prevent | A workflow claim without a Kontor binding is refused as a workflow creation with no caller; qualification case. A Kontor binding on the initial agent is enforced to exactly its checkout (see the copied-binding row). Only an SDK request carries an initial agent. |
+| Plugin New LSA/TPM/ADHOC/RSW and takeover successors | allowed by construction | The session-create service resolves the configured desk or epic project and directory (ASMA-8530 selected config), creates any workspace with no caller and creates the agent inside it. |
+| Summary helper | open gap (`ASMA-8580-summary-placement-pending`): unguarded and not detected | It creates each job by `cwd` under the plugin state root, an import with no before hook, and neither detected kind covers that directory. Each job can add one project and one workspace while placement is enforced; qualification cases. A separate summary-placement fix is needed. |
+| Procedural takeover | no workspace creation | Workspace-scoped agent create in the admission's workspace. |
+| MCP `create_workspace` (agent tool) | detect | Calls the provisioning service directly, so `workspace.create.before` never runs. Not driven here: the agent MCP route needs an injected capability token. Upstream request: getpaseo/paseo#10302 (open). |
+| MCP `create_agent`, SDK `agents.create` or `paseo run` with only a `cwd` | detect | Creates a new workspace for the directory, in a project found or created for it, with no before hook (`workspace-provisioning-service.js:263-273`, 0d343734; `session.js:3741-3750`, 7c0988e2; `bootstrap.js:816-826`, e1f58a39). The published hook contract excludes import and lookup. A separate gap from #10302; the missing target and caller fields are discussed in getpaseo/paseo Discussions #8017 and #9979. Qualification case (a linked worktree is detected). |
+| Import of a provider session (`import_agent_request`) with only a `cwd`; desktop "open project" | 0.17.4 trace: find-or-create by path. Lookup, reuse and unarchive select public (non-background) workspaces only. An active public workspace at the path is reused (no creation); otherwise a new one is created (detect); but an archived public workspace at that path, in a project that is not archived, is unarchived together with its archived agents: unguarded and not detected. A background-only match is not selected and falls through to creation (detect) | `agent/import-sessions.js:94` (8af211c3) → `workspace-provisioning-service.js:35-75` (a new workspace is removed again if the import fails); `session.js:5731-5748` (7c0988e2); find-or-create `workspace-provisioning-service.js:244-262`, public records only `:249`, unarchive `:287-343` (0d343734). Source-traced, not dynamically qualified. |
+| Restore of an archived workspace by id (workspace recovery restore, archive undo) | 0.17.4 trace: unguarded and not detected. The workspace returns to the project it already had, which is unarchived too if needed; a missing Paseo worktree checkout can be recreated at its path | `session.js:2521`, `:4952-4956`, `:6290-6292`, `:6319-6331`, `:401-403` (7c0988e2); `workspace-recovery-service.js:66-92` (75014ef2); `workspace-provisioning-service.js:287-343` (0d343734). Source-traced, not dynamically qualified. |
+| Schedule runs with a new-agent target | 0.17.4 trace: detect. Each run creates a new workspace with no before hook and no caller (local: a new directory workspace; worktree: a Paseo worktree), then the agent inside it. A schedule that targets an existing agent creates nothing | `schedule/service.js:760-830`, `:885-894` (699f2e8d) → `bootstrap.js:1037-1054` (e1f58a39). Source-traced, not dynamically qualified. |
+| Hub executions | 0.17.4 trace: detect, as the `cwd`-only route above: a new workspace for the `cwd`, or a Paseo worktree when the execution names one | `hub/daemon-executions.js:97-125` (01e80faa) → `bootstrap.js:947-949`, `:1027-1035` (e1f58a39). Needs a hub connection; source-traced, not dynamically qualified. |
+| Consultation, committee and advisor agents | as the route they use | They create agents through MCP `create_agent`: inside an existing workspace there is no creation, and with only a `cwd` it is the import route. |
+| `kontord` launches | unclassified and unguarded without a caller; with an inherited caller, decided by that caller (see the evidence); `kontord`'s own project readback applies | Provisioning and launch are separate requests. The container is created by `paseo workspace create --isolation local --path … --project … --title …`, with no label and no initial agent (`crates/kontor-runtime-paseo/src/client.rs:399-416`, used at `adapter.rs:3546-3548`); the agent is launched into it afterwards (`client.rs:1158-1184`). The transport sets no `PASEO_AGENT_ID` for that command and does not clear an inherited one (`client.rs:2291-2303`). So a `kontord` started without it sends no caller, and the request is unguarded. One that inherited it from an agent's shell on that daemon sends that agent as its caller, and the guard decides by that caller alone, because the request carries no initial agent (`server/hooks.ts`, `guardWorkspaceCreate`): a caller that cannot be read back is refused by the caller readback; a readable caller outside workflow scope (neither in a desk or epic project nor carrying a workflow claim) leaves the request unguarded, as with no caller; a scoped caller without a Kontor binding is refused for missing target evidence (B-5), unless a project or path check refuses it first; and a scoped bound caller is held to the exact project and checkout of its binding. An unguarded request is unclassified, not proven operator work. Whether a running `kontord` inherits the variable is unverified; the activation preconditions require launching `kontord` with it excluded. `kontord` then reads the container back and refuses one outside the bound project (`adapter.rs:3563-3566`). Not run live. |
+| Desktop app: new workspace | unclassified, unguarded; detect | No caller on the request. "Open project" is the find-or-create row above. |
+
+Detection covers exactly two kinds of new workspace record: a git project
+rooted at a linked worktree and a directory under Paseo's own worktree root.
+A workspace restored from archive is never seen. Any other misplacement on a
+detect-only or unguarded route is unsupported, so these residuals bound what
+this guard delivers; they do not close the placement problem. A caller id is
+never a label, and an unlabelled caller in a desk or epic project is still
+enforced. Two residuals hold on the guarded routes too. A caller id borrowed
+from another live agent gets that agent's scope. And an initial agent's binding
+is client-reported (B2-1, open): a client can copy a registered sibling
+workspace's `kontor.workspace_id` and `kontor.worktree`, the native readback
+proves only that the directory exists, not that the requester is assigned to
+it, and the route can then register another workspace at that checkout. A
+matching readback is neither deduplication nor requester authorization. A
+caller without a Kontor binding is refused rather than held to its project,
+unless its request's initial agent carries one that names the target in the
+caller's project (B-5, otherwise a refused capability: the missing evidence is
+a qualified Kontor binding that names its target checkout; copying another
+workspace's labels is not a remedy). While
+the kontor worker is not loaded, no route is guarded or detected (see the
+placement switch).
+
+A desk caller (an epic lead in `DESK • ADAM`, for example) cannot create a
+workspace in an epic project through a guarded route while placement is
+enforced and, without a Kontor binding (its own or its request's initial
+agent's), not in its own project either (B-5).
+The supported creations that remain send no caller: the session-create
+service, which resolves the configured project and directory, and the operator
+in the app. MCP `create_workspace`, which the hook does not see, is a
+detect-only residual, not a supported way around the refusal. Guarded
+desk-to-epic delegation needs an authoritative assignment source the hook can
+read, such as an ASMA-8530 route identity that carries the lead's confirmed
+epic.
+
+What Paseo would need to provide before these routes could be prevented:
+authoritative caller provenance and the resolved target project and workspace
+on every mutating provisioning route, before any project, workspace, worktree
+or agent side effect; a refusal that prevents the container as well as the
+agent (a notification after creation is detection, not prevention); an import
+that registers a new container kept distinct from lookup or reuse of an
+existing workspace; an event when an archived workspace is restored; and genuine operator creation preserved, with unknown
+provenance kept explicit.
 
 
 ### Procedural takeover backend on stock Paseo
