@@ -126,6 +126,12 @@ function cliCreate(name, expected, caller, args, isolation = "local") {
   const refused = /Kontor workspace guard refused[^"\n]*/.exec(run.stderr)?.[0] ?? null;
   check(name, `cli workspace create --isolation ${isolation}${caller ? " (caller env)" : " (no caller)"}`, expected, id ? "created" : refused ? "refused" : "error", { workspaceId: id, message: refused ?? (id ? undefined : run.stderr.slice(0, 300)) });
 }
+/** `workspaces.create` through the SDK with a caller and an initial agent: only an SDK request carries both. */
+async function sdkCreate(name, expected, input) {
+  const result = await client.workspaces.create(input)
+    .then((ws) => (made.workspaces.add(ws.id), { outcome: "created", workspaceId: ws.id }), (e) => ({ outcome: /Kontor workspace guard refused/.test(String(e?.message)) ? "refused" : "error", message: String(e?.message ?? e).slice(0, 300) }));
+  check(name, "sdk workspaces.create (caller and initial agent)", expected, result.outcome, result);
+}
 const dir = (name) => { const path = join(root, name); mkdirSync(path, { recursive: true }); return path; };
 
 try {
@@ -188,6 +194,16 @@ try {
   const unmarked = await agent(plain, "unmarked", {});
   const legacy = await agent(plain, "legacy review seat", { orchestration: "paseo-direct", epic: "ASMA-1", role: "review-a" });
   const target = (eswProject, name) => ["--path", dir(`targets/${name}`), "--project", eswProject.projectId];
+  // A seat checkout in an epic project and the Kontor binding that names it; the workspace reads back with that
+  // checkout. Created with no caller and no claim, before placement is on.
+  const boundSeat = async (eswProject, name) => {
+    const path = dir(`bound/${name}`);
+    const ws = await client.workspaces.create({ source: { kind: "directory", path, projectId: eswProject.projectId } });
+    made.workspaces.add(ws.id);
+    return { path, projectId: eswProject.projectId, labels: { "kontor.seat_binding_id": `seat-${name}`, "kontor.workspace_id": ws.id, "kontor.worktree": path } };
+  };
+  const bound1 = await boundSeat(esw1, "b1"), bound2 = await boundSeat(esw2, "b2");
+  const mixed = (seat) => ({ callerAgentId: swe.id, agent: { config, cwd: seat.path, labels: seat.labels }, source: { kind: "directory", path: seat.path, projectId: seat.projectId } });
 
   // Before: placement.json absent follows floor off, so a workflow caller can still misplace.
   cliCreate("before: SWE into another epic project", "created", swe, target(esw2, "before"));
@@ -198,6 +214,10 @@ try {
   // whether the directory is a new one or another task's review checkout.
   cliCreate("own epic project without target evidence (B-5)", "refused", swe, target(esw1, "a2"));
   cliCreate("unbound workflow caller into a sibling review checkout in its own project (B-5)", "refused", swe, target(esw1, "a16-review"));
+  // AUD-B-R10-01: the initial agent's binding, read back natively, is the target evidence for an unbound caller, and the
+  // caller's project must still hold.
+  await sdkCreate("unbound workflow caller, initial agent bound to the requested checkout in its project (AUD-B-R10-01)", "created", mixed(bound1));
+  await sdkCreate("unbound workflow caller, initial agent bound to a checkout in another project (AUD-B-R10-01)", "refused", mixed(bound2));
   cliCreate("(a) unlabelled caller in an epic project, other project", "refused", bare, target(esw2, "a3"));
   cliCreate("(b) workflow caller with no target project", "refused", bare, ["--path", dir("targets/a4")]);
   cliCreate("worktree route from a workflow caller", "refused", swe, ["--path", repo, "--project", plain.projectId], "worktree");

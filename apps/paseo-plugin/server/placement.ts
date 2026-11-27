@@ -105,7 +105,7 @@ export function evaluatePlacement(
   // A project is not evidence of the target (B-5): only a scope that names the checkout admits a creation.
   if (directory === undefined) {
     return refuse(
-      "no qualified evidence names the target checkout (a Kontor binding: kontor.workspace_id and kontor.worktree, read back natively); a matching project is not enough",
+      "no qualified evidence names the target checkout (a Kontor binding on the caller or the initial agent: kontor.workspace_id and kontor.worktree, read back natively); a matching project is not enough",
     );
   }
   if (resolved !== resolve(directory)) {

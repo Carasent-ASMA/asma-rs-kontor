@@ -614,6 +614,53 @@ describe("workspace.create hook", () => {
       const request = { source: { kind: "directory", path: SIBLING, projectId: PROJECT } } as never;
       expect(await run(request, context("error"), config())).toMatchObject({ dispatched: 1, error: "", unchanged: true });
     });
+
+    describe("an initial agent's binding, read back natively, is the target evidence for an unbound caller in that project (AUD-B-R10-01)", () => {
+      const OTHER_PROJECT = "prj_other_repository";
+      const BOUND: WorkspaceSnapshot = { projectId: PROJECT, workspaceDirectory: CANONICAL };
+      const CALLERS: [string, Record<string, string>][] = [["an unlabelled", {}], ["a Paseo-direct", paseoDirectLabels()]];
+      /** The caller runs outside the target, in a generic repository project: its own directory is never the evidence. */
+      const callerIn = (projectId = PROJECT): WorkspaceSnapshot => ({ projectId, workspaceDirectory: "/fixture/parent-checkout", projectDisplayName: "generic repository" });
+      const mixed = (path = CANONICAL, projectId = PROJECT, labels = seatLabels()) =>
+        workspaceRequest({ source: { kind: "directory", path, projectId }, agent: { config: { provider: "claude", cwd: path }, labels } } as never);
+      async function mixedRun(callerLabels: Record<string, string>, request: WorkspaceRequestWithCaller, caller: WorkspaceSnapshot, bound: WorkspaceResult) {
+        const originals = JSON.stringify({ caller, bound });
+        const result = await run(request, context(callerLabels, { wks_caller: caller, wks_seat: bound }), config());
+        return { ...result, originalsUnchanged: JSON.stringify({ caller, bound }) === originals };
+      }
+
+      it.each(CALLERS)("allows %s unbound caller into the exact checkout its initial agent's binding names: one dispatch, originals unchanged", async (_name, labels) => {
+        expect(await mixedRun(labels, mixed(), callerIn(), BOUND)).toMatchObject({ dispatched: 1, error: "", unchanged: true, originalsUnchanged: true });
+      });
+
+      // An unresolved binding supplies no target, so the caller's project-only scope refuses first (B-5).
+      it.each<[string, () => [WorkspaceRequestWithCaller, WorkspaceSnapshot, WorkspaceResult], string]>([
+        ["the binding is in another project than the caller's", () => [mixed(), callerIn(OTHER_PROJECT), BOUND], "project outside the seat's binding"],
+        ["the request names the caller's project, not the binding's", () => [mixed(CANONICAL, OTHER_PROJECT), callerIn(OTHER_PROJECT), BOUND], "project outside the seat's binding"],
+        ["the binding names a sibling, not the requested directory", () => [mixed(SIBLING), callerIn(), BOUND], "directory outside the seat's canonical worktree"],
+        ["the binding's workspace cannot be read", () => [mixed(), callerIn(), "error"], NO_EVIDENCE],
+        ["the binding's workspace never answers", () => [mixed(), callerIn(), "never"], NO_EVIDENCE],
+        ["the binding's workspace reads back with no checkout", () => [mixed(), callerIn(), { projectId: PROJECT, workspaceDirectory: null }], NO_EVIDENCE],
+        ["the binding's label is not what its workspace reads back", () => [mixed(), callerIn(), { projectId: PROJECT, workspaceDirectory: SIBLING }], NO_EVIDENCE],
+        ["neither side carries a binding (B-5)", () => [mixed(CANONICAL, PROJECT, paseoDirectLabels()), callerIn(), BOUND], NO_EVIDENCE],
+      ])("refuses an unbound caller's request when %s: nothing dispatched, originals unchanged", async (_name, build, reason) => {
+        for (const [, labels] of CALLERS) {
+          const [request, caller, bound] = build();
+          const result = await mixedRun(labels, request, caller, bound);
+          expect(result.dispatched).toBe(0);
+          expect(result.unchanged && result.originalsUnchanged).toBe(true);
+          expect(result.error).toContain(reason);
+        }
+      });
+
+      it("never lets an initial agent's binding replace a bound caller's own checkout", async () => {
+        const OTHER = "/Users/test/carasent/asma-modules/.worktrees/asma-8509/asma-rs-kontor";
+        const ctx = context(seatLabels(), { wks_seat: BOUND, wks_other: { projectId: PROJECT, workspaceDirectory: OTHER } });
+        const result = await run(mixed(OTHER, PROJECT, seatLabels({ "kontor.workspace_id": "wks_other", "kontor.worktree": OTHER })), ctx, config());
+        expect(result.dispatched).toBe(0);
+        expect(result.error).toContain("directory outside the seat's canonical worktree");
+      });
+    });
   });
 
   it("refuses a Paseo-direct-only initial agent with no caller (missing caller)", async () => {

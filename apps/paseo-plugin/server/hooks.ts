@@ -204,8 +204,9 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
     return binding ? { projects: [binding.projectId], directory: binding.directory } : "the seat's placement binding could not be resolved";
   }
   // Project only: no source the hook can read names an unbound caller's checkout. The scope keeps the caller to its
-  // own project, but it names no target, so `evaluatePlacement` refuses the creation (B-5). The caller's own directory
-  // is not that evidence either: it need not be the checkout the new workspace is for.
+  // own project, but it names no target, so `evaluatePlacement` refuses the creation (B-5) unless the request's initial
+  // agent carries a binding that resolves natively (see `guardWorkspaceCreate`). The caller's own directory is not
+  // that evidence: it need not be the checkout the new workspace is for.
   return { projects: [caller.projectId] };
 }
 
@@ -227,8 +228,10 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  * requested initial agent keeps a workflow claim and no other independently
  * known scope applies (the residual below). Labels alone never widen a scope.
  * An unreadable caller is refused. A guarded request is admitted only into a
- * checkout a Kontor binding names (the caller's, or with no caller the initial
- * agent's): a caller without one is refused in its own project too (B-5).
+ * checkout a Kontor binding names, read back natively: the caller's own, or the
+ * requested initial agent's. An unbound caller's project must still hold when
+ * the initial agent's binding names the target (AUD-B-R10-01). With neither
+ * binding, a caller is refused in its own project too (B-5).
  *
  * With no caller, a Kontor binding on the initial agent is enforced and any
  * other workflow claim is refused because it names no caller to scope it.
@@ -264,13 +267,18 @@ export async function guardWorkspaceCreate(
   } else if (claimsWorkflow(initialLabels) && !kontorSeat(initialLabels)) {
     return refuse("a workflow creation must name its calling agent");
   }
+  let target: string | undefined;
   if (kontorSeat(initialLabels)) {
     const binding = await readPlacementBinding(context.paseo, initialLabels, options);
+    target = binding?.directory;
     scopes.push(binding ? { projects: [binding.projectId], directory: binding.directory } : "the seat's placement binding could not be resolved");
   }
   for (const scope of scopes) {
     if (typeof scope === "string") refuse(scope);
-    const decision = evaluatePlacement(request, config, scope as PlacementScope);
+    const held = scope as PlacementScope;
+    // An unbound caller's scope names no checkout (B-5). The initial agent's binding, read back natively, is that
+    // evidence; the caller's project must still hold, and the binding's own scope is checked too (AUD-B-R10-01).
+    const decision = evaluatePlacement(request, config, held.directory === undefined && target !== undefined ? { ...held, directory: target } : held);
     if (!decision.allowed) refuse(decision.reason);
   }
 }
