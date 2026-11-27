@@ -71,6 +71,9 @@ const page=(id,title,archivedAt=null)=>({agent:{id,title,status:'idle',provider:
 // Two sessions share a title: only the exact ID may leave a row. 25 searchable batches exceed the 20 shown matches.
 const rows=[page('dup-1','Route review'),page('dup-2','Route review'),page('deploy-7','Deploy checklist'),...Array.from({length:25},(_,i)=>page('batch-'+String(i+1).padStart(2,'0'),'Batch '+String(i+1).padStart(2,'0'))),page('batch-archived','Batch archived','2026-10-22T11:00:00.000Z')];
 Object.assign(rows[0].agent,{status:'running'});Object.assign(rows[1].agent,{attentionReason:'permission',requiresAttention:true});Object.assign(rows[2].agent,{attentionReason:'finished',requiresAttention:true});Object.assign(rows[3].agent,{status:'error'});Object.assign(rows[4].agent,{status:'running',attentionReason:'permission',requiresAttention:true});
+// ?family=1 adds a parent whose host review finds one running child; no other case sees these rows.
+if(query.get('family')){rows.push(page('fam-parent','Family lead'),page('fam-child','Family worker'));rows[rows.length-1].agent.status='running';}
+const kids=id=>rows.filter(row=>id==='fam-parent'&&row.agent.id==='fam-child'&&row.agent.archivedAt===null).map(({agent})=>({id:agent.id,title:agent.title,status:agent.status,workspaceId:agent.workspaceId}));
 const list=async(options={})=>{window.fixture.inventoryCalls.push(options);const visible=rows.filter(row=>options.filter?.includeArchived===true||row.agent.archivedAt===null);
  if(options.subscribe){const limit=options.page?.limit??200,entries=visible.slice(0,limit);const snapshot={requestId:'fixture',subscriptionId:'sub-1',entries,pageInfo:{hasMore:visible.length>entries.length,nextCursor:visible.length>entries.length?String(entries.length):null,prevCursor:null}};
   return {...snapshot,subscription:{subscriptionId:'sub-1',ready:Promise.resolve(snapshot),subscribe:observer=>{window.fixture.observers.push(observer);observer.snapshot();return()=>{};},release:async()=>{}}};}
@@ -89,9 +92,17 @@ window.fixture={archiveMode:'confirmed',hostStatus:'online',hostListeners:new Se
   if(name==='sessions.navigator-capabilities'){const no={supported:false,reason:'Not offered by this fixture host.'};return {usageTotals:no,summaries:no,draftAttach:no,takeover:no,takeoverBulk:no,takeoverRoute:no};}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:'wks-adhoc',message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
   if(name==='sessions.lifecycle-preview'){
-   const item=rows.find(row=>row.agent.id===input.agentIds[0]);if(!item)throw new Error('Unknown exact ID');const a=item.agent,blocked=window.fixture.archiveMode==='blocked';
-   const row={id:a.id,title:a.title,workspaceId:a.workspaceId,cwd:a.cwd,provider:a.provider,model:a.model,effort:null,mode:null,nativeStatus:a.status,fingerprint:'fixture',category:'candidate',eligible:!blocked,reason:blocked?'Managed child is protected.':'Fixture eligible.',children:[],outcome:blocked?'blocked':'pending',message:null};
-   const review={id:'00000000-0000-4000-8000-'+String(reviews.size+1).padStart(12,'0'),action:'archive',scope:'filtered',createdAt:new Date().toISOString(),target:input.target,rows:[row]};reviews.set(review.id,review);return review;
+   // branchMode 'hold' leaves a branch review unanswered; 'fail' refuses it as an incomplete inventory would; 'hold-next'
+   // holds only the next branch review until window.fixture.releaseBranch(), then answers it unchanged.
+   if(input.descendants&&window.fixture.branchMode==='hold')return new Promise(()=>{});
+   if(input.descendants&&window.fixture.branchMode==='hold-next'){window.fixture.branchMode=null;await new Promise(resolve=>{window.fixture.releaseBranch=resolve;});}
+   if(input.descendants&&window.fixture.branchMode==='fail')throw new Error('Incomplete native inventory; no lifecycle action is allowed.');
+   const blocked=window.fixture.archiveMode==='blocked',root=input.agentIds[0];
+   // A single review refuses a parent with active children; a branch review lists them child-first, then the parent.
+   const row=id=>{const item=rows.find(row=>row.agent.id===id);if(!item)throw new Error('Unknown exact ID');const a=item.agent,children=kids(id),parent=children.length&&!input.descendants;
+    return {id:a.id,title:a.title,workspaceId:a.workspaceId,cwd:a.cwd,provider:a.provider,model:a.model,effort:null,mode:null,nativeStatus:a.status,fingerprint:'fixture',category:'candidate',eligible:!blocked&&!parent,reason:blocked?'Managed child is protected.':parent?'Has active child sessions.':'Fixture eligible.',children,outcome:blocked?'blocked':'pending',message:null};};
+   const ids=input.descendants?[...kids(root).map(kid=>kid.id),root]:[root];
+   const review={id:'00000000-0000-4000-8000-'+String(reviews.size+1).padStart(12,'0'),action:'archive',scope:'filtered',createdAt:new Date().toISOString(),target:input.target,rows:ids.map(row),...(input.descendants?{keepChildren:{available:false,reason:'Fixture host cannot archive a parent alone.'}}:{})};reviews.set(review.id,review);return review;
   }
   if(name==='sessions.lifecycle-execute-item'){
    await new Promise(resolve=>setTimeout(resolve,120));const review=reviews.get(input.reviewId),row=review.rows.find(row=>row.id===input.agentId);if(!row||!row.eligible)throw new Error('Unexpected archive execute');
@@ -141,11 +152,11 @@ createRoot(document.getElementById('root')).render(<App/>);
 `);
 const report = { cases: [], nativeDevice: 'unverified', hostChrome: 'synthetic popover and bottom sheet', screen: 'stand-in running the real openHandOff' };
 let server, browser;
-async function pageFor(width, theme = 'light') {
+async function pageFor(width, theme = 'light', extra = '') {
   const context = await browser.newContext({ viewport: { width, height: 844 }, reducedMotion: width === 320 ? 'reduce' : 'no-preference', hasTouch: width < 700, isMobile: width < 700 });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
-  await page.goto(server.resolvedUrls.local[0] + '?theme=' + theme, { waitUntil: 'domcontentloaded' });
+  await page.goto(server.resolvedUrls.local[0] + '?theme=' + theme + extra, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(()=>window.fixture?.inventoryCalls.length>=2);
   await openPopover(page);
   return { page, context };
@@ -179,6 +190,24 @@ async function pickState(page, status) {
   await page.getByTestId('kontor-switch-more').click(); await page.getByTestId('kontor-switch-more-' + status).click();
 }
 const showAll = page => pickState(page, 'all');
+/** One finger drags a row body by (dx, dy) in ten touch moves through Chromium's input pipeline; `during` runs before the lift. */
+async function swipe(page, id, dx, dy = 0, during) {
+  const box = await page.getByTestId(`session-row-${id}`).getByTestId('session-row-body').boundingBox();
+  const x = box.x + box.width - 16, y = box.y + box.height / 2, cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    for (let step = 1; step <= 10; step++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + dx * step / 10, y: y + dy * step / 10 }] });
+    if (during) await during();
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  } finally { await cdp.detach(); }
+}
+const lifecycleCalls = page => page.evaluate(() => window.fixture.calls.filter(call => call.name.startsWith('sessions.lifecycle'))
+  .map(call => call.name.slice(19) + ':' + (call.input.agentId ?? call.input.agentIds.join(',') + (call.input.descendants ? '+descendants' : ''))));
+// The host limitation the dialog shows for Keep children alive before any review arrives, read from its single source.
+const KEEP_UNAVAILABLE = fs.readFileSync(path.join(plugin, 'shared/session-lifecycle.ts'), 'utf8').match(/KEEP_CHILDREN_UNAVAILABLE = "([^"]+)"/)[1];
+// What the dialog says when the host's availability changed during the fresh read, read from its single source.
+const INTERRUPTED = fs.readFileSync(path.join(plugin, 'client/archive-children.tsx'), 'utf8').match(/const INTERRUPTED = "([^"]+)"/)[1];
+const untouched = page => page.evaluate(() => ({ opens: window.fixture.opens.length, screens: window.fixture.screens.length, closes: window.fixture.closes }));
 // This host lists no Codex provider and no saved default is read, so a lead names its model explicitly.
 async function chooseModel(page) {
   await page.getByTestId('kontor-new-lead-model').click();
@@ -268,6 +297,111 @@ async function run(name, test) {
         assert.deepEqual([busy?null:'a running single archive shows it is in progress',heldDisabled==='true'?null:'an unavailable menu item is exposed as disabled'].filter(Boolean),[]);
         return{box,openBox,inventoryReads:initial.inventory,preview:await count('sessions.lifecycle-preview'),execute:await count('sessions.lifecycle-execute-item'),exactId:true,noOpenOrClose:true,uncertainRetained:true,errors};
       }finally{await context.close();}
+    });
+    // Compact rows only: a deliberate leftward touch swipe runs the row menu's Archive; short, rightward and vertical drags do nothing.
+    for (const width of [320, 390]) await run(`swipe-archive-${width}`, async () => {
+      const { page, context } = await pageFor(width, 'light'); const errors = []; page.on('pageerror', error => errors.push(error.message));
+      try {
+        for (const [dx, dy] of [[-60, 0], [140, 0], [-40, -150]]) { await swipe(page, 'dup-1', dx, dy); await page.waitForTimeout(400); }
+        assert.deepEqual(await lifecycleCalls(page), [], 'short, rightward and vertical drags archive nothing');
+        await expect(page.getByTestId('session-row-dup-1')).toHaveCount(1);
+        let armed = 0; await swipe(page, 'dup-1', -150, 0, async () => { armed = await page.getByText('Release to archive', { exact: true }).count(); });
+        await expect(page.getByTestId('session-row-dup-1')).toHaveCount(0);
+        await expect(page.getByTestId('kontor-switch-archive-result')).toHaveText('Archived Route review.');
+        assert.equal(armed, 1, 'a drag past the threshold shows it will archive');
+        assert.deepEqual(await lifecycleCalls(page), ['preview:dup-1', 'execute-item:dup-1'], 'a session without children takes the single archive path');
+        assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 }, 'a swipe never opens the session or closes the popover');
+        await page.screenshot({ path: path.join(output, `swipe-archive-${width}.png`) });
+        assert.deepEqual(errors, []);
+        return { armed, lifecycle: await lifecycleCalls(page), scope: 'touch events through Chromium CDP in a mobile-emulated viewport; no phone proof' };
+      } finally { await context.close(); }
+    });
+    // A parent whose fresh host review has a running child: the choice, both exits, then Archive children too child-first.
+    for (const width of [320, 390]) for (const theme of ['light', 'dark']) await run(`swipe-family-${width}-${theme}`, async () => {
+      const { page, context } = await pageFor(width, theme, '&family=1'); const errors = []; page.on('pageerror', error => errors.push(error.message));
+      const dialog = page.getByTestId('archive-children-dialog'), sheet = page.getByRole('dialog', { name: 'Archive a session with children', exact: true });
+      const open = async () => { await swipe(page, 'fam-parent', -150); await expect(dialog.getByTestId('archive-children-row-fam-child')).toContainText('Family worker'); };
+      try {
+        await showAll(page); await page.getByRole('textbox', { name: 'Find a session', exact: true }).fill('Family'); await page.getByTestId('session-row-fam-parent').waitFor();
+        await open();
+        await expect(dialog.getByTestId('archive-children-running')).toHaveText('Running now: Family worker. Archive stops their active work.');
+        const keep = dialog.getByRole('button', { name: 'Keep children alive, unavailable. Fixture host cannot archive a parent alone.', exact: true });
+        await expect(keep).toHaveAttribute('aria-disabled', 'true');
+        await expect(dialog.getByTestId('archive-children-keep-reason')).toHaveText('Fixture host cannot archive a parent alone.');
+        await keep.click({ force: true }); await page.waitForTimeout(200);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'the choice fits the phone width');
+        await page.screenshot({ path: path.join(output, `swipe-family-${width}-${theme}.png`) });
+        await dialog.getByTestId('archive-children-cancel').click(); await dialog.waitFor({ state: 'detached' });
+        await open(); await sheet.getByRole('button', { name: 'Close', exact: true }).first().click(); await dialog.waitFor({ state: 'detached' });
+        assert.deepEqual(await lifecycleCalls(page), ['preview:fam-parent', 'preview:fam-parent+descendants', 'preview:fam-parent', 'preview:fam-parent+descendants'], 'Keep children alive, Cancel and the host close archive nothing');
+        await expect(page.getByTestId('session-row-fam-parent')).toHaveCount(1); await expect(page.getByTestId('session-row-fam-child')).toHaveCount(1);
+        await open(); await dialog.getByTestId('archive-children-confirm').click();
+        await expect(page.getByTestId('bulk-archive-close')).toHaveCount(1);
+        await expect(page.getByTestId('session-row-fam-parent')).toHaveCount(0); await expect(page.getByTestId('session-row-fam-child')).toHaveCount(0);
+        const calls = await lifecycleCalls(page);
+        assert.deepEqual(calls.slice(4), ['preview:fam-parent', 'preview:fam-parent+descendants', 'preview:fam-parent+descendants', 'execute-item:fam-child', 'execute-item:fam-parent'], 'one re-read, then the running child before its parent');
+        await page.screenshot({ path: path.join(output, `swipe-family-${width}-${theme}-archived.png`) });
+        assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 });
+        assert.deepEqual(errors, []);
+        return { lifecycle: calls, scope: 'touch events through Chromium CDP; synthetic host modal; no phone or assistive-technology proof' };
+      } finally { await context.close(); }
+    });
+    // Before a usable branch review: both choices show, Archive children too is disabled, Keep children alive names the host limitation, nothing is sent.
+    const UNREVIEWED = { loading: "Reading this session's child sessions on the host…", failed: "The host did not list this session's child sessions, so nothing can be archived here.", offline: 'The host is offline. Nothing can be archived until it reconnects.' };
+    for (const width of [320, 390]) for (const state of Object.keys(UNREVIEWED)) await run(`swipe-family-${state}-${width}`, async () => {
+      const { page, context } = await pageFor(width, 'light', '&family=1'); const errors = []; page.on('pageerror', error => errors.push(error.message));
+      const dialog = page.getByTestId('archive-children-dialog');
+      try {
+        await showAll(page); await page.getByRole('textbox', { name: 'Find a session', exact: true }).fill('Family'); await page.getByTestId('session-row-fam-parent').waitFor();
+        await page.evaluate(state => { window.fixture.branchMode = state === 'failed' ? 'fail' : 'hold'; }, state);
+        await swipe(page, 'fam-parent', -150); await dialog.waitFor();
+        if (state === 'offline') await page.evaluate(() => window.fixture.setHost('offline'));
+        await expect(dialog).toContainText(UNREVIEWED[state]);
+        const keep = dialog.getByRole('button', { name: `Keep children alive, unavailable. ${KEEP_UNAVAILABLE}`, exact: true }), archive = dialog.getByTestId('archive-children-confirm');
+        await expect(keep).toHaveAttribute('aria-disabled', 'true'); await expect(archive).toHaveAttribute('aria-disabled', 'true');
+        await expect(archive).toContainText('Archive children too');
+        await expect(dialog.getByTestId('archive-children-keep-reason')).toHaveText(KEEP_UNAVAILABLE);
+        assert.equal(await dialog.getByTestId('archive-children-row-fam-child').count(), 0, 'no child is listed before a review');
+        await keep.click({ force: true }); await archive.click({ force: true }); await page.waitForTimeout(300);
+        assert.deepEqual(await lifecycleCalls(page), ['preview:fam-parent', 'preview:fam-parent+descendants'], 'neither choice sends anything');
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await page.screenshot({ path: path.join(output, `swipe-family-${state}-${width}.png`) });
+        await dialog.getByTestId('archive-children-cancel').click(); await dialog.waitFor({ state: 'detached' });
+        assert.deepEqual(await lifecycleCalls(page), ['preview:fam-parent', 'preview:fam-parent+descendants'], 'Cancel sends nothing');
+        await expect(page.getByTestId('session-row-fam-parent')).toHaveCount(1);
+        assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 });
+        assert.deepEqual(errors, []);
+        return { state, lifecycle: await lifecycleCalls(page), scope: 'touch through Chromium CDP; synthetic host and modal; no phone or assistive-technology proof' };
+      } finally { await context.close(); }
+    });
+    // The host goes offline while the fresh read is open: the read settles unchanged afterwards and nothing is handed over.
+    for (const width of [320, 390]) await run(`swipe-family-offline-during-confirm-${width}`, async () => {
+      const { page, context } = await pageFor(width, 'light', '&family=1'); const errors = []; page.on('pageerror', error => errors.push(error.message));
+      const dialog = page.getByTestId('archive-children-dialog'), archive = dialog.getByTestId('archive-children-confirm');
+      try {
+        await showAll(page); await page.getByRole('textbox', { name: 'Find a session', exact: true }).fill('Family'); await page.getByTestId('session-row-fam-parent').waitFor();
+        await swipe(page, 'fam-parent', -150); await expect(dialog.getByTestId('archive-children-row-fam-child')).toContainText('Family worker');
+        await page.evaluate(() => { window.fixture.branchMode = 'hold-next'; });
+        await archive.click(); await page.waitForFunction(() => typeof window.fixture.releaseBranch === 'function');
+        assert.equal(await dialog.getByTestId('archive-children-row-fam-child').count(), 0, 'choosing ends the displayed review');
+        await page.evaluate(() => window.fixture.setHost('offline'));
+        await expect(dialog).toContainText('The host is offline. Nothing can be archived until it reconnects.');
+        await expect(archive).toHaveAttribute('aria-disabled', 'true');
+        await page.evaluate(() => window.fixture.releaseBranch()); await page.waitForTimeout(400);
+        await page.evaluate(() => window.fixture.setHost('online'));
+        await expect(dialog.getByTestId('archive-children-refusal')).toHaveText(INTERRUPTED);
+        await expect(archive).toHaveAttribute('aria-disabled', 'true');
+        await archive.click({ force: true }); await page.waitForTimeout(300);
+        assert.deepEqual(await lifecycleCalls(page), ['preview:fam-parent', 'preview:fam-parent+descendants', 'preview:fam-parent+descendants'], 'the fresh read settles; nothing is archived or read again');
+        assert.equal(await page.getByTestId('bulk-archive-close').count(), 0, 'no archive batch opens');
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await page.screenshot({ path: path.join(output, `swipe-family-offline-during-confirm-${width}.png`) });
+        await dialog.getByTestId('archive-children-cancel').click(); await dialog.waitFor({ state: 'detached' });
+        await expect(page.getByTestId('session-row-fam-parent')).toHaveCount(1); await expect(page.getByTestId('session-row-fam-child')).toHaveCount(1);
+        assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 });
+        assert.deepEqual(errors, []);
+        return { lifecycle: await lifecycleCalls(page), scope: 'touch through Chromium CDP; synthetic host and modal; no phone or assistive-technology proof' };
+      } finally { await context.close(); }
     });
     for (const width of [320,390,1440]) for (const theme of ['light','dark']) await run(`statuses-${width}-${theme}`,async()=>{
       const {page,context}=await pageFor(width,theme);const errors=[];page.on('pageerror',error=>errors.push(error.message));

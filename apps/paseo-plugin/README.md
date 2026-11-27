@@ -708,6 +708,29 @@ route in the form's notes and where its rows would be.
   preflight and action as Sessions. Pending and refusal/result feedback stays in
   the switcher; uncertain outcomes stay visible for review in Sessions and are
   never called success. Opening the switcher adds no archive or inventory read.
+- **Swipe to archive and child sessions.** On a phone, in the sheet, the
+  composer popover and the sidebar, a deliberate right-to-left swipe on a row
+  runs the same **Archive** as its menu. A short, rightward, vertical or
+  cancelled drag does nothing, and the swipe rests while selecting. A session
+  with no active children archives as before. When the host's exact preview
+  finds active children, nothing is sent and a confirmation lists them, nested
+  ones included, naming running ones. Both choices show as soon as it opens.
+  While the children are being read, after a failed read and while the host
+  is offline, Archive children too stays disabled and neither choice sends
+  anything.
+  - **Archive children too** re-reads that exact branch in one host review. Any
+    change to its sessions, identities or child sets refuses with nothing
+    archived and shows the new list for a fresh choice. If that re-read fails,
+    or the host goes offline before it answers, nothing is archived and both
+    choices stay disabled until the session is archived again; closing the
+    confirmation first also archives nothing. Otherwise the existing batch
+    archives it children first, with its receipts. Archive stops active work,
+    so running children are stopped.
+  - **Keep children alive** stays visible and unavailable. Paseo 0.17.4 and
+    0.18.0 archive a parent's children in a cascade read after the parent stops,
+    so a child started after the review could still be archived. No
+    detach-first route is offered.
+  - **Cancel** or Escape changes nothing.
 - **Vendor-native usage boundary.** Both Sessions and Start or switch use the
   same read-only usage RPC. It joins public Paseo persistence native handles or
   thread IDs to an exact Codex `session_meta.id` in the host's explicit
