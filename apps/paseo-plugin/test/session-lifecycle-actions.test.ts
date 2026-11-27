@@ -1007,10 +1007,15 @@ describe("Archive children too: one branch review by exact ID", () => {
     expect((await s.service.read(review.id))!.rows.find((row) => row.id === "p")).toMatchObject({ outcome: "blocked" });
     expect(s.records.get("p")!.archivedAt).toBeNull();
   });
-  it("refuses a branch over one batch, or one naming several parents, before any review or archive", async () => {
+  it("refuses a branch over one batch before any review or archive", async () => {
     const s = await setup([agent("p"), ...Array.from({ length: 50 }, (_, n) => child(`c${n}`, "p"))]), before = await rootFiles(s.root);
     await expect(branch(s)).rejects.toThrow("more than 49 active child sessions");
-    await expect(branch(s, ["p", "c1"])).rejects.toThrow("exactly one parent");
+    expect(await rootFiles(s.root)).toEqual(before); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("refuses a branch naming two small parents before any review or archive", async () => {
+    // Well under the cap, so the parent count is the only reason to refuse.
+    const s = await setup([agent("p"), child("c", "p"), agent("q"), child("d", "q")]), before = await rootFiles(s.root);
+    await expect(branch(s, ["p", "q"])).rejects.toThrow("A branch archive names exactly one parent session.");
     expect(await rootFiles(s.root)).toEqual(before); expect(s.archive).not.toHaveBeenCalled();
   });
 });

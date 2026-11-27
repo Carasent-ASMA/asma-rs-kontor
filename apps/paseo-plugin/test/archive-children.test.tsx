@@ -14,11 +14,13 @@ vi.mock("../client/control-help", () => ({ useActionHelp: () => ({ bindings: {},
 import { ArchiveChildrenDialog, BRANCH_CHANGED, branchChanged, branchChildren, branchProblem } from "../client/archive-children";
 import { OperationSheet, SheetFooter } from "../client/operation-sheet";
 import { Action } from "../client/page-controls";
-import { SWIPE_ARCHIVE, SWIPE_CLAIM, SwipeToArchive, archivesOnRelease, claimsSwipe } from "../client/swipe-archive";
+import { SwipeToArchive, archivesOnRelease, claimsSwipe } from "../client/swipe-archive";
 import { branchDispositions } from "../client/start-switch-archive";
 import { withLocalDispositions } from "../client/use-session-availability";
 import type { useSessionLifecycle } from "../client/use-session-lifecycle";
-import { KEEP_CHILDREN_UNAVAILABLE, type LifecycleReview, type LifecycleRow } from "../shared/session-lifecycle";
+import { DEFAULT_RECOVERY_TARGET, KEEP_CHILDREN_UNAVAILABLE, type LifecycleReview, type LifecycleRow } from "../shared/session-lifecycle";
+import { fixtureLifecycle } from "../../kontor-prototype/src/host/session-lifecycle";
+import { recoverySessions } from "../../kontor-prototype/src/fixtures/recovery";
 import { sessionEntry } from "./session-fixtures";
 
 type Element = { type?: unknown; props: Record<string, unknown> };
@@ -47,16 +49,18 @@ const review = (rows: LifecycleRow[] = [row("g"), row("c1", ["g"], { nativeStatu
 
 beforeEach(() => { harness.fresh(); pan.config = null; pan.spring = []; });
 
+// Fixed point distances: the row takes a drag from 12 points left and archives from 96, whatever the constants say.
 describe("swipe classification", () => {
   it.each([
-    ["a tap wobble", -SWIPE_CLAIM + 1, 0, false, false],
-    ["a short leftward drag", -(SWIPE_ARCHIVE - 1), 0, true, false],
-    ["a deliberate leftward swipe", -SWIPE_ARCHIVE, 0, true, true],
-    ["a leftward swipe at exactly the steepest allowed angle", -SWIPE_ARCHIVE, SWIPE_ARCHIVE / 2, true, true],
-    ["a leftward swipe just steeper than allowed", -SWIPE_ARCHIVE, SWIPE_ARCHIVE / 2 + 1, false, false],
-    ["a rightward swipe", SWIPE_ARCHIVE * 2, 0, false, false],
+    ["a tap wobble", -11, 0, false, false],
+    ["the shortest drag the row takes", -12, 0, true, false],
+    ["a short leftward drag", -95, 0, true, false],
+    ["a deliberate leftward swipe", -96, 0, true, true],
+    ["a leftward swipe at exactly the steepest allowed angle", -96, 48, true, true],
+    ["a leftward swipe just steeper than allowed", -96, 49, false, false],
+    ["a rightward swipe", 192, 0, false, false],
     ["a vertical scroll", -20, 120, false, false],
-    ["a mostly vertical drag that ends far left", -(SWIPE_ARCHIVE + 10), -80, false, false],
+    ["a mostly vertical drag that ends far left", -106, -80, false, false],
   ])("%s: claims %#", (_name, dx, dy, claims, archives) => {
     expect(claimsSwipe({ dx, dy })).toBe(claims);
     expect(archivesOnRelease({ dx, dy })).toBe(archives);
@@ -74,28 +78,31 @@ describe("SwipeToArchive", () => {
   };
   it("takes only a leftward horizontal drag and archives once on a deliberate release", () => {
     const s = mount();
-    expect(s.move(-SWIPE_CLAIM)).toBe(true);
-    expect(s.move(SWIPE_CLAIM * 3)).toBe(false);
-    expect(s.move(-SWIPE_CLAIM, SWIPE_CLAIM)).toBe(false);
+    expect(s.move(-11)).toBe(false);
+    expect(s.move(-12)).toBe(true);
+    expect(s.move(36)).toBe(false);
+    expect(s.move(-12, 12)).toBe(false);
     expect((s.config.onPanResponderTerminationRequest as () => boolean)()).toBe(false);
-    s.release(-(SWIPE_ARCHIVE - 1));
+    s.release(-95);
     expect(s.onArchive).not.toHaveBeenCalled();
-    s.release(-SWIPE_ARCHIVE - 4, 3);
+    s.release(-96);
     expect(s.onArchive).toHaveBeenCalledOnce();
-    expect(pan.spring).toEqual([0, 0]);
+    s.release(-100, 3);
+    expect(s.onArchive).toHaveBeenCalledTimes(2);
+    expect(pan.spring).toEqual([0, 0, 0]);
   });
   it("does nothing for a cancelled, rightward or vertical drag", () => {
     const s = mount();
-    (s.config.onPanResponderTerminate as (event: unknown, travel: object) => void)({}, { dx: -SWIPE_ARCHIVE * 2, dy: 0 });
-    s.release(SWIPE_ARCHIVE * 2);
-    s.release(-10, SWIPE_ARCHIVE * 2);
+    (s.config.onPanResponderTerminate as (event: unknown, travel: object) => void)({}, { dx: -192, dy: 0 });
+    s.release(192);
+    s.release(-10, 192);
     expect(s.onArchive).not.toHaveBeenCalled();
     expect(pan.spring).toEqual([0, 0, 0]);
   });
   it("stays still and never archives while Archive is unavailable", () => {
     const s = mount(false);
-    expect(s.move(-SWIPE_ARCHIVE * 2)).toBe(false);
-    s.release(-SWIPE_ARCHIVE * 2);
+    expect(s.move(-192)).toBe(false);
+    s.release(-192);
     expect(s.onArchive).not.toHaveBeenCalled();
   });
   it("passes the row through unchanged and hides the swipe hint from assistive technology", () => {
@@ -136,6 +143,15 @@ describe("Archive with children dialog", () => {
   };
   const ready = async (lifecycle: Partial<Lifecycle> = {}, online = true) => { const s = open(lifecycle, online); s.render(); await settle(); return { ...s, tree: s.render() }; };
   const confirm = (tree: Element[]) => byId(tree, "archive-children-confirm")!;
+  const FAILED = "Incomplete native inventory; no lifecycle action is allowed.";
+  /** The dialog before a usable review: the read is still open, the host refused it, or the host went offline mid-read. */
+  const unreviewed = {
+    loading: { lifecycle: () => ({ branch: vi.fn(() => new Promise<never>(() => {})) }), online: true, why: "Reading this session's child sessions on the host…" },
+    failed: { lifecycle: () => ({ branch: vi.fn(async () => FAILED), error: FAILED }), online: true,
+      why: "The host did not list this session's child sessions, so nothing can be archived here. Close this and archive the session again." },
+    offline: { lifecycle: () => ({ branch: vi.fn(() => new Promise<never>(() => {})) }), online: false, why: "The host is offline. Nothing can be archived until it reconnects." },
+    "offline after its review": { lifecycle: () => ({}), online: false, why: "The host is offline. Nothing can be archived until it reconnects." },
+  } as const;
   const escape = (tree: Element[]) => (tree.find((element) => typeof element.props.onOpenChange === "function")!.props.onOpenChange as (open: boolean) => void)(false);
 
   it("reads the exact branch once on open and archives nothing while it reads", () => {
@@ -162,11 +178,22 @@ describe("Archive with children dialog", () => {
     expect(s.props.lifecycle.branch).toHaveBeenCalledOnce(); expect(s.props.lifecycle.run).not.toHaveBeenCalled();
     expect(s.props.onArchive).not.toHaveBeenCalled(); expect(s.props.onClose).not.toHaveBeenCalled();
   });
-  it.each([["available", true], ["unavailable (offline)", false]])("Cancel and Escape change nothing while Archive children too is %s", async (_state, online) => {
+  it.each(["loading", "failed", "offline", "offline after its review"] as const)("shows both choices while the branch is %s: Archive children too disabled, Keep children alive with the host limitation, and neither sends anything", async (state) => {
+    const s = await ready(unreviewed[state].lifecycle(), unreviewed[state].online);
+    const primary = confirm(s.tree), option = keep(s.tree);
+    expect(primary.props).toMatchObject({ label: "Archive children too", disabled: true, hint: unreviewed[state].why });
+    expect(option.props).toMatchObject({ disabled: true, accessibilityLabel: `Keep children alive, unavailable. ${KEEP_CHILDREN_UNAVAILABLE}` });
+    expect(byId(s.tree, "archive-children-keep-reason")!.props.children).toBe(KEEP_CHILDREN_UNAVAILABLE);
+    await (primary.props.onPress as () => unknown)(); (option.props.onPress as () => unknown)(); await settle();
+    expect(s.props.lifecycle.branch).toHaveBeenCalledOnce(); expect(s.props.lifecycle.run).not.toHaveBeenCalled();
+    expect(s.props.onArchive).not.toHaveBeenCalled(); expect(s.props.onClose).not.toHaveBeenCalled();
+  });
+  it.each([["available", () => ({}), true, false], ["unavailable (offline)", () => ({}), false, true],
+    ["loading", unreviewed.loading.lifecycle, true, true], ["unread (failed)", unreviewed.failed.lifecycle, true, true]] as const)("Cancel and Escape change nothing while Archive children too is %s", async (_state, lifecycle, online, disabled) => {
     for (const exit of ["cancel", "escape"] as const) {
       harness.fresh();
-      const s = await ready({}, online);
-      expect(confirm(s.tree).props.disabled).toBe(!online);
+      const s = await ready(lifecycle(), online);
+      expect(confirm(s.tree).props.disabled).toBe(disabled);
       if (exit === "cancel") (byId(s.tree, "archive-children-cancel")!.props.onPress as () => void)(); else escape(s.tree);
       await settle();
       expect(s.props.onClose).toHaveBeenCalledOnce();
@@ -210,6 +237,25 @@ describe("Archive with children dialog", () => {
     expect(confirm(s.tree).props.disabled).toBe(true);
     expect(texts(s.tree)).toContain("Incomplete native inventory; no lifecycle action is allowed.");
     expect(texts(s.tree)).not.toContain("Reading this session's child sessions on the host…");
+  });
+});
+
+describe("Archive with children dialog against the kontor-prototype host", () => {
+  it("lists the child from the prototype's branch review and hands over child, then parent, with nothing archived", async () => {
+    const rows = recoverySessions(), update = vi.fn(), invoke = fixtureLifecycle(() => rows, update);
+    const branch = vi.fn((id: string) => invoke("sessions.lifecycle-preview", { action: "archive", scope: "filtered", agentIds: [id], target: DEFAULT_RECOVERY_TARGET, descendants: true }));
+    const props = { entry: sessionEntry("agt_recovery_parent", { title: "Supervisor" }), colors, online: true, onClose: vi.fn(), onArchive: vi.fn(),
+      lifecycle: { busy: false, running: false, error: null, branch, run: vi.fn() } as unknown as Lifecycle };
+    const render = () => walk(harness.current.render(() => ArchiveChildrenDialog(props)));
+    render(); await settle(); const tree = render();
+    expect(byId(tree, "archive-children-row-agt_recovery_child")).toBeDefined();
+    expect(byId(tree, "archive-children-running")!.props.children).toBe("Running now: SWE • Running child · preserve work. Archive stops their active work.");
+    expect(byId(tree, "archive-children-keep-reason")!.props.children).toBe(KEEP_CHILDREN_UNAVAILABLE);
+    expect(byId(tree, "archive-children-confirm")!.props).toMatchObject({ disabled: false, hint: null });
+    await (byId(tree, "archive-children-confirm")!.props.onPress as () => Promise<void>)(); await settle();
+    expect(branch).toHaveBeenCalledTimes(2);
+    expect((props.onArchive.mock.calls[0]![0] as LifecycleReview).rows.map((row) => row.id)).toEqual(["agt_recovery_child", "agt_recovery_parent"]);
+    expect(update).not.toHaveBeenCalled();
   });
 });
 

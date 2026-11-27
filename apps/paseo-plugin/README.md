@@ -375,7 +375,10 @@ route in the form's notes and where its rows would be.
   cancelled drag does nothing, and the swipe rests while selecting. A session
   with no active children archives as before. When the host's exact preview
   finds active children, nothing is sent and a confirmation lists them, nested
-  ones included, naming running ones.
+  ones included, naming running ones. Both choices show as soon as it opens.
+  While the children are being read, after a failed read and while the host
+  is offline, Archive children too stays disabled and neither choice sends
+  anything.
   - **Archive children too** re-reads that exact branch in one host review. Any
     change to its sessions, identities or child sets refuses with nothing
     archived. Otherwise the existing batch archives it children first, with its

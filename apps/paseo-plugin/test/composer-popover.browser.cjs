@@ -92,6 +92,9 @@ window.fixture={archiveMode:'confirmed',hostStatus:'online',hostListeners:new Se
   if(name==='sessions.navigator-capabilities'){const no={supported:false,reason:'Not offered by this fixture host.'};return {usageTotals:no,summaries:no,draftAttach:no,takeover:no,takeoverBulk:no,takeoverRoute:no};}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:'wks-adhoc',message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
   if(name==='sessions.lifecycle-preview'){
+   // branchMode 'hold' leaves a branch review unanswered; 'fail' refuses it as an incomplete inventory would.
+   if(input.descendants&&window.fixture.branchMode==='hold')return new Promise(()=>{});
+   if(input.descendants&&window.fixture.branchMode==='fail')throw new Error('Incomplete native inventory; no lifecycle action is allowed.');
    const blocked=window.fixture.archiveMode==='blocked',root=input.agentIds[0];
    // A single review refuses a parent with active children; a branch review lists them child-first, then the parent.
    const row=id=>{const item=rows.find(row=>row.agent.id===id);if(!item)throw new Error('Unknown exact ID');const a=item.agent,children=kids(id),parent=children.length&&!input.descendants;
@@ -198,6 +201,8 @@ async function swipe(page, id, dx, dy = 0, during) {
 }
 const lifecycleCalls = page => page.evaluate(() => window.fixture.calls.filter(call => call.name.startsWith('sessions.lifecycle'))
   .map(call => call.name.slice(19) + ':' + (call.input.agentId ?? call.input.agentIds.join(',') + (call.input.descendants ? '+descendants' : ''))));
+// The host limitation the dialog shows for Keep children alive before any review arrives, read from its single source.
+const KEEP_UNAVAILABLE = fs.readFileSync(path.join(plugin, 'shared/session-lifecycle.ts'), 'utf8').match(/KEEP_CHILDREN_UNAVAILABLE = "([^"]+)"/)[1];
 const untouched = page => page.evaluate(() => ({ opens: window.fixture.opens.length, screens: window.fixture.screens.length, closes: window.fixture.closes }));
 // This host lists no Codex provider and no saved default is read, so a lead names its model explicitly.
 async function chooseModel(page) {
@@ -335,6 +340,34 @@ async function run(name, test) {
         assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 });
         assert.deepEqual(errors, []);
         return { lifecycle: calls, scope: 'touch events through Chromium CDP; synthetic host modal; no phone or assistive-technology proof' };
+      } finally { await context.close(); }
+    });
+    // Before a usable branch review: both choices show, Archive children too is disabled, Keep children alive names the host limitation, nothing is sent.
+    const UNREVIEWED = { loading: "Reading this session's child sessions on the host…", failed: "The host did not list this session's child sessions, so nothing can be archived here.", offline: 'The host is offline. Nothing can be archived until it reconnects.' };
+    for (const width of [320, 390]) for (const state of Object.keys(UNREVIEWED)) await run(`swipe-family-${state}-${width}`, async () => {
+      const { page, context } = await pageFor(width, 'light', '&family=1'); const errors = []; page.on('pageerror', error => errors.push(error.message));
+      const dialog = page.getByTestId('archive-children-dialog');
+      try {
+        await showAll(page); await page.getByRole('textbox', { name: 'Find a session', exact: true }).fill('Family'); await page.getByTestId('session-row-fam-parent').waitFor();
+        await page.evaluate(state => { window.fixture.branchMode = state === 'failed' ? 'fail' : 'hold'; }, state);
+        await swipe(page, 'fam-parent', -150); await dialog.waitFor();
+        if (state === 'offline') await page.evaluate(() => window.fixture.setHost('offline'));
+        await expect(dialog).toContainText(UNREVIEWED[state]);
+        const keep = dialog.getByRole('button', { name: `Keep children alive, unavailable. ${KEEP_UNAVAILABLE}`, exact: true }), archive = dialog.getByTestId('archive-children-confirm');
+        await expect(keep).toHaveAttribute('aria-disabled', 'true'); await expect(archive).toHaveAttribute('aria-disabled', 'true');
+        await expect(archive).toContainText('Archive children too');
+        await expect(dialog.getByTestId('archive-children-keep-reason')).toHaveText(KEEP_UNAVAILABLE);
+        assert.equal(await dialog.getByTestId('archive-children-row-fam-child').count(), 0, 'no child is listed before a review');
+        await keep.click({ force: true }); await archive.click({ force: true }); await page.waitForTimeout(300);
+        assert.deepEqual(await lifecycleCalls(page), ['preview:fam-parent', 'preview:fam-parent+descendants'], 'neither choice sends anything');
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await page.screenshot({ path: path.join(output, `swipe-family-${state}-${width}.png`) });
+        await dialog.getByTestId('archive-children-cancel').click(); await dialog.waitFor({ state: 'detached' });
+        assert.deepEqual(await lifecycleCalls(page), ['preview:fam-parent', 'preview:fam-parent+descendants'], 'Cancel sends nothing');
+        await expect(page.getByTestId('session-row-fam-parent')).toHaveCount(1);
+        assert.deepEqual(await untouched(page), { opens: 0, screens: 0, closes: 0 });
+        assert.deepEqual(errors, []);
+        return { state, lifecycle: await lifecycleCalls(page), scope: 'touch through Chromium CDP; synthetic host and modal; no phone or assistive-technology proof' };
       } finally { await context.close(); }
     });
     for (const width of [320,390,1440]) for (const theme of ['light','dark']) await run(`statuses-${width}-${theme}`,async()=>{

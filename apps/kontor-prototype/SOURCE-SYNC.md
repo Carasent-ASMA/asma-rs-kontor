@@ -27,6 +27,9 @@ browser proof rejects full reads of unselected sources in that check.
 
 The lifecycle adapter accepts only selected archive batches of 1–50 IDs. An
 omitted active child blocks a parent; selected children must finish first.
+A branch review (`descendants: true`) names exactly one parent and adds its
+active descendants from the same fixture inventory, child-first, reporting Keep
+children alive unavailable, as the host's branch review does.
 Synthetic archive membership and runtime retirement remain separate. An
 archived/unconfirmed reply retains its exact-owner fence through later successful
 reviews. Resume is refused, as on the host. The no-ID latest read derives unresolved references; reads

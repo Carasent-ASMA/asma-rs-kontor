@@ -9,6 +9,9 @@ import type { useSessionLifecycle } from "./use-session-lifecycle";
 const ACTIVE = ["running", "initializing"];
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 export const BRANCH_CHANGED = "The child sessions changed since this review. Nothing was archived. Check the updated list and choose again.";
+const READING = "Reading this session's child sessions on the host…";
+const UNREAD = "The host did not list this session's child sessions, so nothing can be archived here. Close this and archive the session again.";
+const OFFLINE = "The host is offline. Nothing can be archived until it reconnects.";
 
 /** The reviewed parent's descendants top-down for reading, each with its depth; the review itself stays child-first. */
 export function branchChildren(review: LifecycleReview, parentId: string): { row: LifecycleRow; depth: number }[] {
@@ -40,8 +43,9 @@ export function branchChanged(before: LifecycleReview, after: LifecycleReview): 
 
 /**
  * The choice for a parent whose host preview found active children. Archive children too re-reads the exact branch and
- * refuses any change before the existing batch archives it child-first; Keep children alive stays visible and unavailable
- * with the host's reason. Cancel, Escape or the host's close changes nothing.
+ * refuses any change before the existing batch archives it child-first. Both choices show from the first frame: while the
+ * branch is loading, unread or the host is offline, Archive children too stays disabled, and Keep children alive is always
+ * visible and unavailable with the host's reason. Cancel, Escape or the host's close changes nothing.
  */
 export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClose, onArchive }: {
   entry: DirectoryEntry; lifecycle: ReturnType<typeof useSessionLifecycle>; colors: Colors; online: boolean;
@@ -59,24 +63,24 @@ export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClos
   useEffect(() => { void read(setReviewed); }, []);
   const close = () => { closed.current = true; onClose(); };
   const confirm = () => {
-    if (!reviewed) return;
+    if (!reviewed || problem) return;
     setRefusal(null);
     return read((fresh) => {
-      const problem = branchChanged(reviewed, fresh) ? BRANCH_CHANGED : branchProblem(fresh, entry.id);
-      if (problem) { setReviewed(fresh); setRefusal(problem); return; }
+      const change = branchChanged(reviewed, fresh) ? BRANCH_CHANGED : branchProblem(fresh, entry.id);
+      if (change) { setReviewed(fresh); setRefusal(change); return; }
       closed.current = true; onArchive(fresh);
     });
   };
   const children = reviewed ? branchChildren(reviewed, entry.id) : [];
   const running = children.filter(({ row }) => ACTIVE.includes(row.nativeStatus));
-  const problem = !online ? "The host is offline. Nothing can be archived until it reconnects." : reviewed ? branchProblem(reviewed, entry.id) : null;
+  const problem = !online ? OFFLINE : reviewed ? branchProblem(reviewed, entry.id) : lifecycle.error || refusal ? UNREAD : READING;
   const keep = reviewed?.keepChildren?.reason ?? KEEP_CHILDREN_UNAVAILABLE;
   const text = { color: colors.foreground, fontSize: 13, lineHeight: 19 }, muted = { color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 };
   const alert = { color: colors.statusWarning, fontSize: 12, lineHeight: 17 };
   return <OperationSheet testID="archive-children-dialog" title="Archive a session with children" subtitle={entry.title} colors={colors} onClose={close}
     footer={<SheetFooter colors={colors} secondary={{ testID: "archive-children-cancel", label: "Cancel", onPress: close }}
-      primary={{ testID: "archive-children-confirm", label: "Archive children too", hint: problem, disabled: !reviewed || !!problem || lifecycle.busy || lifecycle.running, onPress: () => { void confirm(); } }} />}>
-    {!reviewed && !refusal && !lifecycle.error ? <Text role="status" style={muted}>Reading this session's child sessions on the host…</Text> : null}
+      primary={{ testID: "archive-children-confirm", label: "Archive children too", hint: problem, disabled: !!problem || lifecycle.busy || lifecycle.running, onPress: () => { void confirm(); } }} />}>
+    {problem === READING ? <Text role="status" style={muted}>{READING}</Text> : null}
     {reviewed ? <>
       <Text style={text}>{`${plural(children.length, "active child session")} belong to this session. Choose what happens to them.`}</Text>
       <View role="list" style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: "hidden" }}>
@@ -89,12 +93,12 @@ export function ArchiveChildrenDialog({ entry, lifecycle, colors, online, onClos
       {running.length ? <Text testID="archive-children-running" style={alert}>{`Running now: ${running.map(({ row }) => row.title).join(", ")}. Archive stops their active work.`}</Text> : null}
       <Text style={text}>Archive children too archives these sessions first, the deepest first, then this session. Archive stops any active work and keeps history and files. There is no undo.</Text>
       <Text style={muted}>A new child session started just before this session archives may be archived with it by the host, even though it is not listed here.</Text>
-      <View style={{ gap: 4 }}>
-        <Action colors={colors} label="Keep children alive" accessibilityLabel={`Keep children alive, unavailable. ${keep}`} disabled onPress={() => undefined} />
-        <Text testID="archive-children-keep-reason" style={muted}>{keep}</Text>
-      </View>
     </> : null}
-    {problem && reviewed ? <Text style={alert}>{problem}</Text> : null}
+    <View style={{ gap: 4 }}>
+      <Action colors={colors} label="Keep children alive" accessibilityLabel={`Keep children alive, unavailable. ${keep}`} disabled onPress={() => undefined} />
+      <Text testID="archive-children-keep-reason" style={muted}>{keep}</Text>
+    </View>
+    {problem && problem !== READING ? <Text style={alert}>{problem}</Text> : null}
     {refusal ? <Text testID="archive-children-refusal" accessibilityRole="alert" style={alert}>{refusal}</Text> : null}
     {lifecycle.error ? <Text accessibilityRole="alert" style={alert}>{lifecycle.error}</Text> : null}
   </OperationSheet>;

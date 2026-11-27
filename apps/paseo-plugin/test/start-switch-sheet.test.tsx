@@ -53,7 +53,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text",
   Pressable: "Pressable", Image: "Image", PanResponder: { create: () => ({ panHandlers: {} }) }, BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts, useSettings: () => model.settings, getPaseoClient: () => ({}) }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast,
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", ScrollView: "ScrollView", useToast: () => model.toast,
   Modal: Object.assign(function Modal() { return null; }, { Content: function ModalContent() { return null; } }), copyText: (text: string) => model.copyText(text) }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: object) => { model.directoryArgs.push(args); return { state: model.directory, refresh: () => {} }; } }));
@@ -463,10 +463,10 @@ describe("Start or switch sheet", () => {
     const review = await dialog.lifecycle.branch("agent-a");
     expect(rpc.preview).toHaveBeenLastCalledWith({ action: "archive", scope: "filtered", agentIds: ["agent-a"], target: DEFAULT_RECOVERY_TARGET, descendants: true });
     dialog.onArchive(review); s.render();
-    expect(familyDialog(s.tree)).toBeUndefined();
-    const bulk = s.tree.find((node) => node.type === BulkArchiveDialog)!;
-    expect(bulk.props.autoRun).toBe(true);
-    await (bulk.props.lifecycle as { run(): Promise<unknown> }).run(); s.render();
+    expect(familyDialog(s.tree)).toBeUndefined(); expect(execute).not.toHaveBeenCalled();
+    // The confirmed batch runs by itself when it opens, once: drawing it again sends nothing more.
+    const bulk = () => s.tree.find((node) => node.type === BulkArchiveDialog)!.props as Parameters<typeof BulkArchiveDialog>[0];
+    for (let draw = 0; draw < 2; draw++) { model.scoped("bulk", () => BulkArchiveDialog(bulk())); for (let tick = 0; tick < 5; tick++) await settle(); s.render(); }
     expect(execute.mock.calls.map(([input]) => input.agentId)).toEqual(["child-a", "agent-a"]);
     expect(rowIds(s.tree)).toEqual(kind === "confirmed" ? [] : ["agent-a"]);
   });
