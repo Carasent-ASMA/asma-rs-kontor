@@ -5,6 +5,8 @@ import {
   archivedConflicts,
   archivedLabel,
   attentionLabel,
+  backgroundWorkDetail,
+  backgroundWorkLabel,
   DEFAULT_SESSION_FILTERS,
   filterDirectoryEntries,
   filterDirectoryEntriesWithArchivedConflicts,
@@ -70,6 +72,43 @@ describe("session search and filters", () => {
       status: "closed",
     });
     expect(closed.map((entry) => entry.id)).toEqual(["c"]);
+  });
+
+  it("counts reported background work as Running and lists any reported work under Background", () => {
+    const running = sessionEntry("bg-running", { status: "idle", backgroundWork: { count: 2, runningCount: 1 } });
+    const hostWithoutSplit = sessionEntry("bg-host", { status: "idle", backgroundWork: { count: 1 } });
+    const none = sessionEntry("bg-none");
+    const errored = sessionEntry("bg-error", { status: "error", backgroundWork: { count: 1, runningCount: 1 } });
+    const asking = sessionEntry("bg-asking", { needsInput: true, backgroundWork: { count: 1, runningCount: 1 } });
+
+    expect(matchesStatus(running, "running")).toBe(true);
+    // Paseo's own rule: a host that reports no running split reports one total.
+    expect(matchesStatus(hostWithoutSplit, "running")).toBe(true);
+    expect(matchesStatus(none, "running")).toBe(false);
+    expect(matchesStatus(running, "background")).toBe(true);
+    expect(matchesStatus(none, "background")).toBe(false);
+    // A heartbeat waiting for its next run is reported work, not running work.
+    const heartbeat = sessionEntry("bg-heartbeat", { status: "idle", backgroundWork: { count: 1, runningCount: 0 } });
+    expect(matchesStatus(heartbeat, "background")).toBe(true);
+    expect(matchesStatus(heartbeat, "running")).toBe(false);
+    // Higher states keep their precedence; Background still reaches the session.
+    expect(matchesStatus(errored, "error")).toBe(true);
+    expect(matchesStatus(errored, "background")).toBe(true);
+    expect(matchesStatus(asking, "needs_input")).toBe(true);
+    expect(matchesStatus(asking, "background")).toBe(true);
+  });
+
+  it("shows exact background counts without inventing a split or a zero", () => {
+    expect(backgroundWorkLabel(sessionEntry("split", { backgroundWork: { count: 2, runningCount: 1 } }))).toBe("2 background tasks · 1 running");
+    expect(backgroundWorkLabel(sessionEntry("one", { backgroundWork: { count: 1 } }))).toBe("1 background task");
+    expect(backgroundWorkLabel(sessionEntry("waiting", { backgroundWork: { count: 1, runningCount: 0 } }))).toBe("1 background task · waiting");
+    expect(backgroundWorkLabel(sessionEntry("reported-none", { backgroundWork: { count: 0 } }))).toBeNull();
+    expect(backgroundWorkLabel(sessionEntry("unreported"))).toBeNull();
+
+    expect(backgroundWorkDetail(sessionEntry("split", { backgroundWork: { count: 2, runningCount: 1 } }))).toBe("2 reported, 1 running");
+    expect(backgroundWorkDetail(sessionEntry("one", { backgroundWork: { count: 1 } }))).toBe("1 reported; Paseo counts all as running");
+    expect(backgroundWorkDetail(sessionEntry("reported-none", { backgroundWork: { count: 0 } }))).toBe("None reported");
+    expect(backgroundWorkDetail(sessionEntry("unreported"))).toBe("Not reported");
   });
 
   it("counts only advanced choices and exposes the clear state", () => {

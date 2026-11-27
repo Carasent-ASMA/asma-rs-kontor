@@ -53,6 +53,11 @@ export function withdrawHandOff(key?: string): void {
   if (key === undefined || handOff?.key === key) handOff = null;
 }
 
+/** The host a still-pending request belongs to, without consuming it; a used or unknown key has none. */
+export function pendingHandOffHost(key: string | undefined): string | null {
+  return key && handOff?.key === key ? handOff.hostId : null;
+}
+
 /**
  * The Kontor screen's half of a hand-off: consumes the request before navigating, then opens through the shared
  * path below. Null when the screen was opened without a request; a used, replaced or foreign key opens nothing.

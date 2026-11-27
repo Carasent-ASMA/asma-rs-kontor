@@ -226,7 +226,10 @@ Before dispatching work:
    each module in scope.
 4. Confirm one tracker Epic binding for the epic and one tracker issue binding
    per delivery task. Missing bindings go through [tracker-linked-creation](../tracker-linked-creation/SKILL.md)
-   before execution.
+   before execution. A milestone admitted on a
+   [milestone-scoped launch check](../create-implementation-plan/references/plan-graph-contract.md#milestone-scoped-launch-check)
+   needs bindings only on the epic and on its scope with that scope's
+   dependency closure.
 5. Before lifting the kickoff hold or admitting execution, run the project's
    plan validator with its launch-ready check on the authoritative saved plan.
    Follow the planning [validation loop and migration boundary](../create-implementation-plan/references/plan-graph-contract.md#mandatory-model-validation-loop-and-gates):
@@ -235,6 +238,8 @@ Before dispatching work:
    or a waived validator. Failure blocks readiness and dependent admission.
    Retain command, exit code, PASS and exact SHA-256/path/revision in the external
    checkpoint; a changed plan needs a new receipt before admission using it.
+   A milestone plan may run the scoped check instead, and its receipt also
+   records the scope.
    Do not infer remote binding validity or authorization from this graph check.
    New launches of legacy plans require owner-led migration; preserve already
    admitted work and active pins. Apply this on both orchestration surfaces.
@@ -251,7 +256,9 @@ Before dispatching work:
 A task is not done because a seat says so. Require its profile gates, tests,
 mutation evidence where applicable, committed source-control evidence in the
 correct repo, settled runs and a converged tracker plan. "All children closed"
-is not proof that the goal was achieved.
+is not proof that the goal was achieved. Final closure of a milestone plan
+requires an unscoped launch-ready PASS
+([milestone-scoped launch check](../create-implementation-plan/references/plan-graph-contract.md#milestone-scoped-launch-check)).
 
 Record the memory disposition through the project's
 [experience-memory procedure](../experience-memory/SKILL.md), when one is

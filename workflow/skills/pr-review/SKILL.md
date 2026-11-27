@@ -52,7 +52,7 @@ record. Each rule has one owner. Read the owner; do not copy it here:
 | Merge authority and per-repository grants | `{{ project.merge_authority.role }}` and `{{ project.merge_authority.policy }}` |
 | Three homes for information | [document-organization](../document-organization/SKILL.md#three-homes-for-information) |
 | PR desk command and policy | `{{ project.pr_desk.command }}`, `{{ project.pr_desk.settings }}` |
-| Model chains and bindings | `{{ project.fleet }}`, the desk's seat bindings |
+| Model chains and bindings | `{{ project.fleet }}`, plus any desk-only route file the desk command joins to it for the desk's seat bindings |
 | Base branch and branch grammar | `{{ project.forge.base_branch }}`, `{{ project.branch.pattern }}` |
 
 ## First-message assembly
@@ -154,8 +154,9 @@ seats, including specialists and delta verifiers, exclude the known author's
 vendor and every actual fix-writer vendor.
 Simple/Medium need no JUDGE; a desk-written correction still needs a separate
 eligible verifier. Reuse the original reviewer only if independent.
-The desk supplies eligible `seat_routes` from `{{ project.fleet }}` and checks
-actual selections. The general independence boundary remains owned by
+The desk supplies eligible `seat_routes` from `{{ project.fleet }}` and any
+desk-only route file joined to it, and checks actual selections. The general
+independence boundary remains owned by
 [committee-protocol](../committee-protocol/SKILL.md#independence-rules).
 
 ## Stages

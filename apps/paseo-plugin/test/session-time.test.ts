@@ -133,6 +133,18 @@ describe("stateSinceLine", () => {
       .toEqual({ label: "Running since", value: "Not recorded: Paseo reported no start for this turn, as after a Paseo restart" });
   });
 
+  it("names background work only when it alone keeps a session Running", () => {
+    const work = { backgroundWork: { count: 2, runningCount: 1 } };
+    expect(stateSinceLine(entry("bg", { status: "idle", ...work }), OSLO))
+      .toEqual({ label: "Running since", value: "Not recorded: Paseo keeps no session-level start for background work" });
+    // A native turn without a start keeps its own reason; its turn start still wins when reported.
+    expect(stateSinceLine(entry("turn", { status: "running", activeTurnStartedAt: null, ...work }), OSLO))
+      .toEqual({ label: "Running since", value: "Not recorded: Paseo reported no start for this turn, as after a Paseo restart" });
+    expect(stateSinceLine(entry("turn-started", { status: "running", activeTurnStartedAt: ago(12 * MINUTE), ...work }), OSLO).value).toMatch(/^At least /);
+    // A waiting heartbeat is not running work: the session keeps its native state.
+    expect(stateSinceLine(entry("heartbeat", { status: "idle", backgroundWork: { count: 1, runningCount: 0 } }), OSLO).label).toBe("Idle since");
+  });
+
   it("gives Attention the time Paseo raised it, never the Updated time", () => {
     const raised = entry("finished", { status: "idle", requiresAttention: true, attentionReason: "finished", attentionTimestamp: ago(2 * HOUR), updatedAt: ago(5 * MINUTE) });
     expect(stateSinceLine(raised, OSLO)).toEqual({ label: "Attention since", value: `${exact(2 * HOUR)} · 2 hours ago\nWhen Paseo raised it, at a finished turn or Mark as unread; it has stayed raised since, through any later turn` });

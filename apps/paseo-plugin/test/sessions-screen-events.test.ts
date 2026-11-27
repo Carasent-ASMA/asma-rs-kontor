@@ -572,7 +572,9 @@ describe("SessionsScreen toolbar events", () => {
     renderScreen(undefined, compact);
     const tree = walk(harness.current());
     expect(tree.some((element) => element.props.accessibilityLabel === "Resume sessions")).toBe(false);
-    expect(tree.find((element) => element.type === SlimToolbar)?.props.action).toBeUndefined();
+    // The header's action slot holds the pending-permission action now; it is never a standalone Resume.
+    const slim = tree.find((element) => element.type === SlimToolbar);
+    if (compact) expect(slim).toBeUndefined(); else expect(slim?.props.action).toMatchObject({ props: { count: 0 } });
     expect(tree.some((element) => element.type === MobileQuickToolbar)).toBe(compact);
   });
   beforeEach(() => {

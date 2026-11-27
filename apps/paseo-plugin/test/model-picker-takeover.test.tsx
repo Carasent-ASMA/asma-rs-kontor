@@ -320,3 +320,100 @@ describe("provider operating mode parity", () => {
     expect(text(p.tree)).toContain("permission settings are separate");
   });
 });
+
+describe("ModelPicker with a required takeover mode", () => {
+  const REASON = "Claude Code: the source operating mode was not reported, so its inherited mode cannot be confirmed.";
+  const NO_MODES: CreateProvider = { id: "no-modes", label: "No Modes", status: "ready", available: true, note: null, persona: "unverified", defaultModel: null, defaultMode: null, modes: [],
+    models: [{ id: "plain", label: "Plain", efforts: [], defaultEffort: null }] };
+  /** One Claude seat, offering both vendors' models, with the source mode it reported (null when none). */
+  const seat = (mode: string | null = null, providers: readonly CreateProvider[] = [CODEX, CLAUDE]) =>
+    picker({ providers, permissions: { inherited: mode, provider: "claude" }, modeChoice: { source: "claude", mode }, subtitle: "For Claude seat",
+      action: (alias) => `Take over${alias ? ` with ${alias}` : ""}` });
+  const read = async (p: ReturnType<typeof picker>) => { p.render(); await settle(); p.render(); };
+  const disclosure = (p: ReturnType<typeof picker>) => p.tree.find((node) => node.props.testID === "kontor-model-permissions");
+  const inheritedMode = (p: ReturnType<typeof picker>) => p.tree.find((node) => node.props.testID === "kontor-model-permissions-inherited");
+
+  it("disables Auto with the reason when the source reported no mode", () => {
+    const p = seat(null); p.render();
+    expect(auto(p.tree)!.props).toMatchObject({ disabled: true, "aria-disabled": true, accessibilityState: { checked: false, disabled: true } });
+    expect(text(p.tree)).toContain(REASON);
+    expect(text(p.tree)).toContain("No model chosen");
+    expect(use(p.tree).props.disabled).toBe(true);
+  });
+
+  it("requires a mode for the picked provider, then hands the mode back", async () => {
+    const p = seat(null); p.render();
+    press(pressable(p.tree, "kontor-model-row-codex/gpt-6-sol")); await read(p);
+    expect(problemText(p.tree)).toBe("Choose an operating mode for the replacement.");
+    expect(use(p.tree).props.disabled).toBe(true);
+    expect(disclosure(p)!.props).toMatchObject({ label: "Mode", value: "Choose" });
+    (disclosure(p)!.props.onToggle as () => void)(); p.render();
+    const choices = p.tree.find((node) => (node.type as { name?: string }).name === "Choices" && node.props.label === "Mode")!;
+    expect(choices.props.selected).toBeNull();
+    expect((choices.props.options as { id: string }[]).map((option) => option.id)).toEqual(["auto", "full-access"]);
+    (choices.props.onSelect as (id: string) => void)("full-access"); p.render();
+    expect(problemText(p.tree)).toBeNull();
+    expect(use(p.tree).props.disabled).toBe(false);
+    press(use(p.tree));
+    expect(p.props.onUse).toHaveBeenCalledExactlyOnceWith({ provider: "codex", model: "gpt-6-sol", effort: "high", modeId: "full-access", featureValues: {} });
+  });
+
+  it("clears the chosen mode when another provider is picked", async () => {
+    const p = seat(null); p.render();
+    press(pressable(p.tree, "kontor-model-row-codex/gpt-6-sol")); await read(p);
+    (disclosure(p)!.props.onToggle as () => void)(); p.render();
+    (p.tree.find((node) => (node.type as { name?: string }).name === "Choices" && node.props.label === "Mode")!.props.onSelect as (id: string) => void)("full-access"); p.render();
+    press(pressable(p.tree, "kontor-model-row-codex/gpt-6-astra")); await read(p);
+    expect(problemText(p.tree)).toBeNull();
+    press(pressable(p.tree, "kontor-model-vendor-anthropic")); p.render();
+    press(pressable(p.tree, "kontor-model-row-claude/claude-opus-5-5")); await read(p);
+    expect(problemText(p.tree)).toBe("Choose an operating mode for the replacement.");
+    expect(use(p.tree).props.disabled).toBe(true);
+  });
+
+  it("inherits a readable source mode only on its own provider and requires a mode elsewhere", async () => {
+    const p = seat("default"); p.render();
+    // A readable source mode keeps Auto available; only the picked destination decides whether a mode is needed.
+    expect(auto(p.tree)!.props.disabled).toBe(false);
+    press(pressable(p.tree, "kontor-model-row-codex/gpt-6-sol")); await read(p);
+    expect(problemText(p.tree)).toBe("Choose an operating mode for the replacement.");
+    expect(use(p.tree).props.disabled).toBe(true);
+    expect(disclosure(p)!.props).toMatchObject({ label: "Mode", value: "Choose" });
+    (disclosure(p)!.props.onToggle as () => void)(); p.render();
+    const choices = p.tree.find((node) => (node.type as { name?: string }).name === "Choices" && node.props.label === "Mode")!;
+    expect(choices.props.selected).toBeNull();
+    (choices.props.onSelect as (id: string) => void)("full-access"); p.render();
+    expect(problemText(p.tree)).toBeNull();
+    press(use(p.tree));
+    expect(p.props.onUse).toHaveBeenCalledExactlyOnceWith({ provider: "codex", model: "gpt-6-sol", effort: "high", modeId: "full-access", featureValues: {} });
+  });
+
+  it("keeps a readable source mode on its own provider with no mode control", async () => {
+    const p = seat("default", [CLAUDE]); p.render();
+    press(pressable(p.tree, "kontor-model-row-claude/claude-opus-5-5")); await read(p);
+    expect(disclosure(p)).toBeUndefined();
+    expect(inheritedMode(p)).toBeDefined();
+    expect(problemText(p.tree)).toBeNull();
+    press(use(p.tree));
+    expect(p.props.onUse).toHaveBeenCalledExactlyOnceWith({ provider: "claude", model: "claude-opus-5-5", effort: "max", modeId: null, featureValues: {} });
+  });
+
+  it("says a provider with no operating modes cannot receive the takeover", async () => {
+    const p = seat("default", [NO_MODES, CLAUDE]); p.render();
+    press(pressable(p.tree, "kontor-model-row-no-modes/plain")); await read(p);
+    expect(problemText(p.tree)).toBe("No Modes reports no operating modes, so it cannot receive this takeover.");
+    expect(disclosure(p)).toBeUndefined();
+    expect(use(p.tree).props.disabled).toBe(true);
+  });
+
+  it("stays exactly as it was without the mode choice", async () => {
+    const p = picker({ providers: [CODEX, CLAUDE], permissions: { inherited: "bypassPermissions", provider: "claude" }, subtitle: "For Claude seat" });
+    press(pressable(p.tree, "kontor-model-vendor-anthropic")); p.render();
+    press(pressable(p.tree, "kontor-model-row-claude/claude-opus-5-5")); await read(p);
+    expect(auto(p.tree)!.props).toMatchObject({ accessibilityState: { checked: false } });
+    expect(disclosure(p)).toBeUndefined();
+    expect(problemText(p.tree)).toBeNull();
+    press(use(p.tree));
+    expect(p.props.onUse).toHaveBeenCalledExactlyOnceWith({ provider: "claude", model: "claude-opus-5-5", effort: "max", modeId: null, featureValues: {} });
+  });
+});

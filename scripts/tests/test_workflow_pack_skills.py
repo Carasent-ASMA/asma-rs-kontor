@@ -96,6 +96,7 @@ OPERATIONAL_DOMAIN = REPO_ROOT / "crates" / "kontor-profiles" / "fixtures" / "op
 CONSULTATION_PRESETS = REPO_ROOT / "crates" / "kontor-profiles" / "fixtures" / "consultation-presets.json"
 CORE_TEAM = REPO_ROOT / "config" / "examples" / "orchestration" / "teams" / "core-team.yml"
 PR_REVIEW = SKILLS / "pr-review" / "SKILL.md"
+COMMUNICATION = SKILLS / "kontor-communication" / "SKILL.md"
 FLEET = REPO_ROOT / "config" / "examples" / "orchestration" / "fleet.yml"
 
 NON_SEAT_FLEET_SLOTS = ("fallback", "open")
@@ -1290,6 +1291,57 @@ class TemplateContractTests(unittest.TestCase):
         self.assertIn("<!-- plan-graph:derived:end -->", text)
 
 
+NAMING_SECTION = "## Names and references"
+BARE_PULL_REQUEST_RE = re.compile(r"(?<![\w-])PR\s*#\d+")
+
+
+def naming_reference_errors(text: str) -> list[str]:
+    """The naming rules live in the pack, and no bare pull-request number does."""
+    errors: list[str] = []
+    if NAMING_SECTION not in text:
+        errors.append(f"the pack lacks {NAMING_SECTION}")
+    else:
+        section = text.split(NAMING_SECTION, 1)[1].split("\n## ", 1)[0]
+        for phrase in (
+            "`repository#number`",
+            "`example-service#123`",
+            "never just `#123` or `PR 123`",
+        ):
+            if phrase not in section:
+                errors.append(f"the naming section lacks {phrase}")
+    for match in BARE_PULL_REQUEST_RE.finditer(text):
+        errors.append(f"bare pull-request reference {match.group(0)}")
+    return errors
+
+
+class KontorCommunicationTests(unittest.TestCase):
+    """The naming rules come from the pack, not from a hand-edited render."""
+
+    def setUp(self) -> None:
+        self.text = read(COMMUNICATION)
+
+    def test_the_naming_rules_are_present_without_a_bare_pull_request(self) -> None:
+        self.assertEqual(naming_reference_errors(self.text), [])
+
+    def test_deleting_the_naming_section_is_rejected(self) -> None:
+        without = re.sub(
+            rf"^{re.escape(NAMING_SECTION)}$.*?(?=^## )",
+            "",
+            self.text,
+            flags=re.M | re.S,
+        )
+        self.assertNotIn(NAMING_SECTION, without)
+        self.assertTrue(naming_reference_errors(without))
+
+    def test_a_bare_pull_request_reference_is_rejected(self) -> None:
+        mutated = self.text.replace(
+            "**Status:** example-service#123 merged.",
+            "**Status:** PR #123 merged.",
+        )
+        self.assertIn("PR #123", mutated)
+        self.assertTrue(naming_reference_errors(mutated))
+
+
 class NeutralityTests(unittest.TestCase):
     def test_marked_example_blocks_are_closed(self) -> None:
         for path in SKILLS.rglob("*.md"):
@@ -1355,6 +1407,43 @@ class LinkTests(unittest.TestCase):
         resolved, fragment = resolve_link(path, "#entry-gate")
         self.assertEqual(resolved, path.resolve())
         self.assertIn(fragment, anchors(read(path)))
+
+
+class MilestoneScopedLaunchTests(unittest.TestCase):
+    """The scoped launch check names every refusal in both of its homes."""
+
+    REFUSALS = (
+        "an empty scope",
+        "an unknown task",
+        "without exactly one delivery_strategy: milestone",
+        "more than one plan",
+        "does not equal exactly one milestone's mapped rows",
+    )
+
+    def test_the_contract_names_all_five_refusals(self) -> None:
+        text = read(
+            SKILLS
+            / "create-implementation-plan"
+            / "references"
+            / "plan-graph-contract.md"
+        )
+        section = text.split("## Milestone-scoped launch check", 1)[1]
+        section = re.sub(r"\s+", " ", section.split("\n## ", 1)[0])
+        for refusal in self.REFUSALS:
+            with self.subTest(refusal=refusal):
+                self.assertIn(refusal, section.replace("`", ""))
+
+    def test_the_decision_names_the_scope_equality_refusal(self) -> None:
+        record = read(
+            REPO_ROOT
+            / "docs"
+            / "decisions"
+            / "2026-11-14-07-20-decision-milestone-scoped-launch-check.md"
+        )
+        self.assertIn(
+            "does not equal exactly one milestone's mapped rows",
+            re.sub(r"\s+", " ", record),
+        )
 
 
 class RuleOwnershipTests(unittest.TestCase):
@@ -1426,6 +1515,20 @@ class RuleOwnershipTests(unittest.TestCase):
         self.assertIn("agent-dispatch owns starting a seat", text)
         self.assertIn("seat-handoff owns a phase transition", text)
         self.assertIn("seat-takeover owns resuming", text)
+
+    def test_a_usage_limited_seat_recovers_through_seat_takeover(self) -> None:
+        tpm = SKILLS / "epic-orchestration" / "references" / "autonomous-tpm-operation.md"
+        self.assertIn(
+            "If a liveness pass finds a seat stopped on a usage limit while its account"
+            " pool has a ready account and the seat stayed on the limited one, it takes"
+            " that seat over through [seat-takeover](../../seat-takeover/SKILL.md"
+            "#resume-vs-replacement) on the same fleet route; with no ready account it"
+            " is a legitimate wait, and the same seat resumes at the reset time.",
+            re.sub(r"\s+", " ", read(tpm)),
+        )
+        takeover = re.sub(r"\s+", " ", read(SKILLS / "seat-takeover" / "SKILL.md"))
+        self.assertIn("| Context pressure alone | Not sufficient for takeover |", takeover)
+        self.assertIn("never permits an off-fleet fallback", takeover)
 
 
 def inventory_errors(
@@ -1633,6 +1736,9 @@ class Wp04OwnershipTests(unittest.TestCase):
                 self.assertIn(phrase, text)
         self.assertNotIn("Configuration dependency", text)
         self.assertNotIn("partially fixed", text)
+        # A project may keep the desk's own routes in a file joined to the fleet.
+        self.assertIn("desk-only route file the desk command joins to it", text)
+        self.assertIn("and any\ndesk-only route file joined to it", text)
         self.assertNotIn("pr-review/learning.log", text)
         readme = read(SKILLS / "README.md")
         self.assertIn("WP04-INV-02", readme)

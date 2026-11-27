@@ -11,8 +11,8 @@ import type { DirectoryEntry } from "./session-directory";
 import { readableInk } from "./session-status-ink";
 import { modelAlias } from "./session-usage";
 
-/** One operation's route: null is Auto, each seat's own chain; a picked model applies to these seats only and changes no default. */
-export type TakeoverRoute = Pick<PickedModel, "provider" | "model" | "effort" | "featureValues"> | null;
+/** One operation's route: null is Auto, each seat's own chain; a picked model applies to these seats only and changes no default. `modeId` is the operating mode chosen for this takeover when none could be inherited. */
+export type TakeoverRoute = Pick<PickedModel, "provider" | "model" | "effort" | "modeId" | "featureValues"> | null;
 
 /** What every takeover does, said wherever one starts; the host's stated limits follow it there. */
 export const TAKEOVER_EFFECTS = "Saves a compact handoff, archives this session, then starts a new one that continues the task.";
@@ -139,7 +139,9 @@ export function useTakeoverRun(hostId: string, disclosed: readonly string[], onF
     // The operator confirms the exact review they read; a stale one is refused by its server and needs a fresh review.
     if (seat.state === "review" && seat.held && seat.reviewId) return confirm({ ...seat, held: null }, { reviewId: seat.reviewId, revision: seat.held.revision, digest: seat.held.digest });
     let answer: TakeoverReview;
-    try { answer = await review({ agentId: seat.id, bindingKey: null, ...(route ? { route } : {}) }); }
+    // The review schema names the mode `mode`; the picker's own choice keeps it as `modeId` between operations.
+    const chosen = route && { provider: route.provider, model: route.model, effort: route.effort, ...(route.modeId ? { mode: route.modeId } : {}), featureValues: route.featureValues };
+    try { answer = await review({ agentId: seat.id, bindingKey: null, ...(chosen ? { route: chosen } : {}) }); }
     catch (error) { return { ...seat, state: "kept", line: KEPT, detail: `Kontor could not review this takeover (${failure(error)}). Nothing was sent.`, next: "review" }; }
     if (answer.state !== "ready" || !answer.digest) return reviewResult(seat, answer);
     const reviewed = { ...seat, model: answer.successor ? modelAlias(answer.successor.model) : null, reviewId: answer.reviewId };

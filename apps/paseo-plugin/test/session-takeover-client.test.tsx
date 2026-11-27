@@ -115,11 +115,18 @@ describe("useTakeoverRun", () => {
 
   it("sends a chosen route with each review and leaves it out for Auto", async () => {
     const route = { provider: "codex", model: "gpt-6-sol", effort: "high", featureValues: { service_tier: "priority" } };
-    await mount().render().start(entries("a"), route);
+    await mount().render().start(entries("a"), { ...route, modeId: null });
     expect(rpc["sessions.takeover-review"]).toHaveBeenLastCalledWith({ agentId: "a", bindingKey: null, route });
     harness.fresh();
     await mount().render().start(entries("b"), null);
     expect(rpc["sessions.takeover-review"]).toHaveBeenLastCalledWith({ agentId: "b", bindingKey: null });
+  });
+
+  it("sends an operator-chosen operating mode inside the route, never as modeId", async () => {
+    const route = { provider: "codex", model: "gpt-6-sol", effort: "high", modeId: "full-access", featureValues: { service_tier: "priority" } };
+    await mount().render().start(entries("a"), route);
+    expect(rpc["sessions.takeover-review"]).toHaveBeenLastCalledWith({ agentId: "a", bindingKey: null,
+      route: { provider: "codex", model: "gpt-6-sol", effort: "high", mode: "full-access", featureValues: { service_tier: "priority" } } });
   });
 
   it("keeps the original and says nothing was sent when the review fails", async () => {
@@ -313,7 +320,7 @@ describe("useTakeoverRun unfinished seats", () => {
 
   // R2b: a new start never replaces unresolved seats; only their own Check, Finish, Confirm or Decline resolves them.
   const BUSY = "Finish or check the unfinished takeover first.", RUNNING = "A takeover is running; wait for its results.";
-  const CHOSEN = { provider: "codex", model: "gpt-6.1-sol", effort: "high", featureValues: {} };
+  const CHOSEN = { provider: "codex", model: "gpt-6.1-sol", effort: "high", modeId: null, featureValues: {} };
   const reviewed = () => vi.mocked(rpc["sessions.takeover-review"]!).mock.calls.map(([input]) => (input as { agentId: string }).agentId);
 
   it("refuses a new single or bulk start from any surface while seats are unfinished, and lets Check and Finish continue the same run", async () => {
@@ -439,7 +446,7 @@ describe("TakeoverResults", () => {
 
   it("says Auto used each seat's chain, or that a chosen model applied to this takeover only", () => {
     expect(text(sheet(finished).tree)).toContain("Auto used each seat's chain.");
-    const chosen = text(sheet({ ...finished, route: { provider: "codex", model: "gpt-6-sol", effort: "high", featureValues: {} } }).tree);
+    const chosen = text(sheet({ ...finished, route: { provider: "codex", model: "gpt-6-sol", effort: "high", modeId: null, featureValues: {} } }).tree);
     expect(chosen).toContain("S6 was chosen for this takeover only. Defaults stay unchanged.");
     expect(chosen).not.toContain("Auto used");
   });

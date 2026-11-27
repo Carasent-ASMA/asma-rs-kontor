@@ -18,6 +18,8 @@ import { seatAction, TAKEOVER_EFFECTS, takeoverBusy, takeoverSummary, TakeoverRe
 import { useNavigatorCapabilities } from "./use-navigator";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** A seat whose mode nobody reported cannot run Auto: the row's primary action opens the model menu instead. */
+const MODE_UNREADABLE_AUTO = "This session's permission mode cannot be read, so Auto cannot confirm a successor's permission boundary.";
 
 type Sheet = { readonly kind: "summary"; readonly source: DirectoryEntry }
   | { readonly kind: "attach"; readonly source: DirectoryEntry; readonly revision: SummaryRevision | null }
@@ -37,12 +39,16 @@ function TakeoverPicker({ seats, disclosure, colors, compact, onUse, onCancel }:
     return () => { live = false; };
   }, []);
   const count = seats.length;
+  const seat = count === 1 ? seats[0]! : null;
+  // One seat's source mode is what the picker may inherit; a provider it cannot cross to needs a mode chosen there.
+  // Several seats keep their own per-seat refusals and current behaviour.
   return <Modal title="Take over" open onOpenChange={(open) => { if (!open) onCancel(); }}>
     <Modal.Content scrollable={false} contentContainerStyle={{ padding: 8, gap: 8 }}>
       {options && typeof options === "object" ? <ModelPicker colors={colors} compact={compact} providers={options.providers} projectId={options.catalogProjectId} value={null} codex={codexDefault(options.providers)}
-        subtitle={count === 1 ? `For ${seats[0]!.title}` : `For ${count} selected seats`} permissions={count === 1 ? { inherited: seats[0]!.mode ?? null, provider: seats[0]!.provider } : { seats: count }} note={`Only this takeover · Defaults stay unchanged. ${disclosure}`}
+        subtitle={count === 1 ? `For ${seats[0]!.title}` : `For ${count} selected seats`} permissions={seat ? { inherited: seat.mode ?? null, provider: seat.provider } : { seats: count }} modeChoice={seat ? { source: seat.provider, mode: seat.mode ?? null } : undefined}
+        note={`Only this takeover · Defaults stay unchanged. ${disclosure}`}
         action={(alias) => `Take over${count === 1 ? "" : ` ${count}`}${alias ? ` with ${alias}` : ""}`} onAuto={() => onUse(null)}
-        onUse={(choice) => onUse({ provider: choice.provider, model: choice.model, effort: choice.effort, featureValues: choice.featureValues })} onCancel={onCancel} />
+        onUse={(choice) => onUse({ provider: choice.provider, model: choice.model, effort: choice.effort, modeId: choice.modeId, featureValues: choice.featureValues })} onCancel={onCancel} />
         : <Text role="status" style={{ color: options ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, padding: 8 }}>{options ?? "Reading this host's models…"}</Text>}
     </Modal.Content>
   </Modal>;
@@ -97,14 +103,21 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   const attachUnavailable = offline ?? (!nativeAttachments ? SUMMARY_ATTACHMENT_UNAVAILABLE : null);
   const actions = (entry: DirectoryEntry): SessionAction[] => {
     const seat = pending.find((one) => one.id === entry.id), next = seat && seatAction(seat);
+    // No reported mode can be inherited on any route, so Auto could only refuse; the primary action opens the menu that
+    // asks for the model and the operating mode together. Bulk takeover keeps its per-seat refusals.
+    const modeUnreadable = entry.mode == null;
     return [
       // A held review is confirmed or declined only in its results, where its limits are listed; Check and Finish run from here.
       seat ? { key: "takeover", label: next?.kind === "confirm" ? "Review takeover" : next?.label ?? "Takeover unfinished", icon: next?.kind === "check" ? "CircleHelp" : next?.kind === "confirm" ? "ShieldAlert" : "RefreshCw",
         detail: seat.line, footer: seat.detail ?? undefined, unavailable: offline ?? running ?? (next ? null : seat.detail ?? "Nothing here can finish this takeover."),
         perform: () => next?.kind === "confirm" ? setSheet({ kind: "results" }) : settle(entry.id) }
-      : { key: "takeover", label: "Take over", icon: "RefreshCw", detail: "Continue in a replacement session", caption: "Auto uses the first available model in the chain.",
-        footer: disclosure, unavailable: takeoverUnavailable([entry]), perform: () => start([entry], null),
-        option: { label: "Auto", accessibilityLabel: `Choose a model for taking over ${entry.title}`, unavailable: reason("takeoverRoute"), perform: () => setSheet({ kind: "picker", seats: [entry] }) } },
+      : { key: "takeover", label: "Take over", icon: "RefreshCw",
+        detail: modeUnreadable ? "Choose a model and an operating mode" : "Continue in a replacement session",
+        caption: modeUnreadable ? "Auto cannot confirm a permission boundary without a reported mode." : "Auto uses the first available model in the chain.",
+        footer: disclosure, unavailable: takeoverUnavailable([entry]) ?? (modeUnreadable ? reason("takeoverRoute") : null),
+        perform: modeUnreadable ? () => setSheet({ kind: "picker", seats: [entry] }) : () => start([entry], null),
+        option: { label: "Auto", accessibilityLabel: `Choose a model for taking over ${entry.title}`, unavailable: reason("takeoverRoute") ?? (modeUnreadable ? MODE_UNREADABLE_AUTO : null),
+          perform: () => setSheet({ kind: "picker", seats: [entry] }) } },
       { key: "summarize", label: "Summarize & copy", icon: "FileText", unavailable: summaryUnavailable, perform: () => setSheet({ kind: "summary", source: entry }) },
       { key: "attach", label: "Attach summary…", icon: "GitFork", unavailable: attachUnavailable, perform: () => setSheet({ kind: "attach", source: entry, revision: null }) },
     ];

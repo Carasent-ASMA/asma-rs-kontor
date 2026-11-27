@@ -51,6 +51,28 @@ describe("same-state counts", () => {
     expect(sessionStateCounts({ ...input, blocked: "Assigned to me", candidates: [] }).all.label).toContain("not evaluated");
   });
 
+  it("counts background work only from the live direct read, never a catalog zero", () => {
+    const working = [...entries, sessionEntry("bg", { backgroundWork: { count: 1, runningCount: 0 } })];
+    const read = { ...input, state: { ...state, entries: working }, universe: working, candidates: working };
+    expect(sessionStateCounts(read).background.text).toBe("1");
+    expect(sessionStateCounts({ ...read, state: { ...read.state, source: "direct" } }).background.text).toBe("1");
+    for (const source of ["catalog", "catalog-snapshot"] as const) {
+      const count = sessionStateCounts({ ...read, state: { ...read.state, source } }).background;
+      expect(count.text).toBe("—");
+      expect(count.label).toContain("Count unavailable");
+    }
+  });
+
+  it("asserts no background zero when no row in a complete read carries a summary", () => {
+    // A host before Paseo 0.16 sends no summary on any row: that is not zero background work.
+    const silent = sessionStateCounts(input).background;
+    expect(silent.text).toBe("—");
+    expect(silent.label).toContain("may not report it");
+    // One reported zero shows the host reports summaries, so its zero count is a fact.
+    const reported = [...entries, sessionEntry("bg-none", { backgroundWork: { count: 0 } })];
+    expect(sessionStateCounts({ ...input, state: { ...state, entries: reported }, universe: reported, candidates: reported }).background.text).toBe("0");
+  });
+
   it("does not assert a provider-blocked zero under a label-unknown scope", () => {
     const count = sessionStateCounts({ ...input, restrictedUnknown: true }).provider_blocked;
     expect(count.text).toBe("—");

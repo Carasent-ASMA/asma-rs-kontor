@@ -317,6 +317,19 @@ export function inheritedModeProblem(providers: readonly CreateProvider[], sourc
   return null;
 }
 
+/**
+ * The successor's operating mode for one takeover: inherit the source's own provider's mode, or require the operator
+ * to choose one for this takeover. The reason is the inheritance rule's own reason, so the picker and the operation
+ * that opens it say the same thing. Nothing is defaulted or mapped across providers.
+ */
+export type TakeoverModeChoice = { readonly kind: "inherit"; readonly mode: string } | { readonly kind: "require"; readonly reason: string };
+
+export function takeoverModeChoice(providers: readonly CreateProvider[], source: string, mode: string | null, destination: string): TakeoverModeChoice {
+  const problem = inheritedModeProblem(providers, source, mode, destination);
+  if (!problem && mode !== null) return { kind: "inherit", mode };
+  return { kind: "require", reason: problem ?? `${source}: the source operating mode was not reported, so an operating mode must be chosen.` };
+}
+
 export const createRequestSchema = z.object({
   requestId: z.string().uuid(),
   role: z.enum(CREATE_ROLES),

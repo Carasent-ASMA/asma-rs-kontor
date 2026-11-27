@@ -157,6 +157,7 @@ describe("Kontor client entry cleanup", () => {
       addScreen: () => () => cleanups.push("screen"),
       addSidebarHeaderItem: () => () => cleanups.push("sidebar"),
       addSlashCommand: () => () => undefined,
+      addSidebarView: () => () => cleanups.push("sidebar view"),
       addCommandCenterItem: () => () => cleanups.push("command"),
       addComposerPill: () => {
         const registration = {
@@ -180,7 +181,7 @@ describe("Kontor client entry cleanup", () => {
 
     expect(host.unsubscribed).toBe(1);
     expect(host.releases).toBe(1);
-    expect(cleanups.sort()).toEqual(["command", "command", "command", "screen", "sidebar"]);
+    expect(cleanups.sort()).toEqual(["command", "command", "command", "screen", "sidebar", "sidebar view"]);
     expect(errorSpy).toHaveBeenCalledWith(
       "Kontor return control cleanup failed",
       expect.any(Error),

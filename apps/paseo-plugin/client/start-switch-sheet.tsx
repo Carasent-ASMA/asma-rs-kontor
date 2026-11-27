@@ -24,7 +24,7 @@ import { copySessionId, SessionActionsMenu, type SessionAction } from "./session
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { buildOrganizationTree, flattenOrganizationTree, sessionState } from "./session-organization";
 import { byLastActivity, totalsDetail, type SessionTotals } from "./session-row-format";
-import type { SessionStateCount } from "./session-state-counts";
+import { backgroundUnavailable, type SessionStateCount } from "./session-state-counts";
 import { SessionPulseContext, SessionStateMarker } from "./session-state-marker";
 import { startSwitchCounts, type SwitchView } from "./session-state-shortcuts";
 import { SessionLayoutControl } from "./session-layout-control";
@@ -47,6 +47,8 @@ import { SessionMetadataGuide, SessionUsageLines } from "./session-usage-view";
 
 /** The Kontor screen param that opens this sheet, from the Command Center item. */
 export const SWITCH_SHEET = "switch";
+/** Six states, Filter and Kontor in Paseo's 320-wide desktop sidebar: 8 tiles of 34 and 7 gaps of 4 take 300 of its 304. */
+export const SIDEBAR_TILE = 34;
 const MATCHES_SHOWN = 20;
 
 export type CreateOptionsState =
@@ -134,12 +136,12 @@ const COVERAGE = "Opened from Kontor · this host and app profile only. Native s
 const stateHelp = (status: StatusFilter, count: SessionStateCount | undefined) => `${quickFilterLabel(status)} · ${count?.label ?? "count unknown"}. ${QUICK_FILTER_MEANINGS[status]}`;
 
 /** Kontor's state toolbar, with Kontor at the end in place of Filters; Filter holds every state and shows one chosen there (ASMA-8851-D2). */
-function SwitchStrip({ colors, status, counts, more, onStatus, onMore, onKontor, chosenRef }: {
+function SwitchStrip({ colors, status, counts, more, onStatus, onMore, onKontor, chosenRef, tileSize }: {
   colors: Colors; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>; more: boolean;
-  onStatus(status: StatusFilter): void; onMore(): void; onKontor(): void; chosenRef: RefObject<View | null>;
+  onStatus(status: StatusFilter): void; onMore(): void; onKontor(): void; chosenRef: RefObject<View | null>; tileSize?: number;
 }) {
   const extra = MORE_STATUS_FILTERS.includes(status) ? status : null;
-  return <StateToolbar testID="kontor-switch-states" stateTestID="kontor-switch-state-" colors={colors} status={status} counts={counts} onStatus={onStatus} chosenRef={chosenRef}
+  return <StateToolbar testID="kontor-switch-states" stateTestID="kontor-switch-state-" colors={colors} status={status} counts={counts} onStatus={onStatus} chosenRef={chosenRef} tileSize={tileSize}
     more={{ ref: extra ? chosenRef : undefined, testID: "kontor-switch-more", label: extra ? `Filter: ${quickFilterLabel(extra)}` : "Filter", help: extra ? stateHelp(extra, counts[extra]) : "Every state, the other states and archived sessions",
       icon: extra ? QUICK_FILTER_ICONS[extra] : "ListFilter", selected: !!extra, expanded: more, count: extra ? counts[extra] : undefined, caption: extra ? undefined : "Filter", onPress: onMore }}
     trailing={{ testID: "kontor-switch-kontor", label: "Open in Kontor", help: "Open Kontor's Sessions on this host with this state and search; nothing here is discarded.",
@@ -198,6 +200,8 @@ type StartSwitchProps = {
   onClose: () => void;
   /** Inside the host's own popover or bottom sheet, which owns dismissal and scrolling; the compact sheet also shows the title. */
   popover?: boolean;
+  /** Paseo 0.16's sidebar slot: the host owns dismissal, so there is no Close; the list fills the slot and scrolls, and with a mouse the tiles shrink so all six states fit the sidebar's width. */
+  sidebar?: boolean;
   /** The session this was opened from, marked in the list. */
   currentId?: string | null;
   /** The composer workspace, when a native session is open. */
@@ -229,7 +233,7 @@ export function popoverBodyHeight(window: number, compact: boolean, line: number
  * state strip, search and layout over this host's sessions, plus New lead as a header action when the host allows it.
  * Rows open only through `onOpen`, so each surface keeps its own single open path and its refusals.
  */
-export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpenTakeover, onOpen, onShowView, onClose, popover = false, currentId = null, currentWorkspaceId, initialScope, initialSource = null, frameHeight = 0 }: StartSwitchProps) {
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpenTakeover, onOpen, onShowView, onClose, popover = false, sidebar = false, currentId = null, currentWorkspaceId, initialScope, initialSource = null, frameHeight = 0 }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">(initialSource ? "new" : "switch");
   const creation = useRef({ hostId, open: !!initialSource });
   const scope = creation.current;
@@ -238,7 +242,8 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const startNew = (source: LeadSource | null = null) => { creation.current = { hostId, open: true }; setLead((current) => ({ key: current.key + 1, source })); setMode("new"); };
   const leaveNew = () => { creation.current.open = false; setMode("switch"); };
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("recent");
+  // A switcher asks "where was I", so it opens on Recent; the sidebar is a standing navigator and opens on the whole organization.
+  const [status, setStatus] = useState<StatusFilter>(sidebar ? "all" : "recent");
   const [more, setMore] = useState(false);
   const chosen = useRef<View | null>(null);
   const [searching, setSearching] = useState(false);
@@ -348,7 +353,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     {popover && compact && mode !== "new" ? null : <Text testID="kontor-switch-heading" accessibilityRole="header" accessibilityLabel={headingTitle} numberOfLines={1} ellipsizeMode="tail" style={{ color: colors.foreground, fontSize: 15, fontWeight: "600", flexShrink: 1 }}>{headingTitle}</Text>}
     {mode === "new" ? null : <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>This host</Text>}
   </View>;
-  const close = popover ? null : <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
+  const close = popover || sidebar ? null : <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
   const pending = create.state.status === "ready" && create.state.options.pending;
   const newLead = create.state.status === "ready" && (pending || create.state.options.enabled)
     ? <Pressable testID="kontor-switch-new-lead" accessibilityRole="button" accessibilityLabel={pending ? "Check pending session creation" : "New lead"} onPress={() => startNew()}
@@ -363,12 +368,12 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       {selection.selecting ? <SelectionHeader count={selection.selected.length} total={matches.length} hidden={selection.hidden} colors={colors} onDone={selection.clear}
         selectAll={{ checked: allSelected, unavailable: allSelected ? null : selectAllUnavailable, onPress: () => allSelected ? selection.remove(matches) : selection.selectAll(matches) }} />
         : <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>{heading}{newLead}{close}</View>}
-      <SwitchStrip colors={colors} status={status} counts={counts} more={more} chosenRef={chosen} onStatus={choose} onMore={() => { cancelDelayedOpen(); setMore((value) => !value); }} onKontor={() => showView()} />
+      <SwitchStrip colors={colors} status={status} counts={counts} more={more} chosenRef={chosen} tileSize={sidebar && !tall ? SIDEBAR_TILE : undefined} onStatus={choose} onMore={() => { cancelDelayedOpen(); setMore((value) => !value); }} onKontor={() => showView()} />
       {more ? <MorePanel colors={colors} status={status} counts={counts} onStatus={choose} onArchived={() => showView("archived")} /> : null}
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 6, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: searching ? 2 : 1, borderColor: searching ? colors.accent : colors.border, borderRadius: 6 }}>
           <Icon name="Search" size={16} color={colors.foregroundMuted} />
-          <TextInput testID="kontor-switch-search" accessibilityLabel="Find a session" placeholder="Find a session…" autoFocus={!compact} value={query} onChangeText={find}
+          <TextInput testID="kontor-switch-search" accessibilityLabel="Find a session" placeholder="Find a session…" autoFocus={!compact && !sidebar} value={query} onChangeText={find}
             onFocus={() => setSearching(true)} onBlur={() => setSearching(false)} placeholderTextColor={colors.foregroundMuted}
             // The box shows focus in the accent; the browser's own blue ring would sit inside it.
             style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, minHeight: tall ? 40 : 30, ...(Platform.OS === "web" ? { outlineStyle: "solid", outlineWidth: 0 } : {}) }} />
@@ -381,7 +386,9 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     </View>;
   const muted = { color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 4 } as const;
   let empty: string | null = null;
-  if (!rows.length && query.trim()) empty = `No ${status === "recent" ? "" : `${quickFilterLabel(status)} `}session matches “${query.trim()}”.`;
+  const backgroundGap = status === "background" ? backgroundUnavailable(archive.directory) : null;
+  if (!rows.length && backgroundGap) empty = `No Background tasks shown: ${backgroundGap}.`;
+  else if (!rows.length && query.trim()) empty = `No ${status === "recent" ? "" : `${quickFilterLabel(status)} `}session matches “${query.trim()}”.`;
   else if (!rows.length && status !== "recent") empty = `No ${quickFilterLabel(status)} sessions on this host.`;
   else if (!rows.length && recent.record.clearedAt !== null) empty = `Cleared on this device at ${new Date(recent.record.clearedAt).toLocaleTimeString()}. Sessions you open from Kontor after that appear here.`;
   else if (!rows.length) empty = "Sessions you open from Kontor appear here, most recent first.";
@@ -411,7 +418,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
     <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 32 }}>
-        <Text testID="kontor-switch-count" style={{ ...muted, flex: 1 }}>{`${rows.length} of ${total}`}</Text>
+        <Text testID="kontor-switch-count" style={{ ...muted, flex: 1 }}>{backgroundGap ? `${rows.length} shown · total unavailable` : `${rows.length} of ${total}`}</Text>
         {rows.length < total ? <Action small label={`Show ${total - rows.length} more`} accessibilityLabel={`Show the other ${total - rows.length} of ${total}`} colors={colors} onPress={() => { cancelDelayedOpen(); setRevealed(true); }} /> : null}
         {status === "recent" ? <Action small label="Clear recent" accessibilityLabel="Clear recent on this device" colors={colors} onPress={() => clearRecent(hostId)} /> : null}
       </View>
@@ -430,7 +437,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       header={<><IconButton label="Back to sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />{heading}</>} />
     // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
     : popover ? <View {...list}>{items}</View>
-    : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate} style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
+    : <ScrollView {...list} ref={pulseBody} keyboardShouldPersistTaps="handled" scrollEventThrottle={120} onScroll={pulseEvaluate} onLayout={pulseEvaluate} style={{ flexGrow: sidebar ? 1 : 0, flexShrink: 1 }}>{items}</ScrollView>;
   // Board D1's sticky bar under the list, and the sheets the row menu and the bar open.
   // An unfinished takeover stays reachable here even after its results closed and its archived predecessor left the list.
   const footer = mode === "switch" && selection.selecting ? <SelectionBar count={seats.length} colors={colors} disclosure={takeover.disclosure} hasLimits={takeover.limits} yields={false}

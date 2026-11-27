@@ -1,4 +1,5 @@
 import type {
+  BackgroundWork,
   DirectoryEntry,
   SessionStatus,
 } from "../client/session-directory";
@@ -12,6 +13,7 @@ type SessionEntryOverrides = {
   needsInput?: boolean;
   activeTurn?: boolean;
   activeTurnStartedAt?: string | null;
+  backgroundWork?: BackgroundWork;
   archivedAt?: string | null;
   workspaceName?: string | null;
   projectName?: string | null;
@@ -50,6 +52,7 @@ export function sessionEntry(
       overrides.workspaceId === undefined ? "wks_1" : overrides.workspaceId,
     provider: "opencode/deepseek/deepseek-flash",
     model: null,
+    mode: "build",
     parentAgentId: null,
     labels: overrides.labels ?? {},
     projectKey: overrides.projectKey ?? "prj_1",
@@ -60,6 +63,9 @@ export function sessionEntry(
   };
   return {
     ...merged,
+    ...(overrides.backgroundWork === undefined
+      ? {}
+      : { backgroundWork: overrides.backgroundWork }),
     searchText: [
       merged.title,
       merged.workspaceName,

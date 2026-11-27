@@ -10,7 +10,7 @@ import { SCENARIOS } from "./scenarios";
  * would add a history entry of its own, and Back would then rewind only the frame.
  */
 type Layout = "both" | "phone" | "desktop";
-type StudioState = { readonly scenario: string; readonly theme: "dark" | "light"; readonly layout: Layout };
+type StudioState = { readonly scenario: string; readonly theme: "dark" | "light"; readonly layout: Layout; readonly sidebar: "paseo" | "kontor" };
 
 const PROVENANCE = "The plugin's own client source on react-native-web with a fixture host. Fictional data is the default. Captured scenarios read a frozen operator-local capture; local Tokenomics reads the explicitly configured report through its bounded server adapter. No Paseo connection. Navigation runs in the host shim; settings saves, links and toasts are simulated and logged. Copy actions write to this browser's clipboard when supported; errors are shown and the clipboard is never read. Browser rendering, not a device.";
 
@@ -21,9 +21,11 @@ function readState(search: string): StudioState {
     scenario: SCENARIOS.find((value) => value.id === params.get("scenario"))?.id ?? SCENARIOS[0]!.id,
     theme: params.get("theme") === "light" ? "light" : "dark",
     layout: layout === "phone" || layout === "desktop" ? layout : "both",
+    sidebar: params.get("sidebar") === "kontor" ? "kontor" : "paseo",
   };
 }
-const queryOf = (state: StudioState) => `?scenario=${state.scenario}&theme=${state.theme}&layout=${state.layout}`;
+// `sidebar=kontor` stands for choosing Kontor under Settings > Sidebar > Sidebar view (Paseo 0.16); it is left out of the address otherwise.
+const queryOf = (state: StudioState) => `?scenario=${state.scenario}&theme=${state.theme}&layout=${state.layout}${state.sidebar === "kontor" ? "&sidebar=kontor" : ""}`;
 
 const control = (active: boolean): CSSProperties => ({ font: "inherit", fontSize: 13, minHeight: 44, minWidth: 44, padding: "0 12px", borderRadius: 8, border: `1px solid ${active ? "#2E9E66" : "#3a3f3e"}`, background: active ? "#20744A" : "#1E2120", color: "#fafafa", cursor: "pointer" });
 const panelStyle: CSSProperties = { position: "fixed", zIndex: 10, boxSizing: "border-box", background: "#181B1A", border: "1px solid #3a3f3e", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,.45)", color: "#fafafa" };
@@ -149,8 +151,8 @@ export function Studio() {
     history.pushState(null, "", queryOf(next));
     setState(next);
   };
-  const { scenario, theme, layout } = state;
-  const embed = (pointer: "coarse" | "fine") => `?embed=1&scenario=${scenario}&theme=${theme}&pointer=${pointer}&n=${nonce}`;
+  const { scenario, theme, layout, sidebar } = state;
+  const embed = (pointer: "coarse" | "fine") => `?embed=1&scenario=${scenario}&theme=${theme}&pointer=${pointer}${sidebar === "kontor" ? "&sidebar=kontor" : ""}&n=${nonce}`;
   const current = SCENARIOS.find((value) => value.id === scenario)!;
   return <div style={{ display: "flex", flexDirection: "column", height: "100%", color: "#fafafa", fontSize: 13 }}>
     <header style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "8px 12px", borderBottom: "1px solid #252B2A", background: "#181B1A" }}>
@@ -160,6 +162,7 @@ export function Studio() {
         { value: "both", text: "Phone + desktop" }, { value: "phone", text: "Phone 390×844" }, { value: "desktop", text: "Desktop 1440×900" },
       ]} />
       <Toggle label="Theme" value={theme} onChange={(value) => change({ theme: value })} options={[{ value: "dark", text: "Paseo dark" }, { value: "light", text: "Paseo light" }]} />
+      <Toggle label="Sidebar view" value={sidebar} onChange={(value) => change({ sidebar: value })} options={[{ value: "paseo", text: "Sidebar: Paseo" }, { value: "kontor", text: "Sidebar: Kontor" }]} />
       <button type="button" style={control(false)} onClick={() => setNonce(nonce + 1)}>Reset frames</button>
       <About summary={`${current.title}: ${current.summary}`} embed={embed("fine")} />
     </header>
