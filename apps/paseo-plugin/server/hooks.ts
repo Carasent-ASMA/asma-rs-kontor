@@ -203,8 +203,9 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
     const binding = await readPlacementBinding(paseo, labels, options);
     return binding ? { projects: [binding.projectId], directory: binding.directory } : "the seat's placement binding could not be resolved";
   }
-  // Project only: no source the hook can read names an unbound caller's checkout, so any directory that passes the
-  // source checks is accepted inside this project (the residual "project-only scope; checkout not resolved").
+  // Project only: no source the hook can read names an unbound caller's checkout. The scope keeps the caller to its
+  // own project, but it names no target, so `evaluatePlacement` refuses the creation (B-5). The caller's own directory
+  // is not that evidence either: it need not be the checkout the new workspace is for.
   return { projects: [caller.projectId] };
 }
 
@@ -225,7 +226,9 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  * labels: its request becomes unguarded only when neither the caller nor the
  * requested initial agent keeps a workflow claim and no other independently
  * known scope applies (the residual below). Labels alone never widen a scope.
- * An unreadable caller is refused.
+ * An unreadable caller is refused. A guarded request is admitted only into a
+ * checkout a Kontor binding names (the caller's, or with no caller the initial
+ * agent's): a caller without one is refused in its own project too (B-5).
  *
  * With no caller, a Kontor binding on the initial agent is enforced and any
  * other workflow claim is refused because it names no caller to scope it.

@@ -28,7 +28,10 @@ export interface PlacementBinding {
   readonly directory: string;
 }
 
-/** Where one workflow creation may land: one of these native projects and, when set, exactly this directory. */
+/**
+ * Where one workflow creation may land: one of these native projects and exactly this directory. A scope without a
+ * directory still holds the request to its projects, but it names no target and so admits nothing.
+ */
 export interface PlacementScope {
   readonly projects: readonly string[];
   readonly directory?: string;
@@ -99,7 +102,13 @@ export function evaluatePlacement(
   if (!projects.includes(projectId)) {
     return refuse("the request targets a project outside the seat's binding");
   }
-  if (directory !== undefined && resolved !== resolve(directory)) {
+  // A project is not evidence of the target (B-5): only a scope that names the checkout admits a creation.
+  if (directory === undefined) {
+    return refuse(
+      "no qualified evidence names the target checkout (a Kontor binding: kontor.workspace_id and kontor.worktree, read back natively); a matching project is not enough",
+    );
+  }
+  if (resolved !== resolve(directory)) {
     return refuse("the request targets a directory outside the seat's canonical worktree");
   }
   return { allowed: true };

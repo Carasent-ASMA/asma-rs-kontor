@@ -194,7 +194,10 @@ try {
 
   placement("on");
   cliCreate("wrong project with a valid id", "refused", swe, target(esw2, "a1"));
-  cliCreate("own epic project", "created", swe, target(esw1, "a2"));
+  // B-5: an unbound workflow caller names no evidence of its target checkout, so it is refused in its own project too,
+  // whether the directory is a new one or another task's review checkout.
+  cliCreate("own epic project without target evidence (B-5)", "refused", swe, target(esw1, "a2"));
+  cliCreate("unbound workflow caller into a sibling review checkout in its own project (B-5)", "refused", swe, target(esw1, "a16-review"));
   cliCreate("(a) unlabelled caller in an epic project, other project", "refused", bare, target(esw2, "a3"));
   cliCreate("(b) workflow caller with no target project", "refused", bare, ["--path", dir("targets/a4")]);
   cliCreate("worktree route from a workflow caller", "refused", swe, ["--path", repo, "--project", plain.projectId], "worktree");

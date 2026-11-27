@@ -1362,7 +1362,7 @@ Evidence checklist:
 | --- | --- |
 | `before("agent.create")` | Adds one stable system-prompt line and the `kontor-observer` MCP server at **observer** authority. A server already named `kontor` is preserved, so Kontor-composed seats are untouched. |
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` from the keys Kontor actually writes (`kontor.seat_binding_id`, `kontor.role_slot_id`, or `kontor.agent-run`), or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`. The key is rewritten on every open, so an old seat never survives a resume. It never blocks the open. |
-| `before("workspace.create")` | Placement guard. Scope comes from the client-reported caller (`callerAgentId`, top-level in 0.16.2 or on the initial agent), read back natively: its own workspace and project. The 0.17.4 CLI copies that id from its own `PASEO_AGENT_ID`, and the daemon passes it on unchanged and checks only that the agent exists, so a process that sets another live agent's id gets that agent's scope (the borrowed-caller residual below). A caller in a desk or epic project, or one whose labels or whose initial agent's labels claim workflow work, is held to its own project. Only an SDK request carries an initial agent: the 0.17.4 CLI sends none on `workspace.create`, so a CLI request is classified by its caller alone. Nothing widens that: no source the hook can read proves a desk caller's assignment to an epic (an `epic` label, a key's syntax or a project's name is not one), so a desk caller cannot place into an epic project through a guarded route. A caller with a Kontor binding is held to that binding, which must name the workspace it runs in, and a binding holds only when the bound workspace reads back with a checkout directory equal to `kontor.worktree`. A caller without a binding is held to its project only: no source the hook can read names its checkout, so any directory that passes the checks below is accepted inside that project (residual: project-only scope; checkout not resolved). For a caller in a desk or epic project the scope comes from that native placement, so removing its labels does not remove it; a caller anywhere else is in scope only through a workflow claim on its own labels or on the requested initial agent's labels: its request becomes unguarded only when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies (the residual below). Labels alone never widen a scope. An unreadable caller is refused. With no caller, a Kontor binding on the initial agent is enforced and any other workflow claim is refused. A request with no caller and no workflow claim, and a request from a caller outside any desk or epic project when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies, are unclassified: the host gives no provenance that tells them from an operator's request, so they are left unguarded, which is an unsupported case, not operator work. Every scope also requires a directory source (no worktree creation) with an explicit `projectId` and an absolute path outside Paseo's own worktree root and, when placement roots are configured, inside one of them. |
+| `before("workspace.create")` | Placement guard. Scope comes from the client-reported caller (`callerAgentId`, top-level in 0.16.2 or on the initial agent), read back natively: its own workspace and project. The 0.17.4 CLI copies that id from its own `PASEO_AGENT_ID`, and the daemon passes it on unchanged and checks only that the agent exists, so a process that sets another live agent's id gets that agent's scope (the borrowed-caller residual below). A caller in a desk or epic project, or one whose labels or whose initial agent's labels claim workflow work, is held to its own project. Only an SDK request carries an initial agent: the 0.17.4 CLI sends none on `workspace.create`, so a CLI request is classified by its caller alone. Nothing widens that: no source the hook can read proves a desk caller's assignment to an epic (an `epic` label, a key's syntax or a project's name is not one), so a desk caller cannot place into an epic project through a guarded route. A caller with a Kontor binding is held to that binding, which must name the workspace it runs in, and a binding holds only when the bound workspace reads back with a checkout directory equal to `kontor.worktree`. A caller without a binding is held to its project and refused there too: no source the hook can read names its target checkout, and a matching project is not evidence of it, so a guarded workflow creation needs a Kontor binding, the caller's own or, with no caller, the initial agent's (B-5, a refused capability; the caller's own directory is not that evidence either). For a caller in a desk or epic project the scope comes from that native placement, so removing its labels does not remove it; a caller anywhere else is in scope only through a workflow claim on its own labels or on the requested initial agent's labels: its request becomes unguarded only when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies (the residual below). Labels alone never widen a scope. An unreadable caller is refused. With no caller, a Kontor binding on the initial agent is enforced and any other workflow claim is refused. A request with no caller and no workflow claim, and a request from a caller outside any desk or epic project when neither the caller nor the requested initial agent keeps a workflow claim and no other independently known scope applies, are unclassified: the host gives no provenance that tells them from an operator's request, so they are left unguarded, which is an unsupported case, not operator work. Every scope also requires a directory source (no worktree creation) with an explicit `projectId` and an absolute path outside Paseo's own worktree root and, when placement roots are configured, inside one of them. |
 | `on("workspace.created")` | Placement detection. Reads the created workspace and logs one `kontor.placement.detected` line when it is a git project rooted at a linked worktree or a directory under Paseo's own worktree root. It never archives, renames or moves anything. |
 
 The plugin registers the first two hooks unless the operator turns the floor
@@ -1387,11 +1387,15 @@ label never stands in for the native readback.
 
 Kontor never binds a Paseo-direct seat (`orchestration=paseo` or
 `paseo-direct` without a `kontor.*` label). The guard holds that seat to its own
-native project, read back from the caller, plus the checks below. Its checkout
-is not resolved: no source the hook can read names it, so a directory such as
-another task's review worktree is accepted inside that project (residual:
-project-only scope; checkout not resolved). A seat that carries both label sets
-gets the full binding enforcement.
+native project, read back from the caller, and then refuses the creation: no
+source the hook can read names the seat's target checkout, and a matching
+project is not evidence of it (B-5). A guarded workspace creation by an unbound
+Paseo-direct caller is therefore a refused capability. The missing evidence is a
+Kontor binding: `kontor.workspace_id` and `kontor.worktree`, read back natively
+with that checkout. The caller's own directory is not that evidence, since it
+need not be the checkout the new workspace is for. An unguarded route is not a
+supported way around the refusal. A seat that carries both label sets gets the
+full binding enforcement.
 
 Every guarded seat is refused for:
 
@@ -1399,7 +1403,9 @@ Every guarded seat is refused for:
 - a directory without an explicit `projectId` (Paseo would infer a project);
 - a relative directory path;
 - a directory inside Paseo's own `~/.paseo/worktrees` root;
-- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured.
+- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured;
+- a target checkout no Kontor binding names: an unbound seat is refused in its
+  own project too (B-5).
 
 A seat with a `kontor.*` label is additionally refused for:
 
@@ -1907,11 +1913,12 @@ A workspace restored from archive is never seen. Any other misplacement on a
 detect-only or unguarded route is unsupported, so these residuals bound what
 this guard delivers; they do not close the placement problem. A caller id is
 never a label, and an unlabelled caller in a desk or epic project is still
-enforced. Two residuals hold on the guarded routes too: a caller id borrowed
-from another live agent gets that agent's scope, and a caller without a Kontor
-binding is held to its project only (project-only scope; checkout not
-resolved). While the kontor worker is not loaded, no route is guarded or
-detected (see the placement switch).
+enforced. One residual holds on the guarded routes too: a caller id borrowed
+from another live agent gets that agent's scope. A caller without a Kontor
+binding is refused rather than held to its project (B-5, a refused capability:
+the missing evidence is a Kontor binding that names its target checkout). While
+the kontor worker is not loaded, no route is guarded or detected (see the
+placement switch).
 
 A desk caller (an epic lead in `DESK • ADAM`, for example) cannot create a
 workspace in an epic project through a guarded route while placement is

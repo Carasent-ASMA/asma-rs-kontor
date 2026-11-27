@@ -12,7 +12,7 @@ const binding = {
   directory: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
 };
 const bound = { projects: [binding.projectId], directory: binding.directory };
-/** A caller's own project with no canonical directory: a Paseo-direct seat. */
+/** A caller's own project with no canonical directory: a Paseo-direct seat. It names no target, so it admits nothing. */
 const direct = { projects: ["prj_paseo_direct"] };
 
 function create(source: WorkspaceCreateLike["source"]): WorkspaceCreateLike {
@@ -130,18 +130,21 @@ describe("evaluatePlacement", () => {
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
   });
 
-  it("accepts an explicit directory in the caller's own project without a canonical directory: the checkout is not resolved (project-only scope)", () => {
-    expect(
-      evaluatePlacement(
-        create({
-          kind: "directory",
-          path: "/Users/test/carasent/asma-modules/workspaces/asma-8507",
-          projectId: "prj_paseo_direct",
-        }),
-        rules,
-        direct,
-      ),
-    ).toEqual({ allowed: true });
+  it("refuses a directory in the caller's own project when the scope names no checkout: a project is not evidence of the target (B-5)", () => {
+    const own = "/Users/test/carasent/asma-modules/workspaces/asma-8507";
+    const sibling = "/Users/test/carasent/asma-modules/.worktrees/asma-8508-review/asma-rs-kontor";
+    for (const path of [own, sibling]) {
+      const decision = evaluatePlacement(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), rules, direct);
+      expect(decision.allowed).toBe(false);
+      expect(decision).toMatchObject({ reason: expect.stringContaining("no qualified evidence names the target checkout") });
+    }
+    // A scope that names the checkout admits exactly it, and not its sibling.
+    const named = { ...direct, directory: own };
+    expect(evaluatePlacement(create({ kind: "directory", path: own, projectId: "prj_paseo_direct" }), rules, named)).toEqual({ allowed: true });
+    expect(evaluatePlacement(create({ kind: "directory", path: sibling, projectId: "prj_paseo_direct" }), rules, named)).toMatchObject({
+      allowed: false,
+      reason: expect.stringContaining("directory outside"),
+    });
   });
 
   it("keeps the source checks without a canonical directory", () => {
@@ -168,7 +171,8 @@ describe("evaluatePlacement", () => {
     const request = create({ kind: "directory", path: "/Users/test/carasent/asma-modules/workspaces/asma-8507", projectId: "prj_other" });
     expect(evaluatePlacement(request, rules, { projects: [] })).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
     expect(evaluatePlacement(request, rules, direct)).toMatchObject({ allowed: false, reason: expect.stringContaining("project outside") });
-    expect(evaluatePlacement(request, rules, { projects: ["prj_paseo_direct", "prj_other"] })).toEqual({ allowed: true });
+    expect(evaluatePlacement(request, rules, { projects: ["prj_paseo_direct", "prj_other"] })).toMatchObject({ allowed: false, reason: expect.stringContaining("no qualified evidence") });
+    expect(evaluatePlacement(request, rules, { projects: ["prj_paseo_direct", "prj_other"], directory: request.source!.path })).toEqual({ allowed: true });
     expect(evaluatePlacement(request, rules, { projects: ["prj_other"], directory: "relative/dir" })).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
   });
 
@@ -219,7 +223,7 @@ describe("evaluatePlacement", () => {
 
   it("reads a `..<name>` directory under a placement root as inside it, and the root's parent as outside (AUD-R3-04)", () => {
     const contained = { ...rules, placementRoots: ["/Users/test/carasent/asma-modules"] };
-    const at = (path: string) => evaluatePlacement(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), contained, direct);
+    const at = (path: string) => evaluatePlacement(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), contained, { ...direct, directory: path });
     expect(at("/Users/test/carasent/asma-modules/..scratch/task")).toEqual({ allowed: true });
     expect(at("/Users/test/carasent")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
     expect(at("/Users/test/carasent/asma-modules-other/task")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
@@ -235,7 +239,7 @@ describe("evaluatePlacement", () => {
     try {
       const { evaluatePlacement: evaluate } = await import("../server/placement");
       const windows = { paseoWorktreesRoot: "C:\\paseo\\worktrees", placementRoots: ["C:\\work"] };
-      const at = (path: string) => evaluate(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), windows, direct);
+      const at = (path: string) => evaluate(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), windows, { ...direct, directory: path });
       expect(at("C:\\work\\..scratch\\task")).toEqual({ allowed: true });
       expect(at("D:\\work\\task")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
       expect(at("C:\\work-sibling\\task")).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
@@ -256,7 +260,7 @@ describe("evaluatePlacement", () => {
       const { evaluatePlacement: evaluate } = await import("../server/placement");
       // Paseo's root on D does not contain these paths, so only the placement-root check can refuse them.
       const split = { paseoWorktreesRoot: "D:\\paseo\\worktrees", placementRoots: ["C:\\work"] };
-      const at = (path: string) => evaluate(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), split, direct);
+      const at = (path: string) => evaluate(create({ kind: "directory", path, projectId: "prj_paseo_direct" }), split, { ...direct, directory: path });
       expect(at("C:\\work-sibling\\task").allowed).toBe(false);
       expect(at("D:\\work\\task").allowed).toBe(false);
       expect(at("C:\\work-sibling\\task")).toMatchObject({ reason: expect.stringContaining("placement roots") });
