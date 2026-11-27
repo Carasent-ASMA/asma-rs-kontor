@@ -73,7 +73,7 @@ describe("A-owned Teams source integration", () => {
   it("registers the typed handler from the existing catalog while preserving sources.read JSON semantics", async () => {
     vi.stubEnv("KONTOR_PLUGIN_READ_SOURCES", JSON.stringify(catalog.sources));
     const handlers = new Map<string, (input: unknown) => any>(); const hooks: string[] = [];
-    const stop = plugin({ registerSettings: () => ({ read: async () => ({ status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS }), subscribe: () => () => {} }), handle: (rpc: { name: string }, handler: (input: unknown) => any) => handlers.set(rpc.name, handler), before: (name: string) => hooks.push(name) } as unknown as PluginServerContext);
+    const stop = plugin({ registerSettings: () => ({ read: async () => ({ status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS }), subscribe: () => () => {} }), handle: (rpc: { name: string }, handler: (input: unknown) => any) => handlers.set(rpc.name, handler), before: (name: string) => { hooks.push(name); return () => {}; }, on: () => () => {} } as unknown as PluginServerContext);
     try {
       expect(hooks).toEqual(["agent.create", "agent.session_open", "workspace.create"]);
       expect((await handlers.get("sources.list")!({})).sources).toEqual(catalog.sources);
@@ -86,7 +86,7 @@ describe("A-owned Teams source integration", () => {
   it("keeps an empty host catalog opt-in with no invented source", async () => {
     vi.stubEnv("KONTOR_PLUGIN_READ_SOURCES", "");
     const handlers = new Map<string, (input: unknown) => any>();
-    const stop = plugin({ registerSettings: () => ({ read: async () => ({ status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS }), subscribe: () => () => {} }), handle: (rpc: { name: string }, handler: (input: unknown) => any) => handlers.set(rpc.name, handler), before: () => {} } as unknown as PluginServerContext);
+    const stop = plugin({ registerSettings: () => ({ read: async () => ({ status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS }), subscribe: () => () => {} }), handle: (rpc: { name: string }, handler: (input: unknown) => any) => handlers.set(rpc.name, handler), before: () => () => {}, on: () => () => {} } as unknown as PluginServerContext);
     try { expect((await handlers.get("sources.list")!({})).sources).toEqual([]); await expect(handlers.get("teams.sources.read")!({ sourceId: "authoring" })).rejects.toThrow(); }
     finally { stop(); }
   });
