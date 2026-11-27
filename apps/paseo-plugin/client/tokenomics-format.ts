@@ -1,3 +1,4 @@
+import type { TokenomicsView } from "../shared/tokenomics";
 // Display rules from the report; raw accounting and CSV values stay untouched.
 export function reportNumber(value: number): string {
   const a = Math.abs(value);
@@ -59,4 +60,17 @@ export function reportComparedChange(value: number, label: string): string {
 export function reportTableWidths(natural: number[], minimum: number[], available: number): number[] {
   const factor = Math.max(available >= 1100 ? 0.9 : 1, (available - 2) / natural.reduce((a, b) => a + b, 0));
   return natural.map((width, i) => Math.max(width * factor, minimum[i] ?? 0));
+}
+
+/** Combine only explicitly grouped compact copy; full warnings remain available to CSV and accessibility. */
+export function reportNotices(notices: TokenomicsView["notices"], compact: boolean) {
+  const displayed: { kind: "warning" | "scope"; text: string; label: string }[] = [];
+  const grouped = new Map<string, number>();
+  for (const notice of notices) {
+    const key = compact && notice.kind === "warning" ? notice.compactText : undefined;
+    const index = key ? grouped.get(key) : undefined;
+    if (index !== undefined) displayed[index]!.label += ` ${notice.text}`;
+    else { if (key) grouped.set(key, displayed.length); displayed.push({ kind: notice.kind, text: key ?? notice.text, label: notice.text }); }
+  }
+  return displayed;
 }

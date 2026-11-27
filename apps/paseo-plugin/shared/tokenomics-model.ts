@@ -189,10 +189,11 @@ export function tokenomicsNotices(d: TokenomicsData, live: TokenomicsLive, q: To
     }
   } else {
     const missing = ["usage", "progress"].includes(q.page) ? 0 : model.scope.filter((s) => s.data !== "ok").length;
-    if (missing) warn(`${missing.toLocaleString("en-US")} ${missing === 1 ? "session lacks" : "sessions lack"} token data; usage and cost are lower bounds.`);
     const unpriced = new Set(d.prices.filter((p) => p[7].toLowerCase() === "unpriced").map((p) => p[0]));
     const seats = new Set(model.facts.filter((f) => unpriced.has(d.models[f[2]]!)).map((f) => f[0]));
-    if (seats.size && !["usage", "progress"].includes(q.page)) warn(`${seats.size.toLocaleString("en-US")} ${seats.size === 1 ? "session is" : "sessions are"} unpriced; cost excludes their recorded tokens.`);
+    const combined = missing && seats.size ? `${missing.toLocaleString("en-US")} ${missing === 1 ? "session lacks" : "sessions lack"} tokens; ${seats.size.toLocaleString("en-US")} ${seats.size === 1 ? "is" : "are"} unpriced. Usage/cost are lower bounds.` : undefined;
+    if (missing) notices.push({ kind: "warning", text: `${missing.toLocaleString("en-US")} ${missing === 1 ? "session lacks" : "sessions lack"} token data; usage and cost are lower bounds.`, ...(combined ? { compactText: combined } : {}) });
+    if (seats.size && !["usage", "progress"].includes(q.page)) notices.push({ kind: "warning", text: `${seats.size.toLocaleString("en-US")} ${seats.size === 1 ? "session is" : "sessions are"} unpriced; cost excludes their recorded tokens.`, ...(combined ? { compactText: combined } : {}) });
     if (q.page === "usage") {
       if (Object.keys(d.all.missing).length) warn("Some local history is unrecoverable; all-usage totals are lower bounds.");
       if (d.all.facts.some((f) => unpriced.has(d.all.models[f[4]]!))) warn("Some models are unpriced; cost excludes their recorded tokens.");

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon", ScrollView: "ScrollView", TextInput: "TextInput", Modal: "Modal" }));
+import { reportNotices } from "../client/tokenomics-format";
 import { choiceOptions, choiceSearchable } from "../client/tokenomics-choice";
 import { mobileFilterPatch, resetTokenomicsFilters, tokenomicsFilterCount } from "../client/tokenomics-mobile";
 import { flagHighlightFrames } from "../client/tokenomics-charts";
@@ -34,6 +35,22 @@ describe("Tokenomics adaptive controls", () => {
     expect(removed.status).toBe("unavailable"); expect(removed.options.revisions?.map((r) => r.value)).toEqual(data.revs.map((r) => r.id));
     const b = tokenomicsView({ ...snap, readAt: "2026-11-20T00:00:00Z" }, tokenomicsQuerySchema.parse({}));
     expect(b.notices.some((n) => n.text.includes("48 hours"))).toBe(true); expect(b.summary).toEqual(a.summary);
+  });
+  it("consolidates simultaneous missing-token and unpriced warnings without summing overlapping counts", () => {
+    const data = tokenomicsFixture(), live = tokenomicsLiveFixture(), q = tokenomicsQuerySchema.parse({});
+    const snap = { data, live, revision: "fixed", readAt: "2026-11-03T13:00:00Z", diagnostics: [] };
+    const before = JSON.stringify(data), view = tokenomicsView(snap, q);
+    const displayed = reportNotices(view.notices, true);
+    expect(displayed).toHaveLength(1); expect(displayed[0]!.text).toBe("1 session lacks tokens; 1 is unpriced. Usage/cost are lower bounds.");
+    expect(displayed[0]!.label).toContain("usage and cost are lower bounds"); expect(displayed[0]!.label).toContain("cost excludes their recorded tokens");
+    expect(reportNotices(view.notices, false)).toHaveLength(2);
+    expect(reportNotices(view.notices.map(({ compactText, ...n }) => n), true)).toHaveLength(2);
+    expect(reportNotices([{ kind: "scope", text: "Same", compactText: "Group" }, { kind: "warning", text: "Warning", compactText: "Group" }], true)).toHaveLength(2);
+    const priced = structuredClone(data); priced.prices = priced.prices.map((p) => p[7] === "unpriced" ? [...p.slice(0, 7), "list"] as typeof p : p);
+    expect(tokenomicsView({ ...snap, data: priced }, q).notices[0]!.text).toContain("1 session lacks token data");
+    const covered = structuredClone(data); covered.seats.forEach((s) => { s.data = "ok"; });
+    expect(tokenomicsView({ ...snap, data: covered }, q).notices[0]!.text).toBe("1 session is unpriced; cost excludes their recorded tokens.");
+    expect(JSON.stringify(data)).toBe(before); expect(view.summary!.cost).toBe(6); expect(view.summary!.tokens).toBe(1400);
   });
   it("matches the original signal band over the whole timeline without crossing plot bounds", () => {
     const hit = (day: string, who = "", x = 10) => ({ x, y: who ? 100 : 24, width: 8, height: 24, label: `${day}${who ? ` · ${who}` : ""}`, values: [] });
