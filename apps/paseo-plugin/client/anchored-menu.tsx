@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { BackHandler, Pressable, Text, View } from "react-native";
+import { BackHandler, Platform, Pressable, Text, View } from "react-native";
+import { focusControl } from "./mobile-filters";
 import { COARSE_POINTER, type Colors } from "./page-controls";
 
 export type MenuRect = { x: number; y: number; width: number; height: number };
@@ -40,7 +41,12 @@ export function panelEditingTarget(panel: FocusTarget | null, active: unknown): 
   if (tag === "input" || tag === "textarea") return true;
   return node.getAttribute?.("role") === "combobox";
 }
-type KeyTarget = { activeElement?: unknown; body?: unknown; addEventListener(type: "keydown", listener: (event: KeyEvent) => void, capture: boolean): void; removeEventListener(type: "keydown", listener: (event: KeyEvent) => void, capture: boolean): void };
+type KeyTarget = { activeElement?: unknown; body?: unknown; addEventListener(type: "keydown" | "keyup", listener: (event: KeyEvent) => void, capture: boolean): void; removeEventListener(type: "keydown" | "keyup", listener: (event: KeyEvent) => void, capture: boolean): void };
+/** A nested popup consumes both halves of Escape; some host sheets dismiss on keyup. */
+export function consumeEscapeRelease(target: Pick<KeyTarget, "addEventListener" | "removeEventListener"> | undefined): void {
+  const release = (event: KeyEvent) => { target?.removeEventListener("keyup", release, true); if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); } };
+  target?.addEventListener("keyup", release, true);
+}
 const ITEMS = '[role="menuitem"]';
 /** What Tab can reach; React Native Web gives each pressable and focusable view a tabindex. */
 const TABBABLE = ':is(a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]):not([tabindex="-1"])';
@@ -80,7 +86,7 @@ export function measureMenu(root: Measurable | null, anchor: Measurable | null, 
 
 type AnchoredMenuProps = {
   anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize; placement: MenuPlacement;
-  onClose: () => void; colors: Colors; label: string; dialog?: boolean; testID?: string; header?: ReactNode; children: ReactNode;
+  onClose: () => void; colors: Colors; label: string; dialog?: boolean; selection?: "single" | "multiple"; contentRole?: "note"; trapFocus?: boolean; focusSearch?: boolean; initialFocus?: RefObject<View | null>; testID?: string; header?: ReactNode; children: ReactNode;
 };
 
 /**
@@ -96,12 +102,13 @@ export function AnchoredMenu(props: AnchoredMenuProps) {
   return <AnchoredPanel key={`${props.dialog ? "dialog" : "menu"}:${triggerKey(props.anchor)}`} {...props} />;
 }
 
-function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, label, dialog = false, testID, header, children }: AnchoredMenuProps) {
+function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, label, dialog = false, selection, contentRole, trapFocus = false, focusSearch = false, initialFocus, testID, header, children }: AnchoredMenuProps) {
+  const itemsSelector = selection ? '[role="radio"], [role="checkbox"]' : ITEMS;
   const [frame, setFrame] = useState<MenuFrame | null>(null);
   const token = useRef(0);
   const panel = useRef<View | null>(null);
   const close = useRef(onClose); close.current = onClose;
-  const restoreFocus = () => (anchor.current as unknown as FocusTarget | null)?.focus?.();
+  const restoreFocus = () => { requestAnimationFrame(() => focusControl(anchor.current)); };
   useEffect(() => {
     const current = ++token.current;
     measureMenu(root.current, anchor.current, placement, () => token.current === current, setFrame);
@@ -109,33 +116,39 @@ function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, lab
   }, [rootSize.width, rootSize.height, placement.align, placement.width, placement.maxHeight]);
   useEffect(() => {
     if (!frame || header) return;
-    const items = (panel.current as unknown as FocusTarget | null)?.querySelectorAll?.(ITEMS);
-    const first = items?.[0]; if (first) first.focus?.();
+    if (selection && Platform.OS !== "web") { focusControl(initialFocus?.current ?? panel.current); return; }
+    if (selection && COARSE_POINTER) return;
+    const items = (panel.current as unknown as FocusTarget | null)?.querySelectorAll?.(itemsSelector);
+    const search = focusSearch ? (panel.current as unknown as FocusTarget | null)?.querySelectorAll?.("input")?.[0] : null;
+    const first = search ?? (selection ? (panel.current as unknown as FocusTarget | null)?.querySelectorAll?.('[aria-checked="true"]')?.[0] : null) ?? items?.[0]; if (first) first.focus?.();
   }, [frame !== null]);
   useEffect(() => {
-    const back = BackHandler.addEventListener("hardwareBackPress", () => { close.current(); return true; });
+    const back = BackHandler.addEventListener("hardwareBackPress", () => { close.current(); if (selection || contentRole) restoreFocus(); return true; });
     const document = (globalThis as { document?: KeyTarget }).document;
     const self = {};
     openPanels++;
-    if (dialog) dialogs.push(self);
+    if (dialog || trapFocus) dialogs.push(self);
     const onKey = (event: KeyEvent) => {
       if (event.defaultPrevented) return;
       const node = panel.current as unknown as FocusTarget | null;
       const editing = panelEditingTarget(node, document?.activeElement);
       if (event.key === "Escape") {
         if (panelNestedComboboxTarget(node, document?.activeElement)) return;
-        event.preventDefault(); event.stopPropagation(); close.current(); restoreFocus(); return;
+        event.preventDefault(); event.stopPropagation(); consumeEscapeRelease(document); close.current(); restoreFocus(); return;
       }
       if (event.key === "Tab") {
+        if (selection && !trapFocus) { close.current(); restoreFocus(); return; }
         // Only dialogs join the stack, so a menu is never on top of it.
         if (dialogs[dialogs.length - 1] !== self || event.altKey || event.ctrlKey || event.metaKey) return;
         const target = containedTab(node, root.current as unknown as FocusTarget | null, document?.activeElement, document?.body, !!event.shiftKey);
         if (target) { event.preventDefault(); target.focus?.(); }
         return;
       }
+      if (selection && editing && event.key === "ArrowDown") { event.preventDefault(); node?.querySelectorAll?.(itemsSelector)?.[0]?.focus?.(); return; }
+      if (selection && event.key === "ArrowUp" && document?.activeElement === node?.querySelectorAll?.(itemsSelector)?.[0]) { const input = node?.querySelectorAll?.("input")?.[0]; if (input) { event.preventDefault(); input.focus?.(); return; } }
       if (editing && (LIST_NAV.has(event.key) || event.key.length === 1 || event.key === "Backspace" || event.key === "Delete")) return;
       if (!LIST_NAV.has(event.key)) return;
-      const items = node?.querySelectorAll ? Array.from(node.querySelectorAll(ITEMS)) : [];
+      const items = node?.querySelectorAll ? Array.from(node.querySelectorAll(itemsSelector)) : [];
       if (!items.length) return;
       event.preventDefault();
       const index = items.findIndex((item) => item === document?.activeElement);
@@ -152,7 +165,7 @@ function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, lab
   return <View testID={testID ? `${testID}-layer` : undefined} pointerEvents="box-none" style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 50 }}>
     <Pressable testID={testID ? `${testID}-backdrop` : undefined} accessibilityLabel={`Close ${label}`} importantForAccessibility="no" accessibilityElementsHidden
       onPress={() => { close.current(); restoreFocus(); }} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} />
-    <View ref={panel} testID={testID} role={dialog ? "dialog" : "menu"} accessibilityLabel={label} aria-modal={dialog || undefined} tabIndex={dialog ? -1 : undefined}
+    <View ref={panel} testID={testID} role={contentRole ?? (dialog ? "dialog" : selection ? selection === "multiple" ? "group" : "radiogroup" : "menu")} accessibilityLabel={label} accessibilityViewIsModal={Platform.OS !== "web" && Boolean(dialog || selection)} aria-modal={dialog || undefined} tabIndex={dialog ? -1 : undefined}
       style={{ position: "absolute", opacity: frame ? 1 : 0, left: frame?.left ?? 0, width: frame?.width ?? placement.width, ...(frame?.bottom != null ? { bottom: frame.bottom } : { top: frame?.top ?? 0 }), maxHeight: frame?.maxHeight,
         borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 5, backgroundColor: colors.surface1, overflow: "hidden",
         shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 8 }, elevation: 8 }}>

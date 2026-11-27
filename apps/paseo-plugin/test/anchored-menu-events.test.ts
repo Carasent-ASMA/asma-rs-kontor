@@ -8,7 +8,7 @@ vi.mock("react", async (original) => ({
   useRef: (initial: unknown) => ({ current: initial }),
   useState: (initial: unknown) => [initial, () => {}],
 }));
-vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ Platform: { OS: "web" }, BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", ScrollView: "ScrollView" }));
 
 import { AnchoredMenu, anchoredPanelOpen, panelNestedComboboxTarget, type FocusTarget } from "../client/anchored-menu";
@@ -20,11 +20,12 @@ type Event = Key & { preventDefault: ReturnType<typeof vi.fn>; stopPropagation: 
 type Node = FocusTarget & { focus: Mock<() => void> };
 
 const listeners = new Set<(event: Event) => void>();
+const releases = new Set<(event: Event) => void>();
 const page = {
   activeElement: null as unknown,
   body: {},
-  addEventListener: (_type: string, listener: (event: Event) => void) => { listeners.add(listener); },
-  removeEventListener: (_type: string, listener: (event: Event) => void) => { listeners.delete(listener); },
+  addEventListener: (type: string, listener: (event: Event) => void) => { (type === "keyup" ? releases : listeners).add(listener); },
+  removeEventListener: (type: string, listener: (event: Event) => void) => { (type === "keyup" ? releases : listeners).delete(listener); },
 };
 const node = (): Node => ({ focus: vi.fn<() => void>(), getClientRects: () => [{}] });
 /** A control in the host app, outside the plugin's screen; the page body is outside it too. */
@@ -36,6 +37,7 @@ function panelOf(stops: Node[]): Node {
 const press = (key: Key): Event => {
   const event = { ...key, preventDefault: vi.fn(), stopPropagation: vi.fn() };
   for (const listener of [...listeners]) listener(event);
+  for (const release of [...releases]) release({ ...key, preventDefault: vi.fn(), stopPropagation: vi.fn() });
   return event;
 };
 const mounted: (() => void)[] = [];
@@ -73,7 +75,7 @@ function slot() {
 }
 
 describe("anchored menu keys on web", () => {
-  beforeEach(() => { vi.stubGlobal("document", page); page.activeElement = null; });
+  beforeEach(() => { vi.stubGlobal("document", page); vi.stubGlobal("requestAnimationFrame", (callback: () => void) => { callback(); return 1; }); page.activeElement = null; });
   afterEach(() => { mounted.splice(0).forEach((unmount) => unmount()); vi.unstubAllGlobals(); });
 
   it.each(["Close", "Escape", "backdrop"])("dismisses the actual bulk confirmation through %s without executing archive", (dismiss) => {

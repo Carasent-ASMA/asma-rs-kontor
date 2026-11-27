@@ -691,7 +691,7 @@ describe("Kontor shell native actions", () => {
         expect(screen.menu()!.props.dialog).toBeUndefined();
         expect(screen.menuItems().every((item) => item.props.tall === true)).toBe(true);
         const views = moreViews(screen.menu()), current = hostNavigation(screen.props.host.id).route.tab;
-        expect(views).toEqual(["Graph", "Delivery", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
+        expect(views).toEqual(["Graph", "Delivery", "Tokenomics", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
         // The page that is open stays marked inside the scrolling list.
         expect(screen.menuItems().filter((item) => item.props.selected === true).map((item) => item.props.label)).toEqual(views.includes(current) ? [current] : []);
         screen.choose(tab);
@@ -709,7 +709,7 @@ describe("Kontor shell native actions", () => {
     screen.click("More");
     expect(screen.action("More").props).toMatchObject({ trailing: { type: DisclosureChevron, props: { open: true } }, expanded: true });
     expect(screen.menu()!.props.placement).toEqual({ align: "end", width: 190 });
-    expect(moreViews(screen.menu())).toEqual(["Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
+    expect(moreViews(screen.menu())).toEqual(["Tokenomics", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
     screen.choose("Inbox"); expect(screen.action("More").props.selected).toBe(true);
     screen.click("More"); expect(screen.menuItems().find((item) => item.props.label === "Inbox")?.props.selected).toBe(true);
     screen.closeMenu();

@@ -23,7 +23,7 @@ type HookQueueItem = {
 };
 
 const accessibility = vi.hoisted(() => ({ screenReader: false }));
-const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void } }));
+const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void; subscribe(): () => void; refresh(): void; forget(): void } }));
 /** The drawn components read the pulse liveness through this cell; tests set it per case and the
  * beforeEach default is live, the normal screen state. */
 const pulseContext = vi.hoisted(() => ({ current: null as null | { live: boolean; visible: boolean } }));
@@ -1669,7 +1669,7 @@ describe("SessionsScreen toolbar events", () => {
 
   it("keeps restored Details focus without help blocking the next session action", () => {
     let helpVisible = false;
-    controlHelp.current = { dismiss: () => { helpVisible = false; } };
+    controlHelp.current = { dismiss: () => { helpVisible = false; }, subscribe: () => () => {}, refresh: () => {}, forget: () => {} };
     try {
       const screen = renderDetails(placeEntries());
       const button = { focus: vi.fn(() => { helpVisible = true; }) };
