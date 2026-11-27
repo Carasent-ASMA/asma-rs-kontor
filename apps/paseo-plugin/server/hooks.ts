@@ -226,8 +226,8 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  * workflow claim on its own labels or on the requested initial agent's
  * labels: its request becomes unguarded only when neither the caller nor the
  * requested initial agent keeps a workflow claim and no other independently
- * known scope applies (the residual below). Labels alone never widen a scope.
- * An unreadable caller is refused. A guarded request is admitted only into a
+ * known scope applies (the residual below). Labels alone never widen a scope
+ * beyond the caller's project. An unreadable caller is refused. A guarded request is admitted only into a
  * checkout a Kontor binding names, read back natively: the caller's own, or the
  * requested initial agent's. An unbound caller's project must still hold when
  * the initial agent's binding names the target (AUD-B-R10-01). With neither
@@ -238,6 +238,15 @@ async function callerScope(paseo: HookPaseo, caller: CallerPlacement, options: L
  *
  * A caller id borrowed from another live agent gets that agent's scope: the
  * id is client-reported, and its owner is all the hook can read.
+ *
+ * An initial agent's binding is client-reported too (B2-1, an open residual):
+ * a client can copy a registered sibling workspace's `kontor.workspace_id` and
+ * `kontor.worktree`. The native readback proves only that the directory exists
+ * (an archiving workspace still reads back), not that the requester is
+ * assigned to it, so this route can register another workspace at that
+ * checkout; the host does not deduplicate by path. A matching readback is
+ * neither deduplication nor requester authorization, and copying labels is not
+ * a remedy for missing target evidence.
  *
  * Unsupported, and left unguarded: a request with no caller and no workflow
  * claim, and a request from a caller outside any desk or epic project when

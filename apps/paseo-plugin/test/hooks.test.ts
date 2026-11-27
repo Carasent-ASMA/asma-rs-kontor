@@ -660,6 +660,23 @@ describe("workspace.create hook", () => {
         expect(result.dispatched).toBe(0);
         expect(result.error).toContain("directory outside the seat's canonical worktree");
       });
+
+      // B2-1, an open residual: this pins today's behaviour so that a change to it is seen. It is not a regression
+      // witness. The initial agent's binding is client-reported, so labels copied from a registered sibling workspace
+      // name a checkout that reads back natively; the readback proves the directory exists, not that the requester is
+      // assigned to it, and the host then registers one more workspace there. An archiving workspace still reads back.
+      it.each<[string, WorkspaceSnapshot]>([
+        ["a registered sibling workspace", { projectId: PROJECT, workspaceDirectory: SIBLING }],
+        ["an archiving sibling workspace", { projectId: PROJECT, workspaceDirectory: SIBLING, archivingAt: "2026-11-27T00:00:00.000Z" }],
+      ])("pins the copied-binding residual: an unbound caller's initial agent carrying %s's labels dispatches once, the request unchanged (B2-1)", async (_name, sibling) => {
+        const copied = seatLabels({ "kontor.seat_binding_id": "seat-sibling", "kontor.workspace_id": "wks_sibling", "kontor.worktree": SIBLING });
+        for (const [, labels] of CALLERS) {
+          const original = JSON.stringify(sibling);
+          const result = await run(mixed(SIBLING, PROJECT, copied), context(labels, { wks_caller: callerIn(), wks_sibling: sibling }), config());
+          expect(result).toMatchObject({ dispatched: 1, error: "", unchanged: true });
+          expect(JSON.stringify(sibling)).toBe(original);
+        }
+      });
     });
   });
 
