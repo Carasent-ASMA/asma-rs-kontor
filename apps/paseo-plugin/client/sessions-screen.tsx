@@ -145,6 +145,7 @@ import { ArchiveRecoverySheet } from "./archive-recovery";
 import { hideNotices, NoticeAction, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
 import { useSessionAvailability } from "./use-session-availability";
 import { readableInk } from "./session-status-ink";
+import { PendingQuestionsButton, SessionQuestionsSheet, pendingPermissionTotal, useSessionQuestions } from "./session-questions";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -1574,6 +1575,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     availability.reconcile(rows); if (!liveDirectory.current) refresh();
   };
   const lifecycle = useSessionLifecycle(host.id, lifecycleChanged);
+  // One confirmed action settles every pending permission request; its count reuses the directory's native per-row field.
+  const questions = useSessionQuestions(host.id, refresh);
+  const pendingQuestionCount = useMemo(
+    () => pendingPermissionTotal(rawState.entries),
+    [rawState.entries],
+  );
+  const pendingQuestionsButton = <PendingQuestionsButton count={pendingQuestionCount} colors={colors} compact={compact}
+    disabled={!hostOnline} onPress={() => { void questions.begin(); }} />;
   // Archives whose fence is still held stay checkable after their rows leave, a later review and a reload.
   const recovery = useArchiveRecovery(host.id, lifecycle, lifecycleChanged);
   const [archivingId, setArchivingId] = useState<string | null>(null);
@@ -2897,6 +2906,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             </Text>
           </Pressable>
         ) : null}
+        {compact ? null : pendingQuestionsButton}
         {compact ? null : <FiltersButton
           ref={filtersTriggerRef}
           activeCount={activeCount}
@@ -3185,6 +3195,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
     onChooser={() => { cancelDelayedOpen(); searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
+    {pendingQuestionsButton}
     {view.status === "attention" ? <View style={{ width: 80, alignItems: "flex-end" }}>
       <Action small colors={colors} label="Check IDs" accessibilityLabel="Check availability" disabled={!hostOnline || availability.checking} onPress={() => { availability.refresh(); refresh(); }} />
     </View> : null}
@@ -3221,6 +3232,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       }
     >
       <SlimToolbar
+        action={pendingQuestionsButton}
         notice={noticesTrigger(slimNotices, slimNoticesHide)}
         hostLabel={host.label}
         activeCount={slimActiveCount}
@@ -3648,6 +3660,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           bulkReturnFocusRef.current = true; setBulkOpen(false);
         }}
         onFinished={(summary) => toast.show(summary)} /> : null}
+      {questions.open ? <SessionQuestionsSheet questions={questions} colors={colors} /> : null}
       {recoveryOpen ? <ArchiveRecoverySheet recovery={{ ...recovery, items: recovery.attention }} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
         canRefresh={hostOnline && lifecycleIdle} hostOnline={hostOnline} onOpen={openRecovered} onHide={hideRecovered} onClose={closeRecovery} /> : null}
     </View>
