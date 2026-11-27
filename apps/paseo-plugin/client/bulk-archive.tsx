@@ -97,8 +97,10 @@ const sectionOf = (row: LifecycleRow): Section => unresolvedArchive(row) ? "unco
  * Board D4: Cancel LEFT and Archive N RIGHT in one row. Anchored to `anchor` inside `root`, or the host's modal when a
  * surface has neither, such as the composer popover.
  */
-export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, compact, onClose, onFinished }: {
+export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, compact, autoRun = false, onClose, onFinished }: {
   lifecycle: Lifecycle; root?: RefObject<View | null>; anchor?: RefObject<View | null>; rootSize?: MenuSize; colors: Colors; compact: boolean;
+  /** The review was already confirmed elsewhere (Archive children too): archive it on open, with this dialog's progress and results. */
+  autoRun?: boolean;
   /** `archived`: every session any review in this dialog saw archived or gone, including reviews before Review again. */
   onClose: (archived: string[]) => void; onFinished: (summary: string) => void;
 }) {
@@ -112,6 +114,7 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
   const close = () => { closed.current = true; lifecycle.stop(); onClose([...archived.current]); };
   // The dialog states the outcome while it is open; a toast reports only a batch that finishes after it closed.
   const archive = async () => { setStopping(false); const summary = await lifecycle.run(); if (summary && closed.current) onFinished(summary); };
+  useEffect(() => { if (autoRun) void archive(); }, []);
   const reading = busy && !batch, rows = reading ? [] : review?.rows ?? [], done = !!batch && !running;
   const ready = rows.filter((row) => sectionOf(row) === "ready"), blocked = rows.filter((row) => sectionOf(row) === "blocked");
   // Blocked and unattempted rows can be read again; an unconfirmed archive keeps its exact-ID Refresh status and is never resent.

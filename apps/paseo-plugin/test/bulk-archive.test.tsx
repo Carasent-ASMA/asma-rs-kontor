@@ -39,8 +39,8 @@ const draw = (element: Element) => (element.type as (props: Record<string, unkno
 const texts = (tree: unknown) => walk(tree).filter((element) => element.type === "Text").map((element) => [element.props.children].flat().join(""));
 const styleOf = (element: Element, state: object = { pressed: false }) => (element.props.style as (value: object) => Record<string, unknown>)(state);
 const byId = (tree: unknown, testID: string) => walk(tree).find((element) => element.props.testID === testID)!;
-const dialog = (lifecycle: Partial<Lifecycle>, extra: { onClose?: () => void; onFinished?: (summary: string) => void } = {}) => {
-  const props = { lifecycle: { busy: false, running: false, batch: null, error: null, stop: vi.fn(), run: vi.fn(), prepare: vi.fn(), reconcile: vi.fn(), ...lifecycle } as unknown as Lifecycle,
+const dialog = (lifecycle: Partial<Lifecycle>, extra: { onClose?: () => void; onFinished?: (summary: string) => void; autoRun?: boolean } = {}) => {
+  const props = { autoRun: extra.autoRun, lifecycle: { busy: false, running: false, batch: null, error: null, stop: vi.fn(), run: vi.fn(), prepare: vi.fn(), reconcile: vi.fn(), ...lifecycle } as unknown as Lifecycle,
     root: { current: null }, anchor: { current: null }, rootSize: { width: 390, height: 800 }, colors, compact: true, onClose: extra.onClose ?? vi.fn(), onFinished: extra.onFinished ?? vi.fn() };
   return { props, render: () => harness.current.render(() => BulkArchiveDialog(props)) as Element };
 };
@@ -186,6 +186,14 @@ describe("bulk archive blocked reasons", () => {
 });
 
 describe("bulk archive confirmation", () => {
+  it("archives a review confirmed elsewhere once on open, and never on its own otherwise", () => {
+    const run = vi.fn(async () => "Archived 2"), confirmed = dialog({ review: review([row("child"), row("parent")]) as never, run }, { autoRun: true });
+    confirmed.render(); confirmed.render();
+    expect(run).toHaveBeenCalledOnce();
+    const plain = dialog({ review: review([row("a")]) as never, run: vi.fn() });
+    plain.render(); plain.render();
+    expect(plain.props.lifecycle.run).not.toHaveBeenCalled();
+  });
   const SCOPE = "A new child session created just before a selected session archives may be archived with it, even if unselected.";
   const parent = row("parent", { title: "TPM • ASMA-7675 • QNR-P1", eligible: false, category: "excluded", reason: "Archive blocked: native archive can cascade to these children. Preserve or finish them through the owning workflow first.",
     children: [child("idle-child"), child("running-child", "running")] });

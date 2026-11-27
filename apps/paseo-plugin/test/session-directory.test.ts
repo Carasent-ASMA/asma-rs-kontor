@@ -545,6 +545,35 @@ describe("SessionDirectory", () => {
     expect(toDirectoryEntry(seed)).toMatchObject({ lastUserMessageAt: null, activeTurn: false });
   });
 
+  it("reads the host's live background-work summary and never invents one", () => {
+    const seed = entry("background");
+    const withReport = (backgroundWork: unknown) => toDirectoryEntry({
+      ...seed,
+      agent: { ...seed.agent, backgroundWork } as unknown as AgentDirectoryPage["agent"],
+    });
+
+    expect(withReport({ count: 3, runningCount: 2 }).backgroundWork).toEqual({ count: 3, runningCount: 2 });
+    // A host that reports no running split keeps exactly that: no invented split.
+    expect(withReport({ count: 2 }).backgroundWork).toEqual({ count: 2 });
+    // A reported zero is a fact, not an absent field.
+    expect(withReport({ count: 0 }).backgroundWork).toEqual({ count: 0 });
+    expect(withReport({ count: 2, runningCount: 2 }).backgroundWork).toEqual({ count: 2, runningCount: 2 });
+    // Any untrustworthy part makes the whole summary "not reported": never a zero, never running, never clamped.
+    for (const malformed of [
+      { count: "2" }, { count: 0.5 }, { count: -1 }, { count: Number.NaN }, [], null, 3,
+      { count: 2, runningCount: "0" }, { count: 2, runningCount: null }, { count: 2, runningCount: -1 },
+      { count: 2, runningCount: 0.5 }, { count: 1, runningCount: 4 },
+    ]) {
+      expect(withReport(malformed).backgroundWork).toBeUndefined();
+    }
+
+    const absent = toDirectoryEntry(seed);
+    expect(absent.backgroundWork).toBeUndefined();
+    expect("backgroundWork" in absent).toBe(false);
+    // An update that stops reporting the summary clears it: the previous row never lends its count.
+    expect(toDirectoryEntry(seed, withReport({ count: 3, runningCount: 2 })).backgroundWork).toBeUndefined();
+  });
+
   it("retains closed unarchived history across pages, subscriptions, stale cache and archive toggles", async () => {
     const history = Array.from({ length: 13 }, (_, n) => entry(`history-${n}`, {
       status: "closed", requiresAttention: true, attentionReason: "error",

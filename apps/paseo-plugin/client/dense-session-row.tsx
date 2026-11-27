@@ -10,6 +10,7 @@ import { SessionStateMarker } from "./session-state-marker";
 import { readableInk } from "./session-status-ink";
 import { exactTime, parseTime, type Clock } from "./session-time";
 import { rowModel } from "./session-usage";
+import { backgroundWorkLabel } from "./session-view";
 import { VendorMark, vendorName } from "./vendor-mark";
 
 /** Two taps on the state icon within this window enter selection; one tap waits it out, then opens. */
@@ -85,7 +86,7 @@ export function DenseSessionRow({ entry, colors, clock, opened, current = false,
   const recordedChild = recordedChildUsageCompact(totals);
   const times = rowTimes(entry, opened, clock);
   const catalogCopy = entry.catalogCopyAt ? `catalog copy · as of ${entry.catalogCopyAt}` : null;
-  const visibleNote = [note, catalogCopy].filter(Boolean).join(" · ") || null;
+  const visibleNote = [backgroundWorkLabel(entry), note, catalogCopy].filter(Boolean).join(" · ") || null;
   const openedAge = current ? "now" : compactAge(opened, clock.now);
   const stateHelp = useActionHelp(`${STATE_LABELS[state]}. ${times}.${onSelectStart ? " Double-tap to select sessions." : ""}`);
   // A single tap on the state icon opens only after the double-tap window. Any press on any row drops that open; a

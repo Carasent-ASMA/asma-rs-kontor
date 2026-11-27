@@ -98,6 +98,12 @@ describe("server entry floor mode", () => {
     started.cleanup();
   });
 
+  it("registers the pending permission review and its one batch writer", () => {
+    const started = start();
+    for (const name of ["sessions.pending-questions", "sessions.accept-questions"]) expect(started.handlers.filter((item) => item === name)).toHaveLength(1);
+    started.cleanup();
+  });
+
   it("registers the three hooks when floor.json is absent, with the mode line only", () => {
     const started = start();
     expect(started.hooks).toEqual(HOOKS);

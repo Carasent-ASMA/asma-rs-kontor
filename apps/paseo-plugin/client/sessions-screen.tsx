@@ -1,4 +1,4 @@
-import { sessionStateCounts, type SessionStateCount } from "./session-state-counts";
+import { backgroundUnavailable, sessionStateCounts, type SessionStateCount } from "./session-state-counts";
 import { providerBlockedView, type ProviderRefusalReads } from "./provider-blocked-filter";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { SessionLayoutControl } from "./session-layout-control";
@@ -145,6 +145,7 @@ import { ArchiveRecoverySheet } from "./archive-recovery";
 import { hideNotices, NoticeAction, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
 import { useSessionAvailability } from "./use-session-availability";
 import { readableInk } from "./session-status-ink";
+import { PendingQuestionsButton, SessionQuestionsSheet, pendingPermissionTotal, useSessionQuestions } from "./session-questions";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -644,8 +645,10 @@ function updatedLabel(timestamp: number | null): string {
  * covers the membership in view; an archive-inclusive read covers ordinary membership, while an ordinary
  * read does not cover Archived. A read in progress never shows as an empty 0.
  */
-export function matchingCount({ count, state, includeArchived, freshness, blocked }: {
+export function matchingCount({ count, state, includeArchived, freshness, blocked, unavailable = null }: {
   count: number; state: DirectoryState; includeArchived: boolean; freshness: string; blocked: string | null;
+  /** Why the chosen state cannot assert its count (Background tasks on a read that cannot report it). */
+  unavailable?: string | null;
 }): { text: string; label: string } {
   if (blocked !== null) return { text: "Not evaluated", label: `Matching sessions not evaluated: ${blocked} is not evaluated` };
   if (!readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null) {
@@ -653,6 +656,7 @@ export function matchingCount({ count, state, includeArchived, freshness, blocke
       ? { text: "—", label: "Matching sessions unavailable: the session list could not be read" }
       : { text: "…", label: "Reading matching sessions" };
   }
+  if (unavailable !== null) return { text: "—", label: `Matching sessions unavailable: ${unavailable}` };
   const sessions = `${count} matching session${count === 1 ? "" : "s"}`;
   if (freshness === "Live") {
     return state.inventoryComplete === true
@@ -686,10 +690,10 @@ function nativePlace(entry: DirectoryEntry): string {
 
 /**
  * What a Sessions row adds to the shared dense row, which already shows the title, state, origin with its task and
- * PR, model and times. The note line is kept for exceptions to act on: role declarations that disagree, archive
- * membership, and a native record found absent or already archived. Routine facts, such as the native runtime behind
- * a derived state or unverified provider history, are spoken with the exact native ID and the whole place, and
- * Details keeps every value.
+ * PR, model, times and reported background work. The note line is kept for exceptions to act on: role declarations
+ * that disagree, archive membership, and a native record found absent or already archived. Routine facts, such as the
+ * native runtime behind a derived state or unverified provider history, are spoken with the exact native ID and the
+ * whole place, and Details keeps every value.
  */
 export function sessionRowExtras(entry: DirectoryEntry, place: string): { note: string | null; spoken: string } {
   const evidence = entry.requiresAttention ? freshAvailability(entry) : null;
@@ -1571,6 +1575,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     availability.reconcile(rows); if (!liveDirectory.current) refresh();
   };
   const lifecycle = useSessionLifecycle(host.id, lifecycleChanged);
+  // One confirmed action settles every pending permission request; its count reuses the directory's native per-row field.
+  const questions = useSessionQuestions(host.id, refresh);
+  const pendingQuestionCount = useMemo(
+    () => pendingPermissionTotal(rawState.entries),
+    [rawState.entries],
+  );
+  const pendingQuestionsButton = <PendingQuestionsButton count={pendingQuestionCount} colors={colors} compact={compact}
+    disabled={!hostOnline} onPress={() => { void questions.begin(); }} />;
   // Archives whose fence is still held stay checkable after their rows leave, a later review and a reload.
   const recovery = useArchiveRecovery(host.id, lifecycle, lifecycleChanged);
   const [archivingId, setArchivingId] = useState<string | null>(null);
@@ -2433,7 +2445,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     ? `${sessionCount}. Filtered result counts unavailable: shared catalog rows carry no session labels for this filter. ${inventoryRead}.`
     : `${sessionCount}. ${assignmentBlocked ? "Results not evaluated" : `Results span ${workspaceCount} workspace / folder group${workspaceCount === 1 ? "" : "s"}${resultMode ? "" : ", including retained empty workspaces"}. Matching sessions: ${resultWorkspaces} native workspace${resultWorkspaces === 1 ? "" : "s"}, ${unplaced} session${unplaced === 1 ? "" : "s"} without a workspace`}. ${inventoryRead}.`;
   // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
-  const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null,
+  const backgroundGap = view.status === "background" ? backgroundUnavailable(state) : null;
+  const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null, unavailable: backgroundGap,
     freshness: countFreshness });
   const setExpansion = (patch: Readonly<Record<string, boolean>>) => {
     const local = patchLocalExpansion(host.id, patch);
@@ -2893,6 +2906,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             </Text>
           </Pressable>
         ) : null}
+        {compact ? null : pendingQuestionsButton}
         {compact ? null : <FiltersButton
           ref={filtersTriggerRef}
           activeCount={activeCount}
@@ -3181,6 +3195,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
     onChooser={() => { cancelDelayedOpen(); searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
+    {pendingQuestionsButton}
     {view.status === "attention" ? <View style={{ width: 80, alignItems: "flex-end" }}>
       <Action small colors={colors} label="Check IDs" accessibilityLabel="Check availability" disabled={!hostOnline || availability.checking} onPress={() => { availability.refresh(); refresh(); }} />
     </View> : null}
@@ -3217,6 +3232,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       }
     >
       <SlimToolbar
+        action={pendingQuestionsButton}
         notice={noticesTrigger(slimNotices, slimNoticesHide)}
         hostLabel={host.label}
         activeCount={slimActiveCount}
@@ -3353,6 +3369,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       : `No sessions in ${scopeParts.join(", ")} in this view.`
     : view.status === "provider_blocked" && blockedView.empty
     ? blockedView.empty
+    : backgroundGap
+    ? `No Background tasks shown: ${backgroundGap}.`
     : clearable
       ? "No sessions match the current search and filters."
       : state.status === "error" || state.source === "unavailable"
@@ -3642,6 +3660,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           bulkReturnFocusRef.current = true; setBulkOpen(false);
         }}
         onFinished={(summary) => toast.show(summary)} /> : null}
+      {questions.open ? <SessionQuestionsSheet questions={questions} colors={colors} /> : null}
       {recoveryOpen ? <ArchiveRecoverySheet recovery={{ ...recovery, items: recovery.attention }} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
         canRefresh={hostOnline && lifecycleIdle} hostOnline={hostOnline} onOpen={openRecovered} onHide={hideRecovered} onClose={closeRecovery} /> : null}
     </View>

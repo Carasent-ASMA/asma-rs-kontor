@@ -33,7 +33,7 @@ PASEO_CLOSURE_PORT="$PORT" node "$PLUGIN_DIR/scripts/navigator-probe.mjs" "$PORT
 echo "== guarded behaviour =="
 PASEO_CLOSURE_PORT="$PORT" node "$PLUGIN_DIR/scripts/closure.mjs" "$PORT" guarded | tee "$HOME_DIR/guarded.json"
 
-echo "== cli residual (labelled seat environment) =="
+echo "== cli workspace guard (labelled seat environment) =="
 CLI_REPO="$HOME_DIR/cli-fixture"
 mkdir -p "$CLI_REPO"
 git -C "$CLI_REPO" init -q
@@ -43,14 +43,35 @@ SEAT_AGENT="$(node -e 'console.log(JSON.parse(process.argv[1]).agentId)' "$SEAT_
 SEAT_WORKSPACE="$(node -e 'console.log(JSON.parse(process.argv[1]).workspaceId)' "$SEAT_JSON")"
 CLI_ENV=(env "PASEO_AGENT_ID=$SEAT_AGENT" "PASEO_WORKSPACE_ID=$SEAT_WORKSPACE" "PASEO_AGENT_CWD=$CLI_REPO")
 
-"${CLI_ENV[@]}" paseo workspace create --isolation local --path "$CLI_REPO" --json --home "$HOME_DIR" >"$HOME_DIR/cli-created.json"
-node -e 'const j=require(process.argv[1]);if(!j.workspaceId)process.exit(1);console.log(JSON.stringify({name:"cli workspace create (labelled seat env)",outcome:"created",workspaceId:j.workspaceId,must_be:"refused after ASMA-8530"}))' "$HOME_DIR/cli-created.json"
+# Since ASMA-8530 the guard refuses both CLI paths for a labelled seat. A case
+# passes only when the command exits non-zero with the guard's own refusal and
+# no workspace appears; anything else, including a create, fails the suite.
+expect_guard_refusal() {
+  local name="$1" tag="$2" code=0
+  shift 2
+  paseo workspace ls --json --home "$HOME_DIR" >"$HOME_DIR/$tag-before.json"
+  "${CLI_ENV[@]}" "$@" --json --home "$HOME_DIR" >"$HOME_DIR/$tag.json" 2>"$HOME_DIR/$tag.stderr" || code=$?
+  paseo workspace ls --json --home "$HOME_DIR" >"$HOME_DIR/$tag-after.json"
+  # A run that slipped through must not leave its agent behind.
+  node -e 'try{const j=require(process.argv[1]);if(j.agentId)console.log(j.agentId)}catch{}' "$HOME_DIR/$tag.json" | while read -r agent; do paseo agent stop "$agent" --home "$HOME_DIR" >/dev/null 2>&1 || true; done
+  node -e '
+const fs = require("node:fs");
+const [name, code, before, after, out, err] = process.argv.slice(1);
+const seen = new Set(require(before).map((x) => x.workspaceId));
+const added = require(after).filter((x) => !seen.has(x.workspaceId)).map((x) => x.workspaceId);
+const text = fs.readFileSync(out, "utf8") + fs.readFileSync(err, "utf8");
+const message = (text.match(/Kontor workspace guard refused:[^"\n]*/) || [])[0] ?? null;
+const refused = Number(code) !== 0 && added.length === 0 && message !== null;
+const outcome = refused ? "refused" : added.length > 0 ? "created" : "failed without the guard refusal";
+console.log(JSON.stringify({ name, outcome, exit: Number(code), message, addedWorkspaces: added, expected: "refused by the Kontor workspace guard (ASMA-8530)" }));
+if (!refused) { console.error(text.trim()); process.exit(1); }
+' "$name" "$code" "$HOME_DIR/$tag-before.json" "$HOME_DIR/$tag-after.json" "$HOME_DIR/$tag.json" "$HOME_DIR/$tag.stderr"
+}
 
-paseo workspace ls --json --home "$HOME_DIR" >"$HOME_DIR/ws-before.json"
-"${CLI_ENV[@]}" paseo run --new-workspace local --cwd "$CLI_REPO" --provider opencode/deepseek/deepseek-flash --background "closure check" --json --home "$HOME_DIR" >"$HOME_DIR/cli-run.json" 2>"$HOME_DIR/cli-run.stderr"
-paseo workspace ls --json --home "$HOME_DIR" >"$HOME_DIR/ws-after.json"
-node -e 'const b=require(process.argv[1]);const a=require(process.argv[2]);const seen=new Set(b.map(x=>x.workspaceId));const added=a.filter(x=>!seen.has(x.workspaceId));if(added.length!==1)process.exit(1);console.log(JSON.stringify({name:"cli run --new-workspace (labelled seat env)",outcome:"created",workspaceId:added[0].workspaceId,must_be:"refused after ASMA-8530"}))' "$HOME_DIR/ws-before.json" "$HOME_DIR/ws-after.json"
-"${CLI_ENV[@]}" node -e 'const j=require(process.argv[1]);if(j.agentId)console.log(j.agentId)' "$HOME_DIR/cli-run.json" | while read -r run_agent; do paseo agent stop "$run_agent" --home "$HOME_DIR" >/dev/null 2>&1 || true; done
+expect_guard_refusal "cli workspace create (labelled seat env)" cli-create \
+  paseo workspace create --isolation local --path "$CLI_REPO"
+expect_guard_refusal "cli run --new-workspace (labelled seat env)" cli-run \
+  paseo run --new-workspace local --cwd "$CLI_REPO" --provider opencode/deepseek/deepseek-flash --background "closure check"
 
 echo "== uninstall =="
 paseo plugin remove kontor --home "$HOME_DIR" --json >"$HOME_DIR/removed.json"

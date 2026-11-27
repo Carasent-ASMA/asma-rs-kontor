@@ -9,6 +9,19 @@ export type SessionStateCount = {
   readonly denominator?: string;
 };
 
+/**
+ * Why Background tasks cannot show a count or an empty list as zero, or null when it can. Background work is
+ * live runtime state: a catalog read never carries it, and a read in which no row carries a summary may come
+ * from a host that never sends one (before Paseo 0.16). The state chip, the switcher and the Filters header
+ * share this one decision.
+ */
+export function backgroundUnavailable(state: Pick<DirectoryState, "source" | "entries">): string | null {
+  if (state.source !== undefined && state.source !== "direct") return "background work is reported only by the live direct read, not the shared catalog";
+  // ponytail: inferred per read; a host capability flag would replace this if Paseo ever exposes one.
+  if (state.entries.every((entry) => entry.backgroundWork === undefined)) return "no session in this read carries a background-work summary, so this host may not report it";
+  return null;
+}
+
 /** At most three characters per half of a mobile ratio; never shrink the text to fit. */
 export function compactSessionCount(value: number): string {
   if (value < 1_000) return String(value);
@@ -56,9 +69,11 @@ export function sessionStateCounts(input: CountRead & {
   restrictedUnknown?: boolean;
 }): Readonly<Record<StatusFilter, SessionStateCount>> {
   const { universe, candidates, favorites, refined, recent = [], restrictedUnknown = false } = input;
+  const backgroundGap = backgroundUnavailable(input.state);
   return Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => {
     if (restrictedUnknown) return [status, { text: "—", label: "Count unavailable: shared catalog rows carry no session labels for this filter" }];
     if (status === "provider_blocked") return [status, input.providerBlocked];
+    if (status === "background" && backgroundGap !== null) return [status, { text: "—", label: `Count unavailable: ${backgroundGap}` }];
     const count = (entries: readonly DirectoryEntry[]) => new Set(entries.filter((entry) => matchesStatus(entry, status, favorites, recent)).map((entry) => entry.id)).size;
     const matched = count(candidates), total = count(universe);
     const numerator = compactSessionCount(matched), denominator = compactSessionCount(total);

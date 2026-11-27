@@ -1,10 +1,10 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { applyTakeover } from "../shared/session-lifecycle";
-import { contributeSessionLifecycle } from "../server/session-lifecycle";
+import { contributeSessionLifecycle, installedTakeoverDeps } from "../server/session-lifecycle";
 import { createPaseoPublicCli } from "../server/paseo-cli";
 import { createCompleteScheduleReader } from "../server/paseo-host";
 
@@ -50,6 +50,25 @@ describe("installed takeover wiring", () => {
       const read = vi.mocked(createCompleteScheduleReader).mock.results[0]!.value as ReturnType<typeof createCompleteScheduleReader>;
       expect(await read()).toEqual({ complete: true, hostId: "server-1", schedules: [] });
       expect(seen.connections).toEqual(["127.0.0.1:7124"]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("checks the designated summary workspace through the configured file and the host, so a running source is never stopped without it (N2)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "kontor-takeover-wiring-"));
+    try {
+      vi.stubEnv("PASEO_HOME", home); vi.stubEnv("KONTOR_PLUGIN_PASEO_HOME", ""); vi.stubEnv("KONTOR_PLUGIN_PASEO_HOST", "");
+      const placement = { workspaceId: "wks_summaries", projectId: "prj_summaries", cwd: "/fixture/summaries" }, reads: string[] = [];
+      const host = { agents: { ref: () => ({}) }, schedules: {}, workspaces: {
+        ref: (id: string) => ({ refresh: async () => { reads.push(id); return { id, projectId: placement.projectId, workspaceDirectory: placement.cwd, archivingAt: null, workspaceKind: "directory", projectKind: "non_git" }; } }),
+        list: async () => ({ entries: [], pageInfo: { hasMore: false } }) } };
+      const deps = installedTakeoverDeps(host as never, join(home, "state"));
+      await expect(deps.summaryPlacement()).rejects.toThrow("Summary helpers need one designated workspace");
+      await mkdir(join(home, "plugin-config", "kontor"), { recursive: true });
+      await writeFile(join(home, "plugin-config", "kontor", "summary.json"), JSON.stringify(placement));
+      await expect(deps.summaryPlacement()).resolves.toBeUndefined();
+      expect(reads).toEqual([placement.workspaceId]);
     } finally {
       await rm(home, { recursive: true, force: true });
     }

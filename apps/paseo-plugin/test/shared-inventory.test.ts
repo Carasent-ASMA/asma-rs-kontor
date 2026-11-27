@@ -236,7 +236,7 @@ describe("the shared native inventory adapter", () => {
     });
     const renamed = sessionEntry("session-a", {
       title: "Live title", labels: { epic: "ASMA-1" }, pendingPermissionCount: 2, attentionReason: "permission",
-      updatedAt: "2026-10-25T07:00:00Z",
+      updatedAt: "2026-10-25T07:00:00Z", backgroundWork: { count: 2, runningCount: 1 },
     });
     const wrongTitle = sessionEntry("session-x", { title: "Same title", labels: { epic: "ASMA-9" }, updatedAt: "2026-10-25T07:00:00Z" });
     const adapted = adapt({
@@ -251,6 +251,9 @@ describe("the shared native inventory adapter", () => {
     expect(a.labels).toEqual({ epic: "ASMA-1" });
     expect(a.pendingPermissionCount).toBe(2);
     expect(a.needsInput).toBe(true);
+    // Background work is live runtime state: the overlay carries it, and a catalog-only row stays unreported, not zero.
+    expect(a.backgroundWork).toEqual({ count: 2, runningCount: 1 });
+    expect(b.backgroundWork).toBeUndefined();
     expect(b.title).toBe("Same title");
     expect(b.labels).toEqual({});
     expect(b.needsInput).toBe(false);

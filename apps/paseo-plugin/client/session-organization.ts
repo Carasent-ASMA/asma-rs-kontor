@@ -1,4 +1,8 @@
-import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
+import {
+  hasSessionAttention,
+  isSessionRunning,
+  type DirectoryEntry,
+} from "./session-directory";
 
 export const OTHER_WORKSTREAM = "Other work";
 export const UNASSIGNED_EPIC = "Unassigned";
@@ -479,7 +483,8 @@ export function sessionState(entry: DirectoryEntry): OrganizationState {
   if (entry.status === "error") {
     return "failed";
   }
-  if (entry.status === "running") {
+  // Reported background work is running work: Paseo's own bucket ranks it with `running`.
+  if (isSessionRunning(entry)) {
     return "running";
   }
   if (hasSessionAttention(entry)) {

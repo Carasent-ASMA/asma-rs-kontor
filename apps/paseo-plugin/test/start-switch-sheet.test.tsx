@@ -53,7 +53,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ Easing: { linear: (t: number) => t }, Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text",
   Pressable: "Pressable", Image: "Image", PanResponder: { create: () => ({ panHandlers: {} }) }, BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts, useSettings: () => model.settings, getPaseoClient: () => ({}) }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast,
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", ScrollView: "ScrollView", useToast: () => model.toast,
   Modal: Object.assign(function Modal() { return null; }, { Content: function ModalContent() { return null; } }), copyText: (text: string) => model.copyText(text) }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: object) => { model.directoryArgs.push(args); return { state: model.directory, refresh: () => {} }; } }));
@@ -72,6 +72,9 @@ vi.mock("../client/session-operations", async original => {
 
 import { openHandOff, takeHandOff, withdrawHandOff, type OpenSessionResult, type SessionNavigation } from "../client/session-actions";
 import { AnchoredMenu } from "../client/anchored-menu";
+import { ArchiveChildrenDialog } from "../client/archive-children";
+import { BulkArchiveDialog } from "../client/bulk-archive";
+import { SwipeToArchive } from "../client/swipe-archive";
 import { configureRecentStorage, recentRows, recordVisit, readRecent } from "../client/recent-sessions";
 import { startSwitchCounts, type SwitchView } from "../client/session-state-shortcuts";
 import { matchesMembership, matchesQuery, matchesStatus } from "../client/session-view";
@@ -400,6 +403,73 @@ describe("Start or switch sheet", () => {
     expect(rowIds(s.tree)).not.toContain("agent-a");
     expect(text(s.tree)).toContain("Archived LSA • ASMA-1 • Route.");
   });
+  const childRef = (id: string, status = "idle") => ({ id, title: `Child ${id}`, status, workspaceId: "wks-a" });
+  const parentPreview = (children = [childRef("child-a", "running")]) => archiveRow({ eligible: false, category: "excluded", reason: "Archive blocked: native archive can cascade to these children.", children });
+  const swipeOf = (tree: Element[], id: string) => tree.find((node) => node.type === SwipeToArchive && ((node.props.children as Element).props.entry as DirectoryEntry).id === id);
+  const familyDialog = (tree: Element[]) => tree.find((node) => node.type === ArchiveChildrenDialog);
+  it("Archive and a deliberate swipe on a parent open the children choice from one fresh host preview, sending no archive", async () => {
+    const rpc = archiveFixture(vi.fn(), parentPreview()), s = sheet({ compact: true });
+    press(archiveItem(s)); await settle(); s.render();
+    expect(rpc.preview).toHaveBeenCalledExactlyOnceWith({ action: "archive", scope: "filtered", agentIds: ["agent-a"], target: DEFAULT_RECOVERY_TARGET });
+    expect(rpc.execute).not.toHaveBeenCalled();
+    expect(familyDialog(s.tree)?.props).toMatchObject({ entry: { id: "agent-a" }, online: true });
+    expect(byTestId(s.tree, "kontor-switch-archive-result")).toBeUndefined();
+    (familyDialog(s.tree)!.props.onClose as () => void)(); s.render();
+    expect(familyDialog(s.tree)).toBeUndefined(); expect(rowIds(s.tree)).toContain("agent-a");
+    const swipe = swipeOf(s.tree, "agent-a")!;
+    expect(swipe.props.enabled).toBe(true);
+    (swipe.props.onArchive as () => void)(); await settle(); s.render();
+    expect(rpc.preview).toHaveBeenCalledTimes(2); expect(rpc.execute).not.toHaveBeenCalled();
+    expect(familyDialog(s.tree)?.props.entry).toMatchObject({ id: "agent-a" });
+  });
+  it("a deliberate swipe on a session without children takes the existing single archive unchanged", async () => {
+    const rpc = archiveFixture(), s = sheet({ compact: true });
+    (swipeOf(s.tree, "agent-a")!.props.onArchive as () => void)(); await settle(); s.render();
+    expect(rpc.preview).toHaveBeenCalledExactlyOnceWith({ action: "archive", scope: "filtered", agentIds: ["agent-a"], target: DEFAULT_RECOVERY_TARGET });
+    expect(rpc.execute).toHaveBeenCalledExactlyOnceWith({ reviewId: "00000000-0000-4000-8000-000000000002", agentId: "agent-a" });
+    expect(familyDialog(s.tree)).toBeUndefined(); expect(rowIds(s.tree)).not.toContain("agent-a");
+    expect(text(s.tree)).toContain("Archived LSA • ASMA-1 • Route.");
+  });
+  it.each([["a missing session", { category: "unknown", fingerprint: "missing", reason: "This session is no longer listed by the host." }],
+    ["an excluded session", { category: "excluded", reason: "Managed child is protected." }]] as const)("a swipe on %s without children keeps the single path's refusal and never opens the choice", async (_label, patch) => {
+    const rpc = archiveFixture(vi.fn(), archiveRow({ ...patch, eligible: false })), s = sheet({ compact: true });
+    (swipeOf(s.tree, "agent-a")!.props.onArchive as () => void)(); await settle(); s.render();
+    expect(rpc.preview).toHaveBeenCalledExactlyOnceWith({ action: "archive", scope: "filtered", agentIds: ["agent-a"], target: DEFAULT_RECOVERY_TARGET });
+    expect(rpc.execute).not.toHaveBeenCalled(); expect(familyDialog(s.tree)).toBeUndefined();
+    expect(rowIds(s.tree)).toContain("agent-a"); expect(text(s.tree)).toContain(patch.reason);
+  });
+  it("offers the swipe only on a phone layout, and holds it still while selecting", () => {
+    archiveFixture();
+    expect(swipeOf(sheet().tree, "agent-a")).toBeUndefined();
+    const s = sheet({ compact: true });
+    expect(rowIds(s.tree)).toEqual(["agent-a"]);
+    choose(s, "session-actions-agent-a"); press(byTestId(s.tree, "session-action-select")); s.render();
+    expect(swipeOf(s.tree, "agent-a")!.props.enabled).toBe(false);
+  });
+  it.each(["confirmed", "partial"] as const)("Archive children too archives the reviewed branch child-first and updates a list with no live updates (%s)", async (kind) => {
+    recordVisit("host-a", "child-a", Date.now() - 30_000);
+    const archived = (id: string) => archiveRow({ id, outcome: "archived", runtime: "closed", availability: { agentId: id, state: "readable", archivedAt: "2026-11-27", checkedAt: "2026-11-27", revision: "2026-10-18T10:00:00.000Z", reason: "Exact read." } });
+    const branchReview = { id: "00000000-0000-4000-8000-000000000003", action: "archive", scope: "filtered", createdAt: "2026-11-27", target: DEFAULT_RECOVERY_TARGET,
+      rows: [archiveRow({ id: "child-a", title: "Child A", nativeStatus: "running" }), archiveRow({ children: [childRef("child-a", "running")] })] };
+    const execute = vi.fn(async ({ agentId }: { agentId: string }) => agentId === "child-a" ? archived("child-a")
+      : kind === "confirmed" ? archived("agent-a") : archiveRow({ outcome: "blocked", message: "Selected children have not all archived with confirmed outcomes. No parent archive was sent." }));
+    const rpc = archiveFixture(execute as never, parentPreview());
+    rpc.preview.mockImplementationOnce(async () => ({ id: "00000000-0000-4000-8000-000000000002", action: "archive", scope: "filtered", createdAt: "2026-11-27", target: DEFAULT_RECOVERY_TARGET, rows: [parentPreview()] }))
+      .mockImplementation(async () => branchReview as never);
+    const s = sheet({ compact: true, directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" }), sessionEntry("child-a", { title: "Child A", status: "running" })], false) });
+    expect(rowIds(s.tree)).toEqual(expect.arrayContaining(["agent-a", "child-a"]));
+    press(archiveItem(s)); await settle(); s.render();
+    const dialog = familyDialog(s.tree)!.props as { lifecycle: { branch(id: string): Promise<unknown> }; onArchive(review: unknown): void };
+    const review = await dialog.lifecycle.branch("agent-a");
+    expect(rpc.preview).toHaveBeenLastCalledWith({ action: "archive", scope: "filtered", agentIds: ["agent-a"], target: DEFAULT_RECOVERY_TARGET, descendants: true });
+    dialog.onArchive(review); s.render();
+    expect(familyDialog(s.tree)).toBeUndefined(); expect(execute).not.toHaveBeenCalled();
+    // The confirmed batch runs by itself when it opens, once: drawing it again sends nothing more.
+    const bulk = () => s.tree.find((node) => node.type === BulkArchiveDialog)!.props as Parameters<typeof BulkArchiveDialog>[0];
+    for (let draw = 0; draw < 2; draw++) { model.scoped("bulk", () => BulkArchiveDialog(bulk())); for (let tick = 0; tick < 5; tick++) await settle(); s.render(); }
+    expect(execute.mock.calls.map(([input]) => input.agentId)).toEqual(["child-a", "agent-a"]);
+    expect(rowIds(s.tree)).toEqual(kind === "confirmed" ? [] : ["agent-a"]);
+  });
   it("Archive retains a refused row and reports its existing reason without dispatch", async () => {
     const rpc = archiveFixture(undefined, archiveRow({ eligible: false, outcome: "blocked", reason: "A managed child is protected." })), s = sheet();
     press(archiveItem(s)); await settle(); s.render();
@@ -572,6 +642,23 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("20 of 23");
   });
 
+  it("never shows Background tasks as an empty zero on a read that cannot report background work", () => {
+    const pick = (entries: DirectoryEntry[]) => {
+      const s = sheet({ directory: complete(entries) });
+      choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-background");
+      return s;
+    };
+    // No row carries a summary: the host may not report it, so the chip, the list and its count all stay unknown.
+    const silent = pick(RUNNING);
+    expect(byTestId(silent.tree, "kontor-switch-more")?.props.count).toMatchObject({ text: "—" });
+    expect(byTestId(silent.tree, "kontor-switch-empty")?.props.children).toBe("No Background tasks shown: no session in this read carries a background-work summary, so this host may not report it.");
+    expect(byTestId(silent.tree, "kontor-switch-count")?.props.children).toBe("0 shown · total unavailable");
+    // One reported zero shows the host reports summaries, so the empty list is a fact.
+    const reported = pick([...RUNNING, sessionEntry("bg-none", { backgroundWork: { count: 0 } })]);
+    expect(byTestId(reported.tree, "kontor-switch-empty")?.props.children).toBe("No Background tasks sessions on this host.");
+    expect(byTestId(reported.tree, "kontor-switch-count")?.props.children).toBe("0 of 0");
+  });
+
   it("narrows the chosen state by the search and refines its count", () => {
     const s = sheet({ directory: complete(RUNNING) });
     choose(s, "kontor-switch-state-running");
@@ -620,7 +707,7 @@ describe("Start or switch sheet", () => {
     choose(s, "kontor-switch-more");
     expect(byTestId(s.tree, "kontor-switch-more")?.props.expanded).toBe(true);
     expect(within(s.tree, "kontor-switch-more-panel").filter((node) => node.props.onPress).map((node) => node.props.label)).toEqual(["Last visited", "Last activity", "Running", "Questions",
-      "Errors", "All", "Idle", "Attention", "Favorites", "Current", "Starting", "Closed", "Earlier errors", "Provider blocked (observed)", "Archived sessions"]);
+      "Errors", "All", "Idle", "Attention", "Favorites", "Current", "Background tasks", "Starting", "Closed", "Earlier errors", "Provider blocked (observed)", "Archived sessions"]);
     expect(within(s.tree, "kontor-switch-more-panel").filter((node) => node.props.role === "group").map((node) => node.props.accessibilityLabel)).toEqual(["All states", "More states"]);
     expect(byTestId(s.tree, "kontor-switch-more-recent")?.props).toMatchObject({ selected: true, icon: "Clock" });
     search(s, " route ");

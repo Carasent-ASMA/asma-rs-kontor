@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { lifecycleReviewSchema, lifecycleRowSchema, DEFAULT_RECOVERY_TARGET, availabilitySchema, RESUME_REMOVED } from "../../paseo-plugin/shared/session-lifecycle";
+import { lifecycleReviewSchema, lifecycleRowSchema, DEFAULT_RECOVERY_TARGET, availabilitySchema, KEEP_CHILDREN_UNAVAILABLE, RESUME_REMOVED } from "../../paseo-plugin/shared/session-lifecycle";
 import { listReadSources, readSource, readSourceSummaries, readPlanAssociations } from "../../paseo-plugin/shared/read-sources";
 import { readResponsibility } from "../../paseo-plugin/shared/responsibility";
 import { readKontorStatus } from "../../paseo-plugin/shared/kontor-status";
@@ -100,6 +100,22 @@ describe("current plugin contracts", () => {
     expect(await invoke("sessions.lifecycle-dispositions", { agentIds: [input.agentId] })).toEqual({});
     const dispositions = await invoke("sessions.availability", { agentIds: [input.agentId] }) as Record<string, unknown>;
     expect(availabilitySchema.parse(dispositions[input.agentId]).archivedAt).toBeTruthy();
+  });
+
+  it("reviews a parent's branch child-first with Keep children alive unavailable, as the live host does, and archives it child-first", async () => {
+    const rows = recoverySessions(), update = vi.fn((id: string, patch: object) => { Object.assign(rows.find(row => row.agent.id === id)!.agent, patch); });
+    const invoke = fixtureLifecycle(() => rows, update);
+    const request = { action: "archive", scope: "filtered", agentIds: ["agt_recovery_parent"], target: DEFAULT_RECOVERY_TARGET };
+    const single = lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-preview", request));
+    expect(single.rows.map(row => [row.id, row.eligible])).toEqual([["agt_recovery_parent", false]]);
+    expect(single.keepChildren).toBeUndefined();
+    const review = lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-preview", { ...request, descendants: true }));
+    expect(review.rows.map(row => [row.id, row.eligible, row.outcome])).toEqual([["agt_recovery_child", true, "pending"], ["agt_recovery_parent", true, "pending"]]);
+    expect(review.keepChildren).toEqual({ available: false, reason: KEEP_CHILDREN_UNAVAILABLE });
+    await expect(invoke("sessions.lifecycle-preview", { ...request, agentIds: ["agt_recovery_parent", "agt_recovery_old"], descendants: true })).rejects.toThrow("A branch archive names exactly one parent session.");
+    expect(update).not.toHaveBeenCalled();
+    for (const row of review.rows) expect(lifecycleRowSchema.parse(await invoke("sessions.lifecycle-execute-item", { reviewId: review.id, agentId: row.id })).outcome).toBe("archived");
+    expect(update.mock.calls.map(([id]) => id)).toEqual(["agt_recovery_child", "agt_recovery_parent"]);
   });
 
   it("retains an archived/unconfirmed owner across a later archive and a fresh read without redispatch", async () => {
