@@ -430,6 +430,14 @@ describe("Start or switch sheet", () => {
     expect(familyDialog(s.tree)).toBeUndefined(); expect(rowIds(s.tree)).not.toContain("agent-a");
     expect(text(s.tree)).toContain("Archived LSA • ASMA-1 • Route.");
   });
+  it.each([["a missing session", { category: "unknown", fingerprint: "missing", reason: "This session is no longer listed by the host." }],
+    ["an excluded session", { category: "excluded", reason: "Managed child is protected." }]] as const)("a swipe on %s without children keeps the single path's refusal and never opens the choice", async (_label, patch) => {
+    const rpc = archiveFixture(vi.fn(), archiveRow({ ...patch, eligible: false })), s = sheet({ compact: true });
+    (swipeOf(s.tree, "agent-a")!.props.onArchive as () => void)(); await settle(); s.render();
+    expect(rpc.preview).toHaveBeenCalledExactlyOnceWith({ action: "archive", scope: "filtered", agentIds: ["agent-a"], target: DEFAULT_RECOVERY_TARGET });
+    expect(rpc.execute).not.toHaveBeenCalled(); expect(familyDialog(s.tree)).toBeUndefined();
+    expect(rowIds(s.tree)).toContain("agent-a"); expect(text(s.tree)).toContain(patch.reason);
+  });
   it("offers the swipe only on a phone layout, and holds it still while selecting", () => {
     archiveFixture();
     expect(swipeOf(sheet().tree, "agent-a")).toBeUndefined();

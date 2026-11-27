@@ -228,6 +228,7 @@ describe("branch results without live native updates", () => {
     expect(archivedIds(withLocalDispositions(entries, branchDispositions(entries, rows, revisions)))).toEqual(["g"]);
     const newer = entries.map((entry) => entry.id === "g" ? { ...entry, updatedAt: "r2" } : entry);
     expect(archivedIds(withLocalDispositions(newer, branchDispositions(newer, rows, revisions)))).toEqual([]);
-    expect(branchDispositions(entries, [archived("outside")], revisions)).toEqual({});
+    // A listed session outside the confirmed branch never binds through it, even at a matching revision.
+    expect(branchDispositions([...entries, sessionEntry("outside", { updatedAt: "r1" })], [archived("outside")], revisions)).toEqual({});
   });
 });
